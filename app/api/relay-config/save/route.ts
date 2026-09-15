@@ -3,7 +3,7 @@ import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security"
 import { buildRelayProviderConfigs } from "@/lib/relay-models";
 import { readModelsConfig, writeModelsConfig } from "@/lib/models-config-store";
 import { storeProviderCredential } from "@/lib/provider-credential-store";
-import { testRelayConnection } from "@/app/api/relay-config/test/route";
+import { testRelayConnection } from "@/lib/relay-config-test";
 
 export const dynamic = "force-dynamic";
 
