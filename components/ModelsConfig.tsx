@@ -40,6 +40,9 @@ import {
 } from "./SettingsUi";
 import { ProviderIcon } from "./ProviderIcon";
 import { ProviderUsageSummary } from "./ProviderUsageSummary";
+import { RelayUsageSummary } from "./RelayUsageSummary";
+import { RelayOnboarding } from "./RelayOnboarding";
+import { isRelayProviderId } from "@/lib/relay-config";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1544,6 +1547,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
       </div>
 
       <ProviderUsageSummary providerId={provider.id} enabled={provider.loggedIn} />
+      {isRelayProviderId(provider.id) && <RelayUsageSummary enabled={provider.loggedIn} />}
     </div>
   );
 }
@@ -1675,6 +1679,7 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
       {error && <p style={{ margin: 0, fontSize: 12, color: "#f87171" }}>{error}</p>}
 
       <ProviderUsageSummary providerId={provider.id} enabled={provider.configured} />
+      {isRelayProviderId(provider.id) && <RelayUsageSummary enabled={provider.configured} />}
     </div>
   );
 }
@@ -1976,6 +1981,10 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
   const providers = Object.entries(config.providers ?? {});
   const activeOAuth = oauthProviders.filter((p) => p.loggedIn);
   const activeApiKey = apiKeyProviders.filter((p) => p.configured);
+  const hasRelayProvider =
+    activeOAuth.some((p) => isRelayProviderId(p.id))
+    || activeApiKey.some((p) => isRelayProviderId(p.id))
+    || providers.some(([name]) => isRelayProviderId(name));
 
   // Resolve current detail
   const detailContent = (() => {
@@ -2130,7 +2139,10 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
           <ConfigDetail>
             <ConfigDetailStack className="is-fill">
               {loading ? null : detailContent ?? (
-                <ConfigEmptyState>{t("i18n.selectProviderModel")}</ConfigEmptyState>
+                <>
+                  {!hasRelayProvider && <RelayOnboarding />}
+                  <ConfigEmptyState>{t("i18n.selectProviderModel")}</ConfigEmptyState>
+                </>
               )}
             </ConfigDetailStack>
           </ConfigDetail>
