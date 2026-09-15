@@ -726,5 +726,6 @@ export const zhTWLocale: LocalePlugin = {
     "brand.keys.needLogin": "請先登入。",
     "brand.keys.manualEntry": "手動貼上金鑰",
     "brand.keys.hint": "從你的流星api帳號重新同步 API 金鑰",
+    "brand.keys.noUsableKey": "你的 API 金鑰目前無法使用，請到控制台檢查其分組或狀態。",
   },
 };

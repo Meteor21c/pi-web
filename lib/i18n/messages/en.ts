@@ -726,5 +726,6 @@ export const enLocale: LocalePlugin = {
     "brand.keys.needLogin": "Sign in required.",
     "brand.keys.manualEntry": "Paste a key manually",
     "brand.keys.hint": "Re-syncs the API key from your meteor21c account",
+    "brand.keys.noUsableKey": "Your API keys are currently unusable. Please check their group/status in the console.",
   },
 };

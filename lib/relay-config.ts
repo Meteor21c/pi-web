@@ -7,7 +7,7 @@
  * - 余额/用量: GET /v1/usage（Bearer sk- key），双分组响应同构
  */
 
-export const RELAY_PROVIDER_IDS = ["meteor21c", "meteor21c-claude"] as const;
+export const RELAY_PROVIDER_IDS = ["meteor21c", "meteor21c-claude", "meteor21c-openai"] as const;
 export type RelayProviderId = (typeof RELAY_PROVIDER_IDS)[number];
 
 export const DEFAULT_RELAY_BASE_URL = "https://api.meteor21c.fun";

@@ -1,27 +1,9 @@
 import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
-import { buildRelayProviderConfigs } from "@/lib/relay-models";
-import { readModelsConfig, writeModelsConfig } from "@/lib/models-config-store";
-import { storeProviderCredential } from "@/lib/provider-credential-store";
 import { testRelayConnection } from "@/lib/relay-config-test";
+import { persistRelayConfig, sanitizeBaseUrlOverride } from "@/lib/relay-config-save";
 
 export const dynamic = "force-dynamic";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function sanitizeBaseUrlOverride(base?: unknown): string | null {
-  if (typeof base !== "string" || !base.trim()) return null;
-  const trimmed = base.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(trimmed)) return null;
-  try {
-    new URL(trimmed);
-  } catch {
-    return null;
-  }
-  return trimmed;
-}
 
 export async function POST(request: Request) {
   if (!isApiRequestAllowed(request)) {
@@ -54,28 +36,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    // 2a. Upsert the two relay provider fragments into models.json.
-    const config = readModelsConfig();
-    const providers = isRecord(config.providers)
-      ? { ...config.providers }
-      : ({} as Record<string, unknown>);
-
-    Object.assign(providers, buildRelayProviderConfigs());
-
-    // When the client supplied a custom base, override the default env-derived
-    // baseUrl values (Responses channel keeps /v1, Claude channel uses root).
-    if (base) {
-      const gpt = providers["meteor21c"];
-      const claude = providers["meteor21c-claude"];
-      if (isRecord(gpt)) gpt.baseUrl = `${base}/v1`;
-      if (isRecord(claude)) claude.baseUrl = base;
-    }
-
-    writeModelsConfig({ ...config, providers });
-
-    // 2b. Persist the credential for both providers.
-    await storeProviderCredential("meteor21c", { type: "api_key", key: apiKey });
-    await storeProviderCredential("meteor21c-claude", { type: "api_key", key: apiKey });
+    // 2. Upsert providers into models.json + persist credentials.
+    //    用该 key 实际可见的目录，避免写入套餐外的模型。
+    await persistRelayConfig(apiKey, base, test.modelIds);
   } catch (error) {
     return NextResponse.json(
       { ok: false, reason: "save-failed", message: String(error) },

@@ -17,6 +17,8 @@ export interface RelayTestResult {
   modelCount?: number;
   gptCount?: number;
   claudeCount?: number;
+  /** 该 key 实际可见的模型 id 列表（200 时返回）。 */
+  modelIds?: string[];
   reason?: RelayTestReason;
   message?: string;
 }
@@ -65,7 +67,7 @@ export async function testRelayConnection(
         if (GPT_RE.test(id)) gptCount++;
         if (CLAUDE_RE.test(id)) claudeCount++;
       }
-      return { ok: true, modelCount: ids.length, gptCount, claudeCount };
+      return { ok: true, modelCount: ids.length, gptCount, claudeCount, modelIds: ids };
     }
 
     if (res.status === 401 || res.status === 403) {

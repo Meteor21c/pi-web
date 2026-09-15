@@ -59,10 +59,8 @@ const CLAUDE_MODELS: RelayModelDef[] = [
   { id: "claude-fable-5.1", ...SONNET_FAMILY },
 ];
 
-const FAMILY_MATCH: Record<"gpt" | "claude", RegExp> = {
-  gpt: /gpt|codex/i,
-  claude: /claude/i,
-};
+const GPT_MATCH = /gpt|codex/i;
+const CLAUDE_MATCH = /claude/i;
 
 const TABLE_BY_FAMILY: Record<"gpt" | "claude", Map<string, RelayModelDef>> = {
   gpt: new Map(GPT_MODELS.map((x) => [x.id, x])),
@@ -80,11 +78,23 @@ const FALLBACK: RelayModelDef = {
 
 /**
  * 用内置元数据补全远端 /v1/models 返回的模型 id 列表。
- * 未传远端列表时返回内置表（作为离线兜底）。
+ * family:
+ *  - "gpt" / "claude"：内置表命中取元数据，未命中走保守 FALLBACK；无远端列表时返回内置全表（离线兜底）
+ *  - "other"：远端目录中不属于 gpt/claude 家族的其余模型（deepseek/grok/qwen/绘图等长尾分组），统一走 FALLBACK
  */
-export function resolveRelayModels(family: "gpt" | "claude", remoteIds?: string[]): RelayModelDef[] {
+export function resolveRelayModels(
+  family: "gpt" | "claude" | "other",
+  remoteIds?: string[],
+): RelayModelDef[] {
+  if (family === "other") {
+    if (!remoteIds || remoteIds.length === 0) return [];
+    return remoteIds
+      .filter((id) => !GPT_MATCH.test(id) && !CLAUDE_MATCH.test(id))
+      .map((id) => ({ ...FALLBACK, id, name: id }));
+  }
+
   const table = TABLE_BY_FAMILY[family];
-  const match = FAMILY_MATCH[family];
+  const match = family === "gpt" ? GPT_MATCH : CLAUDE_MATCH;
   if (!remoteIds || remoteIds.length === 0) {
     return [...table.values()];
   }
@@ -94,8 +104,11 @@ export function resolveRelayModels(family: "gpt" | "claude", remoteIds?: string[
 }
 
 /**
- * 构建写入 models.json 的双 provider 片段（providers 对象的两个键值）。
- * remoteIds 为 onboarding 时在线拉取的 /v1/models 目录（按 key 分组返回）。
+ * 构建写入 models.json 的三 provider 片段。三条通道按协议分流（M0 实测）：
+ *  - meteor21c        → openai-responses（GPT/Codex 系；该系走 chat/completions 会 400）
+ *  - meteor21c-claude → anthropic-messages（Claude 系原生透传）
+ *  - meteor21c-openai → openai-completions（其余长尾分组：deepseek/grok/绘图等）
+ * remoteIds 为该 key 实际可见的 /v1/models 目录；不传则用内置表兜底（仅 gpt/claude）。
  */
 export function buildRelayProviderConfigs(remoteIds?: string[]): Record<string, unknown> {
   return {
@@ -108,6 +121,11 @@ export function buildRelayProviderConfigs(remoteIds?: string[]): Record<string, 
       baseUrl: getRelayBaseUrl(),
       api: "anthropic-messages",
       models: resolveRelayModels("claude", remoteIds),
+    },
+    "meteor21c-openai": {
+      baseUrl: getRelayResponsesBaseUrl(),
+      api: "openai-completions",
+      models: resolveRelayModels("other", remoteIds),
     },
   };
 }

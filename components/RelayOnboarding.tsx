@@ -16,12 +16,6 @@ interface RelayOnboardingProps {
   onSuccess?: () => void;
 }
 
-interface RelayKey {
-  key: string;
-  name?: string;
-  status?: number | string;
-}
-
 interface RelayTestResult {
   ok: boolean;
   modelCount?: number;
@@ -30,38 +24,22 @@ interface RelayTestResult {
 }
 
 type Phase = "login" | "auto" | "waiting" | "manual" | "done";
+type NoKeyReason = "no-key" | "no-usable-key";
 
 const REGISTER_URL = "https://api.meteor21c.fun";
-
-/** 有 status 字段时，是否算"正常可用"。 */
-function isKeyActive(status: number | string): boolean {
-  if (typeof status === "number") return status >= 200 && status < 400;
-  const s = String(status).toLowerCase().trim();
-  return s === "ok" || s === "active" || s === "valid" || s === "normal" || s === "200";
-}
-
-/** 选一个 key：优先 status 正常的第一个；没有 status 字段就取第一个。 */
-function pickKey(keys: RelayKey[]): RelayKey | null {
-  if (keys.length === 0) return null;
-  const withStatus = keys.filter((k) => k.status !== undefined && k.status !== null);
-  if (withStatus.length > 0) {
-    const ok = withStatus.find((k) => isKeyActive(k.status as number | string));
-    if (ok) return ok;
-  }
-  return keys[0];
-}
 
 /**
  * meteor21c 中转站"登录即用"引导。
  *
  * 状态机（props 保持兼容 { onSuccess }）：
- *  - login：email+password 登录（调 useRelaySession().login）+ 去注册外链
- *  - auto ：登录成功后自动拉取 key → 空则建 key → 选 key → relay-config/save
- *  - manual：M2 贴 key 流程（门禁关时默认进入；自动配置失败时降级到此）
- *  - done ：成功页（显示 modelCount + 开始使用）
+ *  - login  ：email+password 登录（调 useRelaySession().login）+ 去注册外链
+ *  - auto   ：登录后调 /api/relay-config/auto（服务端逐个实测 key 取可用者并保存）
+ *  - waiting：账号无 key / 全部 key 不可用 → 引导去控制台处理后点"更新密钥"
+ *  - manual ：贴 key 流程（门禁关时默认进入；自动配置异常时降级到此）
+ *  - done   ：成功页（显示 modelCount + 开始使用）
  *
- * 门禁（AuthGate）契约由同事实现：useRelaySession().status 为 "disabled"
- * 时表示门禁未启用，直接走 manual；为 "authenticated" 时直接走 auto。
+ * 门禁（AuthGate）：useRelaySession().status 为 "disabled"（门禁未启用）时走 manual；
+ * 为 "authenticated" 时走 auto。
  */
 export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   const { t } = useI18n();
@@ -75,6 +53,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
 
   const [modelCount, setModelCount] = useState(0);
   const [autoError, setAutoError] = useState<string | null>(null);
+  const [noKeyReason, setNoKeyReason] = useState<NoKeyReason>("no-key");
 
   // M2 手动贴 key 流程状态
   const [apiKey, setApiKey] = useState("");
@@ -122,55 +101,41 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
     }
   }, [loggingIn, email, password, login, mapLoginError]);
 
-  // 自动配置：进入 auto 阶段后执行（拉取用户 key → 有则保存；无则进入 waiting 等待用户在控制台创建）。
-  // "更新密钥"按钮 = 重新进入 auto（重新拉取覆盖配置）。
+  // 自动配置：进入 auto 阶段后执行。
+  // 服务端 /api/relay-config/auto 会拉取账号下全部 key 并逐个实测 /v1/models，
+  // 选取第一个真正可用的 key 写入配置（status 字段不可信：实测存在 active 但 403 的 key）。
+  // "更新密钥"按钮 = 重新进入 auto（重跑该流程）。
   useEffect(() => {
     if (phase !== "auto") return;
     let cancelled = false;
 
     const run = async () => {
       try {
-        const res = await fetch("/api/relay-auth/keys", {
-          method: "GET",
+        const res = await fetch("/api/relay-config/auto", {
+          method: "POST",
           headers: { "Content-Type": "application/json" },
+          body: "{}",
         });
-        const body = (await res.json()) as { ok?: boolean; keys?: RelayKey[]; message?: string };
+        const body = (await res.json()) as {
+          ok?: boolean;
+          modelCount?: number;
+          reason?: string;
+          message?: string;
+        };
         if (cancelled) return;
-        if (!body.ok || !Array.isArray(body.keys)) {
-          setAutoError(t("brand.auth.manualFallback"));
-          setPhase("manual");
+
+        if (body.ok) {
+          setModelCount(body.modelCount ?? 0);
+          setPhase("done");
           return;
         }
-
-        const keys = body.keys;
-        if (keys.length === 0) {
-          // 不自动创建：请用户到控制台创建后点"更新密钥"重新拉取。
+        if (body.reason === "no-key" || body.reason === "no-usable-key") {
+          setNoKeyReason(body.reason === "no-usable-key" ? "no-usable-key" : "no-key");
           setPhase("waiting");
           return;
         }
-
-        const chosen = pickKey(keys);
-        if (!chosen) {
-          setAutoError(t("brand.auth.manualFallback"));
-          setPhase("manual");
-          return;
-        }
-
-        const sRes = await fetch("/api/relay-config/save", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKey: chosen.key }),
-        });
-        const sBody = (await sRes.json()) as RelayTestResult;
-        if (cancelled) return;
-        if (!sBody.ok) {
-          setAutoError(t("brand.auth.manualFallback"));
-          setPhase("manual");
-          return;
-        }
-
-        setModelCount(sBody.modelCount ?? 0);
-        setPhase("done");
+        setAutoError(t("brand.auth.manualFallback"));
+        setPhase("manual");
       } catch {
         if (cancelled) return;
         setAutoError(t("brand.auth.manualFallback"));
@@ -307,13 +272,14 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
     );
   }
 
-  // ---- 等待密钥：账号下无 key，请用户到控制台创建后点"更新密钥" ----
+  // ---- 等待密钥：账号下无可用 key，请用户到控制台处理后点"更新密钥" ----
   if (phase === "waiting") {
+    const title = noKeyReason === "no-usable-key" ? t("brand.keys.noUsableKey") : t("brand.keys.noKeyTitle");
     return (
       <ConfigDetail>
         <ConfigSectionTitle>{t("brand.auth.title")}</ConfigSectionTitle>
         <p style={{ margin: "0 0 6px", fontSize: 13, color: "var(--text)", lineHeight: 1.6, fontWeight: 600 }}>
-          {t("brand.keys.noKeyTitle")}
+          {title}
         </p>
         <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
           {t("brand.keys.noKeyHint")}

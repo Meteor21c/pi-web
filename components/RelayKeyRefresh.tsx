@@ -2,33 +2,22 @@
 
 /**
  * relay provider 详情区的"更新密钥"小组件。
- * 用户在中转站控制台创建/更换 key 后，点击即可重新拉取并覆盖本地配置。
+ * 调用 /api/relay-config/auto：服务端重新拉取账号 key 并逐个实测，
+ * 自动选用可用的那个并覆盖本地配置（status 字段不可信，必须实测）。
  * 挂点：components/ModelsConfig.tsx（isRelayProviderId 的 provider 详情区）。
  */
 import { useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { ConfigButton } from "./SettingsUi";
 
-interface RelayKey {
-  key: string;
-  name?: string;
-  status?: number | string;
-}
-
-function isKeyActive(status: number | string | undefined): boolean {
-  if (status === undefined || status === null) return true;
-  if (typeof status === "number") return status >= 200 && status < 400;
-  const s = String(status).toLowerCase().trim();
-  return s === "ok" || s === "active" || s === "valid" || s === "normal" || s === "200";
-}
-
-function pickKey(keys: RelayKey[]): RelayKey | null {
-  if (keys.length === 0) return null;
-  const active = keys.find((k) => isKeyActive(k.status));
-  return active ?? keys[0];
-}
-
-type SyncState = { kind: "idle" } | { kind: "busy" } | { kind: "ok"; modelCount: number } | { kind: "no-key" } | { kind: "need-login" } | { kind: "failed"; message?: string };
+type SyncState =
+  | { kind: "idle" }
+  | { kind: "busy" }
+  | { kind: "ok"; modelCount: number }
+  | { kind: "no-key" }
+  | { kind: "no-usable-key" }
+  | { kind: "need-login" }
+  | { kind: "failed"; message?: string };
 
 export function RelayKeyRefresh({ providerId, enabled }: { providerId: string; enabled: boolean }) {
   const { t } = useI18n();
@@ -41,34 +30,35 @@ export function RelayKeyRefresh({ providerId, enabled }: { providerId: string; e
     setState({ kind: "busy" });
     (async () => {
       try {
-        const kRes = await fetch("/api/relay-auth/keys", { headers: { "Content-Type": "application/json" } });
-        const kBody = (await kRes.json()) as { ok?: boolean; keys?: RelayKey[] };
-        if (!kBody.ok) {
+        const res = await fetch("/api/relay-config/auto", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const body = (await res.json()) as {
+          ok?: boolean;
+          modelCount?: number;
+          reason?: string;
+          message?: string;
+        };
+        void providerId;
+        if (body.ok) {
+          setState({ kind: "ok", modelCount: body.modelCount ?? 0 });
+          return;
+        }
+        if (body.reason === "no-key") {
+          setState({ kind: "no-key" });
+          return;
+        }
+        if (body.reason === "no-usable-key") {
+          setState({ kind: "no-usable-key" });
+          return;
+        }
+        if (body.reason === "unauthenticated") {
           setState({ kind: "need-login" });
           return;
         }
-        const keys = Array.isArray(kBody.keys) ? kBody.keys : [];
-        if (keys.length === 0) {
-          setState({ kind: "no-key" });
-          return;
-        }
-        const chosen = pickKey(keys);
-        if (!chosen) {
-          setState({ kind: "no-key" });
-          return;
-        }
-        const sRes = await fetch("/api/relay-config/save", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKey: chosen.key }),
-        });
-        const sBody = (await sRes.json()) as { ok?: boolean; modelCount?: number; message?: string };
-        if (!sBody.ok) {
-          setState({ kind: "failed", message: sBody.message });
-          return;
-        }
-        void providerId;
-        setState({ kind: "ok", modelCount: sBody.modelCount ?? 0 });
+        setState({ kind: "failed", message: body.message });
       } catch {
         setState({ kind: "failed" });
       }
@@ -91,9 +81,9 @@ export function RelayKeyRefresh({ providerId, enabled }: { providerId: string; e
           {t("brand.keys.updated").replace("{count}", String(state.modelCount))}
         </p>
       )}
-      {state.kind === "no-key" && (
+      {(state.kind === "no-key" || state.kind === "no-usable-key") && (
         <p style={{ margin: 0, fontSize: 12, color: "#fbbf24", lineHeight: 1.5 }}>
-          {t("brand.keys.noKeyTitle")}{" "}
+          {state.kind === "no-usable-key" ? t("brand.keys.noUsableKey") : t("brand.keys.noKeyTitle")}{" "}
           <a href="https://api.meteor21c.fun" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
             {t("brand.keys.consoleLink")}
           </a>
