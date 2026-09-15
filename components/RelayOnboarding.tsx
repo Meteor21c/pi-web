@@ -30,7 +30,6 @@ interface RelayTestResult {
 }
 
 type Phase = "login" | "auto" | "waiting" | "manual" | "done";
-type AutoStep = "idle" | "fetching" | "saving" | "done" | "failed";
 
 const REGISTER_URL = "https://api.meteor21c.fun";
 
@@ -74,7 +73,6 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  const [autoStep, setAutoStep] = useState<AutoStep>("idle");
   const [modelCount, setModelCount] = useState(0);
   const [autoError, setAutoError] = useState<string | null>(null);
 
@@ -132,7 +130,6 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
 
     const run = async () => {
       try {
-        setAutoStep("fetching");
         const res = await fetch("/api/relay-auth/keys", {
           method: "GET",
           headers: { "Content-Type": "application/json" },
@@ -140,7 +137,6 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
         const body = (await res.json()) as { ok?: boolean; keys?: RelayKey[]; message?: string };
         if (cancelled) return;
         if (!body.ok || !Array.isArray(body.keys)) {
-          setAutoStep("failed");
           setAutoError(t("brand.auth.manualFallback"));
           setPhase("manual");
           return;
@@ -149,20 +145,17 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
         const keys = body.keys;
         if (keys.length === 0) {
           // 不自动创建：请用户到控制台创建后点"更新密钥"重新拉取。
-          setAutoStep("idle");
           setPhase("waiting");
           return;
         }
 
         const chosen = pickKey(keys);
         if (!chosen) {
-          setAutoStep("failed");
           setAutoError(t("brand.auth.manualFallback"));
           setPhase("manual");
           return;
         }
 
-        setAutoStep("saving");
         const sRes = await fetch("/api/relay-config/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -171,18 +164,15 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
         const sBody = (await sRes.json()) as RelayTestResult;
         if (cancelled) return;
         if (!sBody.ok) {
-          setAutoStep("failed");
           setAutoError(t("brand.auth.manualFallback"));
           setPhase("manual");
           return;
         }
 
         setModelCount(sBody.modelCount ?? 0);
-        setAutoStep("done");
         setPhase("done");
       } catch {
         if (cancelled) return;
-        setAutoStep("failed");
         setAutoError(t("brand.auth.manualFallback"));
         setPhase("manual");
       }
