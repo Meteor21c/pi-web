@@ -2,7 +2,7 @@
  * relay 配置写入核心（供 save/auto 两个路由复用）。
  * 抽出原因：route 模块只允许导出 HTTP handler，业务函数必须放 lib。
  */
-import { resolveRelayModels, type RelayModelDef } from "./relay-models";
+import type { RelayModelDef } from "./relay-models";
 import { getRelayBaseUrl } from "./relay-config";
 import { readModelsConfig, writeModelsConfig } from "./models-config-store";
 import { storeProviderCredential, removeStoredCredentialIfType } from "./provider-credential-store";
