@@ -7,16 +7,14 @@
  * - 余额/用量: GET /v1/usage（Bearer sk- key），双分组响应同构
  */
 
-export const RELAY_PROVIDER_IDS = ["meteor21c", "meteor21c-claude", "meteor21c-openai"] as const;
-export type RelayProviderId = (typeof RELAY_PROVIDER_IDS)[number];
-
 export const DEFAULT_RELAY_BASE_URL = "https://api.meteor21c.fun";
 export const API_KEY_ENV = "METEOR21C_API_KEY";
 export const RELAY_MODELS_ENDPOINT = "/v1/models";
 export const RELAY_USAGE_ENDPOINT = "/v1/usage";
 
-export function isRelayProviderId(id: string): id is RelayProviderId {
-  return (RELAY_PROVIDER_IDS as readonly string[]).includes(id);
+/** relay 系 provider 判定（固定 id + 每 key 的 meteor21c-k<keyId> 形式）。 */
+export function isRelayProviderId(id: string): boolean {
+  return id === "meteor21c" || /^meteor21c-(k\d+|claude|openai)$/.test(id);
 }
 
 /** 中转站根域名（无尾斜杠）。METEOR21C_BASE_URL 可覆盖默认值。 */

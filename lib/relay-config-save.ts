@@ -1,15 +1,32 @@
 /**
- * relay 配置写入核心逻辑（从 app/api/relay-config/save/route.ts 抽出）。
- *
- * 抽出原因：route 模块只允许导出 HTTP handler；自动挑选路由与手动保存路由
- * 都要复用这段逻辑，放在 lib 里由两个路由共同 import。
+ * relay 配置写入核心（供 save/auto 两个路由复用）。
+ * 抽出原因：route 模块只允许导出 HTTP handler，业务函数必须放 lib。
  */
-import { buildRelayProviderConfigs } from "./relay-models";
+import { resolveRelayModels, type RelayModelDef } from "./relay-models";
+import { getRelayBaseUrl } from "./relay-config";
 import { readModelsConfig, writeModelsConfig } from "./models-config-store";
-import { storeProviderCredential } from "./provider-credential-store";
+import { storeProviderCredential, removeStoredCredentialIfType } from "./provider-credential-store";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export type RelayFamily = "claude" | "gpt" | "other";
+
+/** 按模型 id 主导家族判定协议通道（claude 系→anthropic / gpt 系→responses / 其余→completions）。 */
+export function dominantFamily(modelIds: string[]): RelayFamily {
+  const claude = modelIds.filter((id) => /claude/i.test(id)).length;
+  const gpt = modelIds.filter((id) => /gpt|codex/i.test(id)).length;
+  const rest = modelIds.length - claude - gpt;
+  if (claude > 0 && claude >= gpt && claude >= rest) return "claude";
+  if (gpt > 0 && gpt > claude && gpt >= rest) return "gpt";
+  return "other";
+}
+
+export function protocolFor(family: RelayFamily): { api: string; baseUrl: string } {
+  const base = getRelayBaseUrl();
+  if (family === "claude") return { api: "anthropic-messages", baseUrl: base };
+  return { api: family === "gpt" ? "openai-responses" : "openai-completions", baseUrl: `${base}/v1` };
 }
 
 /** Format-only validation for a client-supplied relay base URL override. */
@@ -26,34 +43,43 @@ export function sanitizeBaseUrlOverride(base?: unknown): string | null {
 }
 
 /**
- * Upsert the dual relay providers into models.json and persist the credential
- * for both provider ids. `baseOverride` (already sanitized) replaces the
- * env-derived baseUrl values when present. `remoteModelIds` (the key's actually
- * visible /v1/models catalog) narrows the written model lists so users cannot
- * pick models their plan cannot use.
+ * 写入/更新单个 relay provider（models.json + auth.json 凭据）。
+ * - providerId：`meteor21c`（手动贴 key）或 `meteor21c-k<keyId>`（密钥同步）
+ * - models：该 key 实际可见目录经家族过滤后的模型定义
  */
-export async function persistRelayConfig(
-  apiKey: string,
-  baseOverride?: string | null,
-  remoteModelIds?: string[],
-): Promise<void> {
+export async function persistRelayProvider(opts: {
+  providerId: string;
+  displayName: string;
+  apiKey: string;
+  api: string;
+  baseUrl: string;
+  models: RelayModelDef[];
+}): Promise<void> {
   const config = readModelsConfig();
   const providers = isRecord(config.providers)
     ? { ...config.providers }
     : ({} as Record<string, unknown>);
 
-  Object.assign(providers, buildRelayProviderConfigs(remoteModelIds));
-
-  // Responses channel keeps /v1, Claude channel uses the root domain.
-  if (baseOverride) {
-    const gpt = providers["meteor21c"];
-    const claude = providers["meteor21c-claude"];
-    if (isRecord(gpt)) gpt.baseUrl = `${baseOverride}/v1`;
-    if (isRecord(claude)) claude.baseUrl = baseOverride;
-  }
+  providers[opts.providerId] = {
+    name: opts.displayName,
+    baseUrl: opts.baseUrl,
+    api: opts.api,
+    models: opts.models,
+  };
 
   writeModelsConfig({ ...config, providers });
+  await storeProviderCredential(opts.providerId, { type: "api_key", key: opts.apiKey });
+}
 
-  await storeProviderCredential("meteor21c", { type: "api_key", key: apiKey });
-  await storeProviderCredential("meteor21c-claude", { type: "api_key", key: apiKey });
+/** 删除一个 relay provider（密钥同步清理已删除的 key 时使用）。 */
+export async function removeRelayProvider(providerId: string): Promise<void> {
+  const config = readModelsConfig();
+  const providers = isRecord(config.providers)
+    ? { ...config.providers }
+    : ({} as Record<string, unknown>);
+  if (providerId in providers) {
+    delete providers[providerId];
+    writeModelsConfig({ ...config, providers });
+  }
+  await removeStoredCredentialIfType(providerId, "api_key").catch(() => {});
 }

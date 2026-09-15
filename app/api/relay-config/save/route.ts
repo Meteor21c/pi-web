@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { testRelayConnection } from "@/lib/relay-config-test";
-import { persistRelayConfig, sanitizeBaseUrlOverride } from "@/lib/relay-config-save";
+import { persistRelayProvider, dominantFamily, protocolFor, sanitizeBaseUrlOverride } from "@/lib/relay-config-save";
+import { resolveRelayModels } from "@/lib/relay-models";
 
 export const dynamic = "force-dynamic";
 
@@ -36,9 +37,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    // 2. Upsert providers into models.json + persist credentials.
-    //    用该 key 实际可见的目录，避免写入套餐外的模型。
-    await persistRelayConfig(apiKey, base, test.modelIds);
+    // 2. 手动贴 key：按该 key 可见目录的主导家族判定协议，写入单个 provider。
+    const family = dominantFamily(test.modelIds ?? []);
+    const { api, baseUrl } = protocolFor(family);
+    await persistRelayProvider({
+      providerId: "meteor21c",
+      displayName: "MeteorAgent",
+      apiKey,
+      api,
+      baseUrl,
+      models: resolveRelayModels(family, test.modelIds),
+    });
   } catch (error) {
     return NextResponse.json(
       { ok: false, reason: "save-failed", message: String(error) },
