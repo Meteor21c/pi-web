@@ -41,6 +41,7 @@ import {
 import { ProviderIcon } from "./ProviderIcon";
 import { ProviderUsageSummary } from "./ProviderUsageSummary";
 import { RelayUsageSummary } from "./RelayUsageSummary";
+import { RelayKeyRefresh } from "./RelayKeyRefresh";
 import { RelayOnboarding } from "./RelayOnboarding";
 import { isRelayProviderId } from "@/lib/relay-config";
 
@@ -1547,6 +1548,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
       </div>
 
       <ProviderUsageSummary providerId={provider.id} enabled={provider.loggedIn} />
+      {isRelayProviderId(provider.id) && <RelayKeyRefresh providerId={provider.id} enabled={provider.loggedIn} />}
       {isRelayProviderId(provider.id) && <RelayUsageSummary enabled={provider.loggedIn} />}
     </div>
   );
@@ -1679,6 +1681,7 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
       {error && <p style={{ margin: 0, fontSize: 12, color: "#f87171" }}>{error}</p>}
 
       <ProviderUsageSummary providerId={provider.id} enabled={provider.configured} />
+      {isRelayProviderId(provider.id) && <RelayKeyRefresh providerId={provider.id} enabled={provider.configured} />}
       {isRelayProviderId(provider.id) && <RelayUsageSummary enabled={provider.configured} />}
     </div>
   );

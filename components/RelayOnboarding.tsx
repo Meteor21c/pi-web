@@ -29,8 +29,8 @@ interface RelayTestResult {
   message?: string;
 }
 
-type Phase = "login" | "auto" | "manual" | "done";
-type AutoStep = "idle" | "fetching" | "creating" | "saving" | "done" | "failed";
+type Phase = "login" | "auto" | "waiting" | "manual" | "done";
+type AutoStep = "idle" | "fetching" | "saving" | "done" | "failed";
 
 const REGISTER_URL = "https://api.meteor21c.fun";
 
@@ -124,7 +124,8 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
     }
   }, [loggingIn, email, password, login, mapLoginError]);
 
-  // 自动配置：进入 auto 阶段后只跑一次。
+  // 自动配置：进入 auto 阶段后执行（拉取用户 key → 有则保存；无则进入 waiting 等待用户在控制台创建）。
+  // "更新密钥"按钮 = 重新进入 auto（重新拉取覆盖配置）。
   useEffect(() => {
     if (phase !== "auto") return;
     let cancelled = false;
@@ -145,23 +146,12 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
           return;
         }
 
-        let keys = body.keys;
+        const keys = body.keys;
         if (keys.length === 0) {
-          setAutoStep("creating");
-          const cRes = await fetch("/api/relay-auth/keys", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: "MeteorAgent" }),
-          });
-          const cBody = (await cRes.json()) as { ok?: boolean; key?: { key: string }; message?: string };
-          if (cancelled) return;
-          if (!cBody.ok || !cBody.key?.key) {
-            setAutoStep("failed");
-            setAutoError(t("brand.auth.manualFallback"));
-            setPhase("manual");
-            return;
-          }
-          keys = [{ key: cBody.key.key }];
+          // 不自动创建：请用户到控制台创建后点"更新密钥"重新拉取。
+          setAutoStep("idle");
+          setPhase("waiting");
+          return;
         }
 
         const chosen = pickKey(keys);
@@ -316,18 +306,48 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
 
   // ---- 自动配置步骤 ----
   if (phase === "auto") {
-    const autoText =
-      autoStep === "creating"
-        ? t("brand.auth.autoKeyCreate")
-        : autoStep === "saving"
-          ? t("brand.auth.autoSetup")
-          : t("brand.auth.autoSetup");
     return (
       <ConfigDetail>
         <ConfigSectionTitle>{t("brand.auth.title")}</ConfigSectionTitle>
         <p style={{ margin: "0 0 8px", fontSize: 13, color: "#4ade80", lineHeight: 1.6 }}>
-          {autoText}
+          {t("brand.auth.autoSetup")}
         </p>
+        <RelayAdvancedSettings />
+      </ConfigDetail>
+    );
+  }
+
+  // ---- 等待密钥：账号下无 key，请用户到控制台创建后点"更新密钥" ----
+  if (phase === "waiting") {
+    return (
+      <ConfigDetail>
+        <ConfigSectionTitle>{t("brand.auth.title")}</ConfigSectionTitle>
+        <p style={{ margin: "0 0 6px", fontSize: 13, color: "var(--text)", lineHeight: 1.6, fontWeight: 600 }}>
+          {t("brand.keys.noKeyTitle")}
+        </p>
+        <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          {t("brand.keys.noKeyHint")}
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <ConfigButton variant="primary" onClick={() => setPhase("auto")}>
+              {t("brand.keys.refresh")}
+            </ConfigButton>
+            <a
+              href={REGISTER_URL}
+              target="_blank"
+              rel="noreferrer"
+              style={{ fontSize: 12, color: "var(--accent)" }}
+            >
+              {t("brand.keys.consoleLink")}
+            </a>
+          </div>
+          <ConfigButton variant="secondary" onClick={() => setPhase("manual")}>
+            {t("brand.keys.manualEntry")}
+          </ConfigButton>
+        </div>
+
         <RelayAdvancedSettings />
       </ConfigDetail>
     );
