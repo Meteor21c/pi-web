@@ -12,6 +12,9 @@ try {
 } catch { /* package not found, use default */ }
 
 const nextConfig: NextConfig = {
+  // Disable the Next.js dev-tools indicator bubble (left-bottom "N" button).
+  // It is dev-only UI from the framework itself and has no i18n coverage.
+  devIndicators: false,
   outputFileTracingRoot: configDir,
   serverExternalPackages: [
     "node-pty",
