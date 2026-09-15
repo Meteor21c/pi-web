@@ -709,6 +709,7 @@ export const enLocale: LocalePlugin = {
     "brand.auth.autoKeyCreate": "No API key found. Creating one for you…",
     "brand.auth.ready": "All set! {count} models ready.",
     "brand.auth.manualFallback": "Automatic setup failed. You can paste an API key manually.",
+    "brand.auth.sessionExpired": "Session expired. Please sign in again.",
     "relay.advanced.title": "Advanced settings",
     "relay.advanced.baseUrl": "Relay address",
     "relay.advanced.baseUrlHint": "Pre-filled for you. Only change it if support asks you to.",

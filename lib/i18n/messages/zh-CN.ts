@@ -709,6 +709,7 @@ export const zhCNLocale: LocalePlugin = {
     "brand.auth.autoKeyCreate": "未找到 API Key，正在为你创建…",
     "brand.auth.ready": "配置完成！已就绪 {count} 个模型。",
     "brand.auth.manualFallback": "自动配置失败，你可以手动粘贴 API Key。",
+    "brand.auth.sessionExpired": "会话已过期，请重新登录。",
     "relay.advanced.title": "高级设置",
     "relay.advanced.baseUrl": "中转地址",
     "relay.advanced.baseUrlHint": "已为你预填。除非技术支持要求，否则无需修改。",

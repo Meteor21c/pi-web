@@ -17,6 +17,8 @@ export type RelaySessionStatus = "disabled" | "loading" | "authenticated" | "una
 export interface RelaySessionState {
   status: RelaySessionStatus;
   user: RelayUserInfo | null;
+  /** true = 会话曾存在但 token 过期且刷新失败（登录页显示"会话已过期"提示）。 */
+  expired: boolean;
   login: (email: string, password: string) => Promise<{ ok: boolean; message?: string }>;
   logout: () => Promise<void>;
 }
@@ -26,6 +28,7 @@ const GATE_ENABLED = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 export function useRelaySession(): RelaySessionState {
   const [status, setStatus] = useState<RelaySessionStatus>(GATE_ENABLED ? "loading" : "disabled");
   const [user, setUser] = useState<RelayUserInfo | null>(null);
+  const [expired, setExpired] = useState(false);
 
   useEffect(() => {
     if (!GATE_ENABLED) return;
@@ -33,12 +36,14 @@ export function useRelaySession(): RelaySessionState {
     (async () => {
       try {
         const res = await fetch("/api/relay-auth/me", { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } });
-        const body = (await res.json()) as { ok?: boolean; user?: RelayUserInfo };
+        const body = (await res.json()) as { ok?: boolean; user?: RelayUserInfo; reason?: string };
         if (cancelled) return;
         if (body.ok && body.user) {
           setUser(body.user);
+          setExpired(false);
           setStatus("authenticated");
         } else {
+          setExpired(body.reason === "session-expired");
           setStatus("unauthenticated");
         }
       } catch {
@@ -60,6 +65,7 @@ export function useRelaySession(): RelaySessionState {
       const body = (await res.json()) as { ok?: boolean; user?: RelayUserInfo; message?: string };
       if (body.ok && body.user) {
         setUser(body.user);
+        setExpired(false);
         setStatus("authenticated");
         return { ok: true };
       }
@@ -74,8 +80,9 @@ export function useRelaySession(): RelaySessionState {
       await fetch("/api/relay-auth/logout", { method: "POST", body: "{}", headers: { "Content-Type": "application/json" } });
     } catch { /* best-effort */ }
     setUser(null);
+    setExpired(false);
     setStatus("unauthenticated");
   }, []);
 
-  return { status, user, login, logout };
+  return { status, user, expired, login, logout };
 }

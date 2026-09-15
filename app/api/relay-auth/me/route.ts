@@ -60,12 +60,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: true, user, refreshed: true });
       } catch {
         await clearRelaySessionFile();
-        return NextResponse.json({ ok: false, reason: "unauthenticated" });
+        return NextResponse.json({ ok: false, reason: "session-expired" });
       }
     }
 
     // 其它认证失败：会话失效。
     await clearRelaySessionFile();
-    return NextResponse.json({ ok: false, reason: "unauthenticated" });
+    return NextResponse.json({ ok: false, reason: "session-expired" });
   }
 }

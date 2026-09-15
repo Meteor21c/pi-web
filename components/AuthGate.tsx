@@ -29,7 +29,7 @@ function errorKeyToMessage(message?: string): string | null {
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { status, login } = useRelaySession();
+  const { status, expired, login } = useRelaySession();
   const { t } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -123,6 +123,21 @@ export function AuthGate({ children }: { children: ReactNode }) {
         </div>
 
         <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {expired && (
+            <div
+              role="status"
+              style={{
+                fontSize: 13,
+                color: "#ffd48a",
+                background: "rgba(255,190,90,0.12)",
+                border: "1px solid rgba(255,190,90,0.28)",
+                borderRadius: 10,
+                padding: "8px 12px",
+              }}
+            >
+              {t("brand.auth.sessionExpired")}
+            </div>
+          )}
           <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "rgba(231,233,238,0.8)" }}>
             {t("brand.auth.email")}
             <input
