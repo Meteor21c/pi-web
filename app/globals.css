@@ -1885,9 +1885,23 @@ span.token.table {
 .ui-welcome-glow   { animation: ui-welcome-glow 7s ease-in-out infinite; }
 .ui-tip-swap-text  { animation: ui-tip-swap 4.5s ease-in-out both; }
 
+/* 启动屏：检测项淡入 + 进度条微光 */
+@keyframes ui-splash-label {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.ui-splash-label { animation: ui-splash-label 0.35s var(--ease-out-soft) both; }
+.ui-progress-sheen {
+  background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.4) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: ui-shimmer-slide 1.6s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ui-welcome-brand, .ui-welcome-greet, .ui-welcome-tip { animation-duration: 0.001ms; animation-delay: 0s; }
   .ui-welcome-logo, .ui-welcome-glow, .ui-tip-swap-text { animation: none; }
+  .ui-splash-label { animation-duration: 0.001ms; }
+  .ui-progress-sheen { animation: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

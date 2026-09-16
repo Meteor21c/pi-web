@@ -12,6 +12,7 @@ test("successful relay sync enters the workspace without a completion page", () 
 });
 
 test("the authentication gate no longer duplicates account settings", () => {
-  assert.match(gate, /<RelayOnboarding key=\{generation\} onSuccess=\{enterWorkspace\} \/>/);
+  // v5: AuthGate 还接入 onPhaseChange，把 busy 阶段切到 BootSplash 品牌启动屏。
+  assert.match(gate, /<RelayOnboarding key=\{generation\} onSuccess=\{enterWorkspace\} onPhaseChange=\{setOnboardingPhase\} \/>/);
   assert.doesNotMatch(gate, /RelayAccountSettings/);
 });

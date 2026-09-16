@@ -182,7 +182,7 @@ export function NewSessionWelcome({ isMobile, chatInputRef }: { isMobile: boolea
         </div>
 
         {/* Rotating suggestion */}
-        <div className="ui-welcome-tip" style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 30 }}>
+        <div className="ui-welcome-tip" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 44, minHeight: 30 }}>
           <span style={{ fontSize: 12, color: "var(--text-dim)", flexShrink: 0 }}>{t("chat.welcomeTips")}</span>
           <button
             type="button"

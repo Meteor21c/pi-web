@@ -5,12 +5,14 @@
  * 契约：<AuthGate>{ children }</AuthGate>
  * NEXT_PUBLIC_AUTH_GATE !== "1" 时直接放行（pi-web 主线默认无门禁）。
  * 启动校验 → 登录 → 渠道同步 → 直接进入工作区；校验中不挂载工作区。
+ * 校验与自动配置阶段统一使用 BootSplash 品牌启动屏（合并原先先后闪现的两页）。
  */
 import { useCallback, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
-import { RelayOnboarding } from "./RelayOnboarding";
+import { RelayOnboarding, type RelayOnboardingPhase } from "./RelayOnboarding";
+import { BootSplash } from "./BootSplash";
 
 const GATE_ENABLED = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 
@@ -38,6 +40,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
   const [readyGeneration, setReadyGeneration] = useState<number | null>(null);
+  const [onboardingPhase, setOnboardingPhase] = useState<RelayOnboardingPhase | null>(null);
   const enterWorkspace = useCallback(() => setReadyGeneration(generation), [generation]);
 
   if (!GATE_ENABLED || status === "disabled") {
@@ -46,19 +49,60 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // No workspace effects or historical content until startup is complete.
   if (status === "loading" || status === "error") {
     return (
-      <div style={startupStyle} role="status">
-        <h1>MeteorAgent</h1>
-        <p>{t(status === "loading" ? "brand.auth.checking" : "brand.auth.networkError")}</p>
-        {status === "error" && <button type="button" onClick={() => void recheck()}>{t("brand.auth.retry")}</button>}
-      </div>
+      <BootSplash progress={0.35} label={t(status === "loading" ? "brand.auth.checking" : "brand.auth.networkError")} error={status === "error"}>
+        {status === "error" && (
+          <button
+            type="button"
+            className="ui-send-btn"
+            onClick={() => void recheck()}
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "9px 26px",
+              background: "var(--accent)",
+              color: "var(--accent-contrast)",
+              cursor: "pointer",
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            {t("brand.auth.retry")}
+          </button>
+        )}
+      </BootSplash>
     );
   }
   if (status === "authenticated") {
     if (readyGeneration === generation) return <>{children}</>;
+    // 自动配置进行中（含未上报前的首帧）→ 启动屏；交互阶段 → 居中卡片。
+    if (onboardingPhase === null || onboardingPhase === "auto") {
+      return <BootSplash progress={0.75} label={t("brand.auth.autoSetup")} />;
+    }
     return (
-      <div style={startupStyle}>
-        <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
-          <RelayOnboarding key={generation} onSuccess={enterWorkspace} />
+      <div
+        style={{
+          height: "var(--vp-h, 100dvh)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+          background: "var(--bg)",
+          color: "var(--text)",
+        }}
+      >
+        <div
+          className="ui-msg-enter"
+          style={{
+            width: "100%",
+            maxWidth: 520,
+            padding: "28px 28px",
+            borderRadius: 24,
+            background: "var(--assistant-bg)",
+            border: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)",
+            boxShadow: "0 24px 60px rgba(0,0,0,0.14), 0 4px 16px rgba(0,0,0,0.06)",
+          }}
+        >
+          <RelayOnboarding key={generation} onSuccess={enterWorkspace} onPhaseChange={setOnboardingPhase} />
         </div>
       </div>
     );
@@ -229,12 +273,6 @@ const inputStyle: React.CSSProperties = {
   color: "#e7e9ee",
   fontSize: 14,
   outline: "none",
-};
-
-const startupStyle: React.CSSProperties = {
-  minHeight: "100vh", display: "flex", flexDirection: "column",
-  alignItems: "center", justifyContent: "center", padding: 24,
-  background: "var(--bg)", color: "var(--text)", textAlign: "center",
 };
 
 function buttonStyle(disabled: boolean): React.CSSProperties {

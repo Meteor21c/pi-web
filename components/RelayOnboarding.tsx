@@ -15,6 +15,8 @@ import { syncRelayConfig } from "@/lib/relay-client";
 interface RelayOnboardingProps {
   /** Called as soon as synchronization succeeds. Defaults to a full page reload. */
   onSuccess?: () => void;
+  /** 阶段变化上报：AuthGate 据此把 busy 阶段（auto）切换到品牌启动屏。 */
+  onPhaseChange?: (phase: Phase) => void;
 }
 
 interface RelayTestResult {
@@ -43,11 +45,17 @@ const REGISTER_URL = "https://api.meteor21c.fun";
  * 门禁（AuthGate）：useRelaySession().status 为 "disabled"（门禁未启用）时走 manual；
  * 为 "authenticated" 时走 auto。
  */
-export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
+export type RelayOnboardingPhase = Phase;
+
+export function RelayOnboarding({ onSuccess, onPhaseChange }: RelayOnboardingProps) {
   const { t } = useI18n();
   const { status, login, logout, recheck, generation } = useRelaySession();
 
   const [phase, setPhase] = useState<Phase>("login");
+
+  useEffect(() => {
+    onPhaseChange?.(phase);
+  }, [phase, onPhaseChange]);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
