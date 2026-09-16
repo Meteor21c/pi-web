@@ -19,10 +19,12 @@ export interface BootSplashProps {
   label: string;
   /** 错误态：label 变红，并渲染 children 作为操作区（如"重试"按钮）。 */
   error?: boolean;
+  /** true 时整屏隐藏（visibility），但保持挂载——rAF 进度不重置。 */
+  hidden?: boolean;
   children?: ReactNode;
 }
 
-export function BootSplash({ progress, label, error = false, children }: BootSplashProps) {
+export function BootSplash({ progress, label, error = false, hidden = false, children }: BootSplashProps) {
   const targetRef = useRef(Math.max(0.06, Math.min(0.98, progress)));
   const [display, setDisplay] = useState(0.04);
 
@@ -66,6 +68,10 @@ export function BootSplash({ progress, label, error = false, children }: BootSpl
         color: "var(--text)",
         textAlign: "center",
         overflow: "hidden",
+        position: "absolute",
+        inset: 0,
+        zIndex: 10,
+        ...(hidden ? { visibility: "hidden", pointerEvents: "none" } : {}),
       }}
     >
       {/* 内容整体中间偏上；光晕铺在 logo 背后 */}
