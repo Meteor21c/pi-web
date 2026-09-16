@@ -11,7 +11,7 @@ const {
   sameCommunityPluginSource,
 } = await createJiti(import.meta.url).import("../lib/plugin-catalog.ts");
 
-test("plugin settings expose a curated community view before installed packages", () => {
+test("plugin settings load the official community catalog before installed packages", () => {
   assert.deepEqual(COMMUNITY_PLUGIN_CATEGORY_ORDER, ["skill", "prompt", "tool"]);
   assert.match(source, /<PluginViewTabs/);
   assert.match(source, /view === "community"/);
@@ -19,6 +19,10 @@ test("plugin settings expose a curated community view before installed packages"
   assert.match(source, /data-plugin-community-category=/);
   assert.match(source, /filterCommunityPluginCatalog/);
   assert.match(source, /sameCommunityPluginSource/);
+  assert.match(source, /fetch\(`\/api\/plugins\/catalog/);
+  assert.match(source, /onRefreshCatalog/);
+  assert.match(source, /window\.setInterval\(\(\) => void loadCatalog\(\), COMMUNITY_CATALOG_REFRESH_MS\)/);
+  assert.doesNotMatch(source, /pluginLowRiskNotice/);
 });
 
 test("community installation keeps a disclaimer, progress steps, and the existing install API", () => {

@@ -11,10 +11,10 @@ import type {
 } from "@/lib/api-types";
 import {
   COMMUNITY_PLUGIN_CATEGORY_ORDER,
-  COMMUNITY_PLUGIN_CATALOG,
   filterCommunityPluginCatalog,
   sameCommunityPluginSource,
   type CommunityPluginCategory,
+  type CommunityPluginCatalogResponse,
   type CommunityPluginEntry,
 } from "@/lib/plugin-catalog";
 import { useI18n } from "@/hooks/useI18n";
@@ -67,6 +67,7 @@ interface InstallProgressState {
 }
 
 const METEORAGENT_PRODUCT_MODE = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
+const COMMUNITY_CATALOG_REFRESH_MS = 15 * 60 * 1000;
 
 function shortenPath(path: string): string {
   return path.replace(/^\/(?:Users|home)\/[^/]+/, "~");
@@ -310,7 +311,12 @@ function CommunityPluginPanel({
   actionError,
   actionMessage,
   onInstall,
-  catalog = COMMUNITY_PLUGIN_CATALOG,
+  catalog,
+  catalogLoading,
+  catalogError,
+  catalogFetchedAt,
+  catalogSource,
+  onRefreshCatalog,
 }: {
   packages: PluginPackageInfo[];
   projectResourcesLoaded: boolean;
@@ -318,8 +324,12 @@ function CommunityPluginPanel({
   actionError: string | null;
   actionMessage: string | null;
   onInstall: (entry: CommunityPluginEntry, scope: PluginScope) => void;
-  /** Future `/api/plugins/catalog` data can be injected without changing this UI. */
-  catalog?: readonly CommunityPluginEntry[];
+  catalog: readonly CommunityPluginEntry[];
+  catalogLoading: boolean;
+  catalogError: string | null;
+  catalogFetchedAt?: string;
+  catalogSource?: CommunityPluginCatalogResponse["source"];
+  onRefreshCatalog: () => void;
 }) {
   const { locale, t } = useI18n();
   const [category, setCategory] = useState<CommunityPluginCategory | "all">("all");
@@ -344,15 +354,28 @@ function CommunityPluginPanel({
           <div>
             <ConfigDetailTitle>{t("i18n.pluginCommunity")}</ConfigDetailTitle>
             <p>{t("i18n.pluginCommunityDescription")}</p>
+            {catalogFetchedAt && (
+              <div className="plugins-community-sync-status">
+                {t(catalogSource === "cache" ? "i18n.pluginCatalogCached" : "i18n.pluginCatalogLive", {
+                  count: catalog.length,
+                  time: new Date(catalogFetchedAt).toLocaleString(locale),
+                })}
+              </div>
+            )}
           </div>
-          <a
-            className="plugins-community-source-link"
-            href="https://pi.dev/packages"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {t("i18n.pluginOpenCatalog")} ↗
-          </a>
+          <div className="plugins-community-heading-actions">
+            <ConfigButton size="small" onClick={onRefreshCatalog} disabled={catalogLoading}>
+              {catalogLoading ? t("i18n.pluginCatalogSyncing") : t("i18n.refresh")}
+            </ConfigButton>
+            <a
+              className="plugins-community-source-link"
+              href="https://pi.dev/packages"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t("i18n.pluginOpenCatalog")} ↗
+            </a>
+          </div>
         </div>
 
         <div className="plugins-community-toolbar">
@@ -394,15 +417,13 @@ function CommunityPluginPanel({
           />
         </div>
 
-        <div className="plugins-community-safe-note" role="note">
-          <span className="plugins-community-safe-note-icon" aria-hidden="true">✓</span>
-          <span>{t("i18n.pluginLowRiskNotice")}</span>
-        </div>
-
+        {catalogError && <div className="plugins-action-notice is-error" role="alert">{catalogError}</div>}
         {actionMessage && <div className="plugins-action-notice is-success" role="status">{actionMessage}</div>}
         {actionError && <div className="plugins-action-notice is-error" role="alert">{actionError}</div>}
 
-        {entries.length > 0 ? (
+        {catalogLoading && catalog.length === 0 ? (
+          <ConfigEmptyState>{t("i18n.pluginCatalogSyncing")}</ConfigEmptyState>
+        ) : entries.length > 0 ? (
           <div className="plugins-community-risk-sections">
             {riskSections.map((section) => (
               <section className={`plugins-community-risk-section is-${section.risk}`} key={section.risk}>
@@ -432,6 +453,12 @@ function CommunityPluginPanel({
                         </div>
                         <div className="plugins-community-card-meta">
                           <span className="plugins-community-category-badge">{communityCategoryLabel(entry.category, t)}</span>
+                          {entry.author && <span>{entry.author}</span>}
+                          {typeof entry.downloadsMonthly === "number" && (
+                            <span>{t("i18n.pluginMonthlyDownloads", {
+                              count: new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 }).format(entry.downloadsMonthly),
+                            })}</span>
+                          )}
                           {(entry.capabilities[locale] ?? entry.capabilities.en)
                             .map((capability) => <span key={capability}>{capability}</span>)}
                         </div>
@@ -466,10 +493,6 @@ function CommunityPluginPanel({
         ) : (
           <ConfigEmptyState>{t("i18n.pluginNoCommunityResults")}</ConfigEmptyState>
         )}
-
-        <div className="plugins-community-hidden-note">
-          {t("i18n.pluginComplexHidden")} <a href="https://pi.dev/packages" target="_blank" rel="noopener noreferrer">{t("i18n.pluginOpenCatalog")}</a>.
-        </div>
       </ConfigDetailStack>
     </div>
   );
@@ -1086,6 +1109,9 @@ export function PluginsConfig({
 }) {
   const { locale, t } = useI18n();
   const [data, setData] = useState<PluginsResponse | null>(null);
+  const [catalogData, setCatalogData] = useState<CommunityPluginCatalogResponse | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(() => getLastSettingsSelection("plugins", cwd));
@@ -1144,11 +1170,33 @@ export function PluginsConfig({
     }
   }, [cwd, sessionId]);
 
+  const loadCatalog = useCallback(async (forceRefresh = false) => {
+    setCatalogLoading(true);
+    setCatalogError(null);
+    try {
+      const res = await fetch(`/api/plugins/catalog${forceRefresh ? "?refresh=1" : ""}`);
+      const next = (await res.json()) as CommunityPluginCatalogResponse & { error?: string };
+      if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
+      setCatalogData(next);
+      if (next.warning) setCatalogError(t("i18n.pluginCatalogStaleWarning"));
+    } catch (err) {
+      setCatalogError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [t]);
+
   useEffect(() => {
     setUpdateStatuses({});
     setUpdateError(null);
     void loadPlugins();
   }, [cwd, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    void loadCatalog();
+    const timer = window.setInterval(() => void loadCatalog(), COMMUNITY_CATALOG_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [loadCatalog]);
 
   useEffect(() => {
     if (selected) setLastSettingsSelection("plugins", selected, cwd);
@@ -1432,6 +1480,12 @@ export function PluginsConfig({
             actionError={actionError}
             actionMessage={actionMessage}
             onInstall={requestCommunityInstall}
+            catalog={catalogData?.entries ?? []}
+            catalogLoading={catalogLoading}
+            catalogError={catalogError}
+            catalogFetchedAt={catalogData?.fetchedAt}
+            catalogSource={catalogData?.source}
+            onRefreshCatalog={() => void loadCatalog(true)}
           />
         ) : (
         <ConfigSplitView>
