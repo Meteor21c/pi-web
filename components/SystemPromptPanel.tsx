@@ -36,8 +36,15 @@ export function SystemPromptPanel({ loading, prompt, translate }: Props) {
           height: min(600px, 75dvh);
           min-height: 220px;
           flex-direction: column;
-          background: var(--bg-panel);
-          border-bottom: 1px solid var(--border);
+          background: color-mix(in srgb, var(--assistant-bg) 80%, transparent);
+          -webkit-backdrop-filter: blur(32px) saturate(1.8);
+          backdrop-filter: blur(32px) saturate(1.8);
+          border-bottom: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
+          border-radius: 0 0 var(--radius-md) var(--radius-md);
+          box-shadow:
+            inset 0 1px 0 0 color-mix(in srgb, var(--assistant-bg) 85%, transparent),
+            0 20px 56px rgba(0, 0, 0, 0.20),
+            0 3px 12px rgba(0, 0, 0, 0.08);
         }
         .system-prompt-heading {
           display: flex;
@@ -45,8 +52,8 @@ export function SystemPromptPanel({ loading, prompt, translate }: Props) {
           justify-content: space-between;
           gap: 14px;
           padding: 12px 16px;
-          border-bottom: 1px solid var(--border);
-          background: var(--bg);
+          border-bottom: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
+          background: transparent;
         }
         .system-prompt-heading-copy {
           display: flex;

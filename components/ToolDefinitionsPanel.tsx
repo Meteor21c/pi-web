@@ -213,8 +213,15 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
           height: min(600px, 75dvh);
           min-height: 240px;
           overflow: hidden;
-          background: var(--bg-panel);
-          border-bottom: 1px solid var(--border);
+          background: color-mix(in srgb, var(--assistant-bg) 80%, transparent);
+          -webkit-backdrop-filter: blur(32px) saturate(1.8);
+          backdrop-filter: blur(32px) saturate(1.8);
+          border-bottom: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
+          border-radius: 0 0 var(--radius-md) var(--radius-md);
+          box-shadow:
+            inset 0 1px 0 0 color-mix(in srgb, var(--assistant-bg) 85%, transparent),
+            0 20px 56px rgba(0, 0, 0, 0.20),
+            0 3px 12px rgba(0, 0, 0, 0.08);
         }
         .tool-definitions-sidebar,
         .tool-definition-detail {
@@ -224,8 +231,9 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
           flex-direction: column;
         }
         .tool-definitions-sidebar {
-          border-right: 1px solid var(--border);
-          background: color-mix(in srgb, var(--bg-panel) 94%, var(--bg));
+          border-right: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
+          background: transparent;
+          padding: 5px;
         }
         .tool-definitions-list,
         .tool-definition-scroll {
@@ -235,16 +243,18 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
         }
         .tool-definitions-item {
           display: flex;
-          width: 100%;
-          min-height: 38px;
+          width: calc(100% - 8px);
+          min-height: 36px;
           align-items: center;
+          margin: 1px 4px;
           padding: 8px 12px;
           border: none;
-          border-bottom: 1px solid var(--border);
+          border-radius: 9px;
           background: transparent;
           color: var(--text-muted);
           cursor: pointer;
           text-align: left;
+          transition: background 0.15s ease, color 0.15s ease;
         }
         .tool-definitions-item:hover {
           background: var(--bg-hover);
@@ -252,7 +262,7 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
         }
         .tool-definitions-item.selected {
           background: var(--bg-selected);
-          box-shadow: inset 2px 0 0 var(--accent);
+          box-shadow: none;
           color: var(--text);
         }
         .tool-definitions-item code {

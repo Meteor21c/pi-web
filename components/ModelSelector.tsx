@@ -302,7 +302,7 @@ export function ModelSelector({
                 </div>
               </div>
             ) : (
-              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(112px, 36%) minmax(0, 1fr)" : "clamp(132px, 34%, 178px) minmax(210px, 1fr)", minHeight: 0, overflow: "hidden" }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(112px, 36%) minmax(0, 1fr)" : "clamp(132px, 34%, 178px) minmax(210px, 1fr)", height: "min(400px, 58vh)", minHeight: 220, overflow: "hidden" }}>
                 <div style={{ minWidth: 0, overflowY: "auto", borderRight: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)", background: "color-mix(in srgb, var(--bg-panel) 50%, transparent)" }}>
                   <div style={{ padding: "7px 10px 5px", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>
                     {t("chat.modelGroups")}
