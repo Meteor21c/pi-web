@@ -3,6 +3,7 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import type { BranchPreview, SessionEntry, SessionTreeNode } from "@/lib/types";
 import { useI18n } from "@/hooks/useI18n";
+import { divideByUiScale } from "@/lib/ui-scale";
 
 interface Props {
   tree: SessionTreeNode[];
@@ -266,7 +267,8 @@ export function BranchNavigator({ tree, activeLeafId, onLeafChange, inline, cont
     if (!anchor) return;
     const update = () => {
       const rect = anchor.getBoundingClientRect();
-      setDropdownPos({ top: rect.bottom, left: rect.left, width: rect.width });
+      // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，先换算。
+      setDropdownPos({ top: divideByUiScale(rect.bottom), left: divideByUiScale(rect.left), width: divideByUiScale(rect.width) });
     };
     update();
     const ro = new ResizeObserver(update);

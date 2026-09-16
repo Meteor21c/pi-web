@@ -15,11 +15,13 @@ import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
 import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
+import { SessionPluginsPanel } from "./SessionPluginsPanel";
 import { AgentSessionPanel } from "./AgentSessionPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { newTerminalTab, restoreTerminalTabs, TERMINAL_TABS_KEY, type TerminalTab } from "./terminal-tab-state";
 import { useTheme } from "@/hooks/useTheme";
 import { useUiScale } from "@/hooks/useUiScale";
+import { divideByUiScale } from "@/lib/ui-scale";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile, useIsNarrowMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
@@ -318,7 +320,7 @@ export function AppShell() {
   }, []);
 
   // Single active panel — only one dropdown open at a time
-  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | null>(null);
+  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "plugins" | "session" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -334,7 +336,7 @@ export function AppShell() {
   }, [hasSubagentSessions]);
 
   const toggleTopPanel = useCallback((
-    panel: "agents" | "branches" | "system" | "tools" | "session",
+    panel: "agents" | "branches" | "system" | "tools" | "plugins" | "session",
     keepMobileToolbarOpen = false,
   ) => {
     if (isMobile) setSidebarOpen(false);
@@ -423,15 +425,16 @@ export function AppShell() {
     if (!activeTopPanel || !topBarRef.current) return;
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
+      // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，需先换算。
       if (activeTopPanel === "agents") {
         setTopPanelPos({
-          top: topBarRect.bottom,
-          left: topBarRect.left,
-          width: Math.min(AGENT_PANEL_WIDTH, topBarRect.width),
+          top: divideByUiScale(topBarRect.bottom),
+          left: divideByUiScale(topBarRect.left),
+          width: Math.min(AGENT_PANEL_WIDTH, divideByUiScale(topBarRect.width)),
         });
         return;
       }
-      setTopPanelPos({ top: topBarRect.bottom, left: topBarRect.left, width: topBarRect.width });
+      setTopPanelPos({ top: divideByUiScale(topBarRect.bottom), left: divideByUiScale(topBarRect.left), width: divideByUiScale(topBarRect.width) });
     };
     update();
     const ro = new ResizeObserver(update);
@@ -1495,6 +1498,44 @@ export function AppShell() {
           </svg>
           {!mobile && <span>{translate("tools.label")}</span>}
         </button>
+        <button
+          type="button"
+          onClick={() => toggleTopPanel("plugins", mobile)}
+          disabled={!projectTrustCwd}
+          title={translate("common.plugins")}
+          aria-label={translate("common.plugins")}
+          aria-pressed={activeTopPanel === "plugins"}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
+            height: mobile ? "100%" : 26,
+            margin: mobile ? 0 : "5px 2px",
+            padding: mobile ? 0 : "0 10px",
+            borderRadius: mobile ? 0 : 999,
+            background: activeTopPanel === "plugins" ? "var(--bg-selected)" : "none",
+            border: "none",
+            cursor: projectTrustCwd ? "pointer" : "not-allowed",
+            color: activeTopPanel === "plugins" ? "var(--text)" : "var(--text-muted)",
+            opacity: projectTrustCwd ? 1 : 0.45,
+            fontSize: 11, whiteSpace: "nowrap", transition: "color 0.15s ease, background 0.15s ease",
+          }}
+          onMouseEnter={(event) => {
+            if (!projectTrustCwd) return;
+            event.currentTarget.style.color = "var(--text)";
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.color = activeTopPanel === "plugins" ? "var(--text)" : "var(--text-muted)";
+          }}
+          data-mobile-toolbar-action={mobile ? "plugins" : undefined}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 2v6" />
+            <path d="M8 8h8v4a4 4 0 0 1-8 0V8Z" />
+            <path d="M9 17v5" />
+            <path d="M15 17v5" />
+          </svg>
+          {!mobile && <span>{translate("common.plugins")}</span>}
+        </button>
       </div>
     );
   };
@@ -1990,6 +2031,14 @@ export function AppShell() {
                   loading={systemInfoLoading}
                   tools={systemTools}
                   translate={translate}
+                />
+              )}
+              {activeTopPanel === "plugins" && projectTrustCwd && (
+                <SessionPluginsPanel
+                  cwd={projectTrustCwd}
+                  sessionId={selectedSession?.id ?? null}
+                  sessionRunning={Boolean(selectedSession && runningSessionIds.has(selectedSession.id))}
+                  onReloaded={() => setSessionKey((key) => key + 1)}
                 />
               )}
               {activeTopPanel === "session" && (

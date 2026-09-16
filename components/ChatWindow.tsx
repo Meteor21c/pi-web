@@ -10,6 +10,7 @@ import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-fi
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { MessageView } from "./MessageView";
 import { NewSessionWelcome } from "./NewSessionWelcome";
+import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
@@ -300,8 +301,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       .find((entryId): entryId is string => Boolean(entryId));
     setQuotedSelection({
       text,
-      top: Math.min(window.innerHeight - 44, rect.bottom + 8),
-      left: Math.max(64, Math.min(window.innerWidth - 64, rect.left + rect.width / 2)),
+      // rect 是视觉像素；引用弹层按 fixed CSS px 定位（会被根 zoom 放大），先换算。
+      top: divideByUiScale(Math.min(window.innerHeight - 44, rect.bottom + 8)),
+      left: divideByUiScale(Math.max(64, Math.min(window.innerWidth - 64, rect.left + rect.width / 2))),
       sourceEntryId,
     });
   }, [quoteSelectionEnabled, quoteInputOpen]);
@@ -321,10 +323,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     const viewport = window.visualViewport;
     const position = () => {
       const rect = popover.getBoundingClientRect();
-      const top = viewport?.offsetTop ?? 0;
-      const left = viewport?.offsetLeft ?? 0;
-      popover.style.top = `${Math.max(top + 8, Math.min(quotedSelection.top, top + (viewport?.height ?? window.innerHeight) - rect.height - 8))}px`;
-      popover.style.left = `${Math.max(left + 8, Math.min(quotedSelection.left - rect.width / 2, left + (viewport?.width ?? window.innerWidth) - rect.width - 8))}px`;
+      // 视口偏移/尺寸与 rect.height 都是视觉像素，统一换算为 CSS 像素再定位。
+      const top = divideByUiScale(viewport?.offsetTop ?? 0);
+      const left = divideByUiScale(viewport?.offsetLeft ?? 0);
+      const viewportHeight = divideByUiScale(viewport?.height ?? window.innerHeight);
+      const viewportWidth = divideByUiScale(viewport?.width ?? window.innerWidth);
+      const popoverHeight = divideByUiScale(rect.height);
+      const popoverWidth = divideByUiScale(rect.width);
+      popover.style.top = `${Math.max(top + 8, Math.min(quotedSelection.top, top + viewportHeight - popoverHeight - 8))}px`;
+      popover.style.left = `${Math.max(left + 8, Math.min(quotedSelection.left - popoverWidth / 2, left + viewportWidth - popoverWidth - 8))}px`;
     };
     position();
     const observer = new ResizeObserver(position);

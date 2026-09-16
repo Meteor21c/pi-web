@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { divideByUiScale } from "@/lib/ui-scale";
 
 export interface ModelSelectorOption {
   provider: string;
@@ -194,7 +195,14 @@ export function ModelSelector({
         style={buttonStyle}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
-          setAnchorRect({ top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width });
+          // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，先换算。
+          setAnchorRect({
+            top: divideByUiScale(rect.top),
+            right: divideByUiScale(rect.right),
+            bottom: divideByUiScale(rect.bottom),
+            left: divideByUiScale(rect.left),
+            width: divideByUiScale(rect.width),
+          });
           setOpen((current) => {
             if (current) setFilter("");
             else setActiveProvider(modelsByProvider.find((group) => group.provider === value?.provider)?.provider ?? modelsByProvider[0]?.provider ?? null);
@@ -239,8 +247,9 @@ export function ModelSelector({
       </button>
 
       {open && anchorRect && (() => {
-        const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-        const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+        // 视口尺寸是视觉像素；与已换算的 anchorRect（CSS 像素）保持同一坐标系。
+        const viewportHeight = divideByUiScale(window.visualViewport?.height ?? window.innerHeight);
+        const viewportWidth = divideByUiScale(window.visualViewport?.width ?? window.innerWidth);
         const spaceAbove = anchorRect.top - 8;
         const spaceBelow = viewportHeight - anchorRect.bottom - 8;
         const openAbove = placement === "up" || spaceAbove > spaceBelow;
