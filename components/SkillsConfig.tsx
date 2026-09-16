@@ -36,6 +36,8 @@ import {
   ConfigSwitch,
 } from "./SettingsUi";
 
+const METEORAGENT_PRODUCT_MODE = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
+
 function shortenPath(p: string): string {
   // Match common home dir patterns: /Users/xxx, /home/xxx
   return p.replace(/^\/(?:Users|home)\/[^/]+/, "~");
@@ -98,6 +100,9 @@ function SkillDetail({
   const enabled = !skill.disableModelInvocation;
 
   function displayPath(p: string): string {
+    if (METEORAGENT_PRODUCT_MODE) {
+      return label === "project" ? "当前项目技能" : "Magent 全局技能";
+    }
     if (label === "project" && p.startsWith(cwd)) {
       const rel = p.slice(cwd.length).replace(/^[/\\]/, "");
       return `./${rel}`;
@@ -314,7 +319,9 @@ function AddSkillPanel({
   );
 
   const installPath =
-    scope === "global"
+    METEORAGENT_PRODUCT_MODE
+      ? scope === "global" ? "Magent 全局技能目录" : "当前项目技能目录"
+      : scope === "global"
       ? "~/.pi/agent/skills/"
       : `${shortenPath(cwd)}/.pi/skills/`;
 

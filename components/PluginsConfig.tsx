@@ -34,6 +34,7 @@ import {
 
 type PluginScope = PluginPackageInfo["scope"];
 type PluginAction = "install" | "remove" | "update" | "disable" | "enable";
+const METEORAGENT_PRODUCT_MODE = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 
 function shortenPath(path: string): string {
   return path.replace(/^\/(?:Users|home)\/[^/]+/, "~");
@@ -71,6 +72,9 @@ function versionSummary(pkg: PluginPackageInfo, t: ReturnType<typeof useI18n>["t
 }
 
 function installLocation(scope: PluginScope, cwd: string): string {
+  if (METEORAGENT_PRODUCT_MODE) {
+    return scope === "project" ? "当前项目插件目录" : "Magent 全局插件目录";
+  }
   return scope === "project"
     ? `${shortenPath(cwd)}/.pi/agent/{npm,git}`
     : "~/.pi/agent/{npm,git}";
@@ -274,7 +278,7 @@ function AddPluginPanel({
 }) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
-  const examples = ["npm:@scope/pi-plugin", "git:https://github.com/user/repo", "/absolute/path/to/plugin"];
+  const examples = ["npm:@scope/agent-plugin", "git:https://github.com/user/repo", "/absolute/path/to/plugin"];
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -299,15 +303,17 @@ function AddPluginPanel({
               whiteSpace: "nowrap",
             }}
           >
-            <svg width="28" height="28" viewBox="0 0 800 800" aria-hidden="true" focusable="false" style={{ flexShrink: 0 }}>
-              <path
-                fill="#000"
-                fillRule="evenodd"
-                d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
-              />
-              <path fill="#000" d="M517.36 400H634.72V634.72H517.36Z" />
-            </svg>
-            pi.dev/packages
+            {!METEORAGENT_PRODUCT_MODE && (
+              <svg width="28" height="28" viewBox="0 0 800 800" aria-hidden="true" focusable="false" style={{ flexShrink: 0 }}>
+                <path
+                  fill="#000"
+                  fillRule="evenodd"
+                  d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+                />
+                <path fill="#000" d="M517.36 400H634.72V634.72H517.36Z" />
+              </svg>
+            )}
+            {METEORAGENT_PRODUCT_MODE ? "插件目录 ↗" : "pi.dev/packages"}
           </a>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
@@ -591,7 +597,9 @@ function PackageDetail({
             overflowWrap: "anywhere",
           }}
         >
-          {pkg.installedPath ? shortenPath(pkg.installedPath) : t("i18n.notFound")}
+          {pkg.installedPath
+            ? METEORAGENT_PRODUCT_MODE ? "Magent 插件目录" : shortenPath(pkg.installedPath)
+            : t("i18n.notFound")}
         </div>
         <div style={{ color: "var(--text-dim)" }}>{t("i18n.cwd")}</div>
         <div style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
@@ -643,7 +651,7 @@ function StandaloneExtensionDetail({ extension }: { extension: PluginStandaloneE
         <div style={{ color: extension.enabled ? "var(--accent)" : "var(--text-dim)" }}>{status}</div>
         <div style={{ color: "var(--text-dim)" }}>{t("i18n.installedPath")}</div>
         <div style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
-          {shortenPath(extension.path)}
+          {METEORAGENT_PRODUCT_MODE ? "Magent 扩展目录" : shortenPath(extension.path)}
         </div>
       </div>
     </ConfigDetailStack>

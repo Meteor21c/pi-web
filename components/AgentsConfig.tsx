@@ -33,6 +33,8 @@ import {
   ConfigStatusDot,
   ConfigSwitch,
 } from "./SettingsUi";
+
+const METEORAGENT_PRODUCT_MODE = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 import { ModelSelector } from "./ModelSelector";
 
 const TOOL_OPTIONS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
@@ -346,13 +348,19 @@ export function AgentsConfig({
   const creating = mode === "create";
   const disabled = !editing || saving || toggling;
   const displayedScope = creating ? targetScope : selected?.scope;
-  const displayedPath = creating
-    ? targetScope === "global"
-      ? `~/.pi/agent/agents/${draft.name || "..."}.md`
-      : `./.pi/agents/${draft.name || "..."}.md`
-    : selected
-      ? displayProfilePath(selected, cwd) ?? t("agents.builtinPath")
-      : "";
+  const displayedPath = METEORAGENT_PRODUCT_MODE
+    ? displayedScope === "global"
+      ? "Magent 全局智能体"
+      : displayedScope === "project" || displayedScope === "workspace"
+        ? "当前项目智能体"
+        : t("agents.builtinPath")
+    : creating
+      ? targetScope === "global"
+        ? `~/.pi/agent/agents/${draft.name || "..."}.md`
+        : `./.pi/agents/${draft.name || "..."}.md`
+      : selected
+        ? displayProfilePath(selected, cwd) ?? t("agents.builtinPath")
+        : "";
   const fullPath = creating ? displayedPath : selected?.filePath ?? displayedPath;
   const selectedModelAvailable = !draft.model || modelOptions.some((model) => `${model.provider}/${model.id}` === draft.model);
   const selectedModel = (() => {
