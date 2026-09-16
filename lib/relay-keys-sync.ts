@@ -5,6 +5,7 @@ import {
   applyPlazaContextWindows,
   contextWindowsForModels,
   fetchRelayModelPlaza,
+  officialCostsForModels,
   type RelayModelPlaza,
 } from "./relay-model-plaza";
 import { readModelsConfig } from "./models-config-store";
@@ -205,7 +206,8 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       const test = await testRelayConnection(key.key);
       const resolved = test.ok ? resolveMixedRelayModels(test.modelIds ?? [], getRelayBaseUrl()) : [];
       const contextWindows = contextWindowsForModels(plaza, key.group_id, resolved.map((model) => model.id));
-      const models = applyPlazaContextWindows(resolved, contextWindows);
+      const officialCosts = officialCostsForModels(plaza, key.group_id, resolved.map((model) => model.id));
+      const models = applyPlazaContextWindows(resolved, contextWindows, officialCosts);
       gathered.push({ key, providerId, models, contextWindows, failure: !test.ok ? test.reason : !models.length ? "empty-catalog" : undefined });
     }
   }));
