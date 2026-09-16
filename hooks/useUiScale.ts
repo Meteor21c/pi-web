@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { clampUiScaleOption, resolveAutoScaleFor, UI_SCALE_STORAGE_KEY, UI_SCALE_OPTIONS, type UiScaleOption } from "@/lib/ui-scale";
 
 /**
  * 界面整体缩放（解决高分屏下组件/文字偏小）。
@@ -9,24 +10,17 @@ import { useSyncExternalStore } from "react";
  * - "auto"：按窗口宽度分档（≥2300px → 125%，≥1800px → 110%，否则 100%），
  *   监听 resize 重新计算；
  * - 手动档：100% / 110% / 125%，用户选择后固定，localStorage 持久化。
+ *
+ * 首帧由 layout 中的 UI_SCALE_INIT_SCRIPT 提前应用（防闪烁）；
+ * 本 hook 负责水合后的状态同步与交互式修改。
  */
 
-export const UI_SCALE_STORAGE_KEY = "pi-ui-scale";
-export const UI_SCALE_OPTIONS = ["auto", "100", "110", "125"] as const;
-export type UiScaleOption = (typeof UI_SCALE_OPTIONS)[number];
-
-const AUTO_BREAKPOINTS: Array<{ minWidth: number; scale: number }> = [
-  { minWidth: 2300, scale: 1.25 },
-  { minWidth: 1800, scale: 1.1 },
-];
-
-function clampOption(value: unknown): UiScaleOption {
-  return UI_SCALE_OPTIONS.includes(value as UiScaleOption) ? (value as UiScaleOption) : "auto";
-}
+export { UI_SCALE_STORAGE_KEY, UI_SCALE_OPTIONS };
+export type { UiScaleOption };
 
 function readStoredPreference(): UiScaleOption {
   try {
-    return clampOption(window.localStorage.getItem(UI_SCALE_STORAGE_KEY));
+    return clampUiScaleOption(window.localStorage.getItem(UI_SCALE_STORAGE_KEY));
   } catch {
     return "auto";
   }
@@ -34,11 +28,7 @@ function readStoredPreference(): UiScaleOption {
 
 function resolveAutoScale(): number {
   if (typeof window === "undefined") return 1;
-  const width = window.innerWidth;
-  for (const breakpoint of AUTO_BREAKPOINTS) {
-    if (width >= breakpoint.minWidth) return breakpoint.scale;
-  }
-  return 1;
+  return resolveAutoScaleFor(window.innerWidth);
 }
 
 function applyScale(preference: UiScaleOption): void {
