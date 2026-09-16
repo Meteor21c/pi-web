@@ -33,6 +33,17 @@ import {
 
 type AccountSession = RelaySessionFile;
 
+/**
+ * Providers produced by pre account-scoped MeteorAgent releases.
+ * They do not correspond to a key returned by the current account API and
+ * therefore must not survive an authoritative account sync.
+ */
+const UNSCOPED_LEGACY_PROVIDER_IDS = [
+  "meteor21c",
+  "meteor21c-claude",
+  "meteor21c-openai",
+] as const;
+
 export interface RelayProviderSummary {
   providerId: string;
   displayName: string;
@@ -223,6 +234,14 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     try {
       const nextMetadata = gathered.map(({ key, providerId, contextWindows }) => metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows));
       const presentProviderIds = new Set(nextMetadata.map((entry) => entry.providerId));
+
+      // The website key list is authoritative in account-sync mode. These
+      // fixed ids were created by older single-key/three-channel versions and
+      // have no stable relationship to any current website key.
+      const currentProviders = providersNow();
+      for (const providerId of UNSCOPED_LEGACY_PROVIDER_IDS) {
+        if (Object.hasOwn(currentProviders, providerId)) await removeRelayProvider(providerId);
+      }
 
       for (const previous of initialIndex.filter((entry) => entry.accountId === accountId)) {
         if (!presentProviderIds.has(previous.providerId)) await removeRelayProvider(previous.providerId);

@@ -10,3 +10,8 @@ test("group usage hides the duplicate account wallet", () => {
   assert.match(usageSource, /\{showBalance && <div/);
   assert.match(modelsSource, /<RelayUsageSummary providerId=\{group\.providerId\} enabled showBalance=\{false\} \/>/);
 });
+
+test("usage cards keep sub-cent upstream charges visible", () => {
+  assert.match(usageSource, /formatUsdPrecise/);
+  assert.doesNotMatch(usageSource, /value\)\.toFixed\(2\)/);
+});

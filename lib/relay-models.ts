@@ -29,6 +29,7 @@ export interface RelayModelDef {
   maxTokens?: number;
   api?: string;
   baseUrl?: string;
+  compat?: Record<string, unknown>;
 }
 
 const GPT_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;

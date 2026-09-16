@@ -42,6 +42,17 @@ export function sanitizeBaseUrlOverride(base?: unknown): string | null {
   return trimmed;
 }
 
+/** Persist a stable client-session identifier so usage rows can be reconciled exactly. */
+export function sessionAffinityCompat(api: string): Record<string, unknown> | undefined {
+  if (api === "openai-completions") {
+    return { sendSessionAffinityHeaders: true, sessionAffinityFormat: "openai" };
+  }
+  if (api === "anthropic-messages") {
+    return { sendSessionAffinityHeaders: true };
+  }
+  return undefined;
+}
+
 /**
  * 写入/更新单个 relay provider（models.json + auth.json 凭据）。
  * - providerId：`meteor21c`（手动贴 key）或 `meteor21c-k<keyId>`（密钥同步）
@@ -59,12 +70,18 @@ export async function persistRelayProvider(opts: {
   const providers = isRecord(config.providers)
     ? { ...config.providers }
     : ({} as Record<string, unknown>);
+  const models = opts.models.map((model) => {
+    const compat = sessionAffinityCompat(model.api ?? opts.api);
+    return compat
+      ? { ...model, compat: { ...compat, ...(model.compat ?? {}) } }
+      : model;
+  });
 
   providers[opts.providerId] = {
     name: opts.displayName,
     baseUrl: opts.baseUrl,
     api: opts.api,
-    models: opts.models,
+    models,
   };
 
   writeModelsConfig({ ...config, providers });

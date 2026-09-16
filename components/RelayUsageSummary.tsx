@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { formatUsdPrecise } from "@/lib/currency-format";
 import type { RelayUsageReport } from "@/lib/relay-usage";
 
 /**
@@ -245,7 +246,7 @@ function RelayStat({ label, value }: { label: string; value: string }) {
 }
 
 function formatUSD(value: number): string {
-  return `$${(Number.isFinite(value) ? value : 0).toFixed(2)}`;
+  return formatUsdPrecise(value);
 }
 
 function formatInt(value: number): string {
