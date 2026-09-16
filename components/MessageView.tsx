@@ -770,14 +770,19 @@ function AssistantMessageView({
         style={{
           fontSize: 11,
           color: "var(--text-dim)",
-          marginBottom: 4,
+          marginBottom: 6,
           display: "flex",
           alignItems: "center",
           gap: 6,
         }}
       >
         {message.provider && (
-          <span>{getModelDisplayName(message.provider, message.model, modelNames)}</span>
+          <span className="ui-stat-chip" title={getModelDisplayName(message.provider, message.model, modelNames)}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 3l1.9 5.4L19 10l-5.1 1.6L12 17l-1.9-5.4L5 10l5.1-1.6L12 3z" />
+            </svg>
+            {getModelDisplayName(message.provider, message.model, modelNames)}
+          </span>
         )}
         {isStreaming && (() => {
           const est = Math.round(estimatedTokens);
