@@ -206,6 +206,170 @@
   color: var(--text-dim);
 }
 
+.relay-account-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.relay-active-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #4ade80;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #4ade80 18%, transparent);
+  flex: 0 0 auto;
+}
+
+.models-sidebar-add-account {
+  color: var(--text-muted);
+}
+
+.relay-sidebar-separator {
+  margin: 8px 10px 4px;
+  border-top: 1px solid var(--border);
+}
+
+.relay-sidebar-group {
+  margin-bottom: 2px;
+}
+
+.relay-group-rate,
+.relay-reasoning-badge {
+  flex: 0 0 auto;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.relay-group-rate {
+  background: color-mix(in srgb, #4ade80 12%, transparent);
+  color: color-mix(in srgb, #4ade80 78%, var(--text));
+}
+
+.relay-reasoning-badge {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.relay-account-summary,
+.relay-group-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.relay-account-summary > div,
+.relay-group-facts > div {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  padding: 11px 12px;
+}
+
+.relay-account-summary span,
+.relay-group-facts dt {
+  display: block;
+  margin: 0 0 5px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.relay-account-summary strong,
+.relay-group-facts dd {
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-model-import-list {
+  max-height: 230px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+}
+
+.relay-model-import-list label {
+  min-height: 34px;
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.relay-model-import-list label:last-child {
+  border-bottom: 0;
+}
+
+.relay-model-import-list label.is-imported {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.relay-model-import-list label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-model-import-list label small {
+  color: var(--text-dim);
+  font-size: 9px;
+}
+
+.relay-model-identity {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-panel);
+}
+
+.relay-model-identity span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-model-identity code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agents-overridden-label {
   flex: 0 0 auto;
   color: var(--text-dim);

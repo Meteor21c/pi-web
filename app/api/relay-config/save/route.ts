@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { testRelayConnection } from "@/lib/relay-config-test";
 import { persistRelayProvider, dominantFamily, protocolFor, sanitizeBaseUrlOverride } from "@/lib/relay-config-save";
-import { resolveRelayModels } from "@/lib/relay-models";
+import { resolveMixedRelayModels } from "@/lib/relay-models";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +29,7 @@ export async function POST(request: Request) {
   const base = sanitizeBaseUrlOverride(
     typeof body.baseUrl === "string" ? body.baseUrl : undefined,
   );
+  if (body.baseUrl && !base) return NextResponse.json({ ok: false, reason: "relay-error", message: "Invalid relay root URL" }, { status: 400 });
 
   // 1. Online validation (reuses the test logic).
   const test = await testRelayConnection(apiKey, base ?? undefined);
@@ -36,18 +37,22 @@ export async function POST(request: Request) {
     return NextResponse.json(test);
   }
 
+  let savedModelCount = 0;
   try {
-    // 2. 手动贴 key：按该 key 可见目录的主导家族判定协议，写入单个 provider。
+    // 2. One key/provider, with each model using its own protocol and URL.
     const family = dominantFamily(test.modelIds ?? []);
-    const { api, baseUrl } = protocolFor(family);
+    const { api, baseUrl } = protocolFor(family, base ?? undefined);
+    const models = resolveMixedRelayModels(test.modelIds ?? [], base ?? undefined);
+    if (!models.length) return NextResponse.json({ ok: false, reason: "relay-error", message: "No chat models available" });
     await persistRelayProvider({
       providerId: "meteor21c",
       displayName: "MeteorAgent",
       apiKey,
       api,
       baseUrl,
-      models: resolveRelayModels(family, test.modelIds),
+      models,
     });
+    savedModelCount = models.length;
   } catch (error) {
     return NextResponse.json(
       { ok: false, reason: "save-failed", message: String(error) },
@@ -55,5 +60,5 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, modelCount: test.modelCount ?? 0 });
+  return NextResponse.json({ ok: true, modelCount: savedModelCount });
 }

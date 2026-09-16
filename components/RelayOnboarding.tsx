@@ -10,6 +10,7 @@ import {
   ConfigSectionTitle,
 } from "./SettingsUi";
 import { RelayAdvancedSettings } from "./RelayAdvancedSettings";
+import { syncRelayConfig } from "@/lib/relay-client";
 
 interface RelayOnboardingProps {
   /** Called after a successful save. Defaults to a full page reload. */
@@ -23,7 +24,7 @@ interface RelayTestResult {
   message?: string;
 }
 
-type Phase = "login" | "auto" | "waiting" | "manual" | "done";
+type Phase = "login" | "auto" | "waiting" | "manual" | "done" | "error";
 type NoKeyReason = "no-key" | "no-usable-key";
 
 const REGISTER_URL = "https://api.meteor21c.fun";
@@ -33,9 +34,10 @@ const REGISTER_URL = "https://api.meteor21c.fun";
  *
  * 状态机（props 保持兼容 { onSuccess }）：
  *  - login  ：email+password 登录（调 useRelaySession().login）+ 去注册外链
- *  - auto   ：登录后调 /api/relay-config/auto（服务端逐个实测 key 取可用者并保存）
+ *  - auto   ：登录后调 /api/relay-config/auto，同步全部账号渠道目录
  *  - waiting：账号无 key / 全部 key 不可用 → 引导去控制台处理后点"更新密钥"
- *  - manual ：贴 key 流程（门禁关时默认进入；自动配置异常时降级到此）
+ *  - manual ：贴 key 流程（门禁关时默认进入，或用户主动选择）
+ *  - error  ：保留登录态，提供重试、控制台与重新登录
  *  - done   ：成功页（显示 modelCount + 开始使用）
  *
  * 门禁（AuthGate）：useRelaySession().status 为 "disabled"（门禁未启用）时走 manual；
@@ -43,7 +45,7 @@ const REGISTER_URL = "https://api.meteor21c.fun";
  */
 export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   const { t } = useI18n();
-  const { status, login } = useRelaySession();
+  const { status, login, logout, recheck, generation } = useRelaySession();
 
   const [phase, setPhase] = useState<Phase>("login");
   const [email, setEmail] = useState("");
@@ -54,6 +56,8 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   const [modelCount, setModelCount] = useState(0);
   const [autoError, setAutoError] = useState<string | null>(null);
   const [noKeyReason, setNoKeyReason] = useState<NoKeyReason>("no-key");
+  const [providerNames, setProviderNames] = useState<string[]>([]);
+  const [warningCount, setWarningCount] = useState(0);
 
   // M2 手动贴 key 流程状态
   const [apiKey, setApiKey] = useState("");
@@ -67,7 +71,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
     if (status === "disabled") setPhase("manual");
     else if (status === "authenticated") setPhase("auto");
     else setPhase("login");
-  }, [status]);
+  }, [status, generation]);
 
   const mapLoginError = useCallback(
     (message?: string): string => {
@@ -102,8 +106,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   }, [loggingIn, email, password, login, mapLoginError]);
 
   // 自动配置：进入 auto 阶段后执行。
-  // 服务端 /api/relay-config/auto 会拉取账号下全部 key 并逐个实测 /v1/models，
-  // 选取第一个真正可用的 key 写入配置（status 字段不可信：实测存在 active 但 403 的 key）。
+  // 服务端拉取全部 key 并验证各自目录；目录探测不代表付费推理测试。
   // "更新密钥"按钮 = 重新进入 auto（重跑该流程）。
   useEffect(() => {
     if (phase !== "auto") return;
@@ -111,35 +114,27 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
 
     const run = async () => {
       try {
-        const res = await fetch("/api/relay-config/auto", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        });
-        const body = (await res.json()) as {
-          ok?: boolean;
-          modelCount?: number;
-          reason?: string;
-          message?: string;
-        };
+        const body = await syncRelayConfig(generation);
         if (cancelled) return;
 
-        if (body.ok) {
-          setModelCount(body.modelCount ?? 0);
+        if (body.ok && (body.totalModelCount ?? 0) > 0) {
+          setModelCount(body.totalModelCount ?? 0);
+          setProviderNames((body.providers ?? []).map((provider) => provider.displayName));
+          setWarningCount(body.warnings?.length ?? 0);
           setPhase("done");
           return;
         }
-        if (body.reason === "no-key" || body.reason === "no-usable-key") {
+        if (body.reason === "no-key" || body.reason === "no-usable-key" || body.ok) {
           setNoKeyReason(body.reason === "no-usable-key" ? "no-usable-key" : "no-key");
           setPhase("waiting");
           return;
         }
-        setAutoError(t("brand.auth.manualFallback"));
-        setPhase("manual");
+        setAutoError(body.reason === "unauthenticated" ? "brand.keys.needLogin" : "brand.keys.refreshFailed");
+        setPhase("error");
       } catch {
         if (cancelled) return;
-        setAutoError(t("brand.auth.manualFallback"));
-        setPhase("manual");
+        setAutoError("brand.auth.networkError");
+        setPhase("error");
       }
     };
 
@@ -147,7 +142,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
     return () => {
       cancelled = true;
     };
-  }, [phase, t]);
+  }, [phase, generation]);
 
   const handleTest = useCallback(() => {
     if (!apiKey.trim() || testing || saving) return;
@@ -184,6 +179,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
           return;
         }
         setModelCount(data.modelCount ?? 0);
+        window.dispatchEvent(new Event("relay-config-updated"));
         setPhase("done");
         if (onSuccess) onSuccess();
         else window.location.reload();
@@ -193,6 +189,23 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   }, [tested, testing, saving, apiKey, onSuccess, t]);
 
   // ---- 登录步骤 ----
+  if (status === "loading" || status === "error") {
+    return <ConfigDetail>
+      <p role="status">{t(status === "loading" ? "brand.auth.checking" : "brand.auth.networkError")}</p>
+      {status === "error" && <ConfigButton onClick={() => void recheck()}>{t("brand.auth.retry")}</ConfigButton>}
+    </ConfigDetail>;
+  }
+  if (phase === "error") {
+    return <ConfigDetail>
+      <ConfigSectionTitle>{t("brand.setup.title")}</ConfigSectionTitle>
+      <p role="alert">{t(autoError ?? "brand.keys.refreshFailed")}</p>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <ConfigButton variant="primary" onClick={() => setPhase("auto")}>{t("brand.auth.retry")}</ConfigButton>
+        <ConfigButton onClick={() => void logout().catch(() => setAutoError("auth.logoutFailed"))}>{t("brand.account.switchLogout")}</ConfigButton>
+        <a href={REGISTER_URL} target="_blank" rel="noreferrer">{t("brand.keys.consoleLink")}</a>
+      </div>
+    </ConfigDetail>;
+  }
   if (phase === "login") {
     return (
       <ConfigDetail>
@@ -263,7 +276,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   if (phase === "auto") {
     return (
       <ConfigDetail>
-        <ConfigSectionTitle>{t("brand.auth.title")}</ConfigSectionTitle>
+        <ConfigSectionTitle>{t("brand.setup.title")}</ConfigSectionTitle>
         <p style={{ margin: "0 0 8px", fontSize: 13, color: "#4ade80", lineHeight: 1.6 }}>
           {t("brand.auth.autoSetup")}
         </p>
@@ -277,7 +290,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
     const title = noKeyReason === "no-usable-key" ? t("brand.keys.noUsableKey") : t("brand.keys.noKeyTitle");
     return (
       <ConfigDetail>
-        <ConfigSectionTitle>{t("brand.auth.title")}</ConfigSectionTitle>
+        <ConfigSectionTitle>{t("brand.setup.title")}</ConfigSectionTitle>
         <p style={{ margin: "0 0 6px", fontSize: 13, color: "var(--text)", lineHeight: 1.6, fontWeight: 600 }}>
           {title}
         </p>
@@ -313,10 +326,13 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   if (phase === "done") {
     return (
       <ConfigDetail>
-        <ConfigSectionTitle>{t("brand.auth.title")}</ConfigSectionTitle>
+        <ConfigSectionTitle>{t("brand.setup.readyTitle")}</ConfigSectionTitle>
         <p style={{ margin: "0 0 12px", fontSize: 13, color: "#4ade80", lineHeight: 1.6 }}>
           {t("brand.auth.ready").replace("{count}", String(modelCount))}
         </p>
+        {providerNames.length > 0 && <p>{providerNames.join(" · ")}</p>}
+        {warningCount > 0 && <p role="status">{t("brand.keys.partial").replace("{count}", String(warningCount))}</p>}
+        <p style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("brand.auth.catalogOnly")}</p>
         <ConfigButton
           variant="primary"
           onClick={() => {
@@ -343,7 +359,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
       </p>
 
       {autoError && (
-        <p style={{ margin: "0 0 10px", fontSize: 12, color: "#fbbf24", lineHeight: 1.5 }}>{autoError}</p>
+        <p style={{ margin: "0 0 10px", fontSize: 12, color: "#fbbf24", lineHeight: 1.5 }}>{t(autoError)}</p>
       )}
 
       <ConfigField label={t("relay.onboarding.tokenLabel")}>

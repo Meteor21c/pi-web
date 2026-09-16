@@ -16,12 +16,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
   }
 
+  let accountId: string | undefined;
   try {
-    await request.json().catch(() => ({}));
+    const body = await request.json().catch(() => ({}));
+    if (body?.accountId !== undefined) {
+      if (typeof body.accountId !== "string" || !body.accountId || body.accountId.length > 128) {
+        return NextResponse.json({ error: "A valid account is required." }, { status: 400 });
+      }
+      accountId = body.accountId;
+    }
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const result = await syncRelayProviders();
+  const result = await syncRelayProviders(accountId);
   return NextResponse.json(result);
 }

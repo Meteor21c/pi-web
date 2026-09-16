@@ -2,18 +2,19 @@
 
 /**
  * relay provider 详情区的"更新密钥"小组件。
- * 调用 /api/relay-config/auto：服务端重新拉取账号 key 并逐个实测，
- * 自动选用可用的那个并覆盖本地配置（status 字段不可信，必须实测）。
+ * 同步账号全部渠道目录，并通知配置编辑器与模型选择器重新读取。
  * 挂点：components/ModelsConfig.tsx（isRelayProviderId 的 provider 详情区）。
  */
 import { useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { ConfigButton } from "./SettingsUi";
+import { syncRelayConfig } from "@/lib/relay-client";
+import { useRelaySession } from "@/hooks/useRelaySession";
 
 type SyncState =
   | { kind: "idle" }
   | { kind: "busy" }
-  | { kind: "ok"; modelCount: number }
+  | { kind: "ok"; modelCount: number; warningCount: number }
   | { kind: "no-key" }
   | { kind: "no-usable-key" }
   | { kind: "need-login" }
@@ -22,6 +23,7 @@ type SyncState =
 export function RelayKeyRefresh({ providerId, enabled }: { providerId: string; enabled: boolean }) {
   const { t } = useI18n();
   const [state, setState] = useState<SyncState>({ kind: "idle" });
+  const { recheck, generation } = useRelaySession();
 
   if (!enabled) return null;
 
@@ -30,20 +32,10 @@ export function RelayKeyRefresh({ providerId, enabled }: { providerId: string; e
     setState({ kind: "busy" });
     (async () => {
       try {
-        const res = await fetch("/api/relay-config/auto", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        });
-        const body = (await res.json()) as {
-          ok?: boolean;
-          modelCount?: number;
-          reason?: string;
-          message?: string;
-        };
+        const body = await syncRelayConfig(generation);
         void providerId;
         if (body.ok) {
-          setState({ kind: "ok", modelCount: body.modelCount ?? 0 });
+          setState({ kind: "ok", modelCount: body.totalModelCount ?? 0, warningCount: body.warnings?.length ?? 0 });
           return;
         }
         if (body.reason === "no-key") {
@@ -79,6 +71,7 @@ export function RelayKeyRefresh({ providerId, enabled }: { providerId: string; e
       {state.kind === "ok" && (
         <p style={{ margin: 0, fontSize: 12, color: "#4ade80", lineHeight: 1.5 }}>
           {t("brand.keys.updated").replace("{count}", String(state.modelCount))}
+          {state.warningCount > 0 && <><br />{t("brand.keys.partial").replace("{count}", String(state.warningCount))}</>}
         </p>
       )}
       {(state.kind === "no-key" || state.kind === "no-usable-key") && (
@@ -90,7 +83,10 @@ export function RelayKeyRefresh({ providerId, enabled }: { providerId: string; e
         </p>
       )}
       {state.kind === "need-login" && (
-        <p style={{ margin: 0, fontSize: 12, color: "#fbbf24", lineHeight: 1.5 }}>{t("brand.keys.needLogin")}</p>
+        <p style={{ margin: 0, fontSize: 12, color: "#fbbf24", lineHeight: 1.5 }}>
+          {t("brand.keys.needLogin")}{" "}
+          <ConfigButton onClick={() => void recheck()}>{t("brand.auth.login")}</ConfigButton>
+        </p>
       )}
       {state.kind === "failed" && (
         <p style={{ margin: 0, fontSize: 12, color: "#f87171", lineHeight: 1.5 }}>

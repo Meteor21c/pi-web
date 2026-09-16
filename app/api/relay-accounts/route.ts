@@ -1,0 +1,58 @@
+import { NextResponse } from "next/server";
+import { listRelayAccounts } from "@/lib/relay-auth";
+import { isApiRequestAllowed } from "@/lib/request-security";
+import { readRelayGroups } from "@/lib/relay-group-store";
+import { readModelsConfig } from "@/lib/models-config-store";
+
+export const dynamic = "force-dynamic";
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function protocolsFor(provider: Record<string, unknown> | undefined): string[] {
+  if (!provider) return [];
+  const protocols = new Set<string>();
+  if (typeof provider.api === "string") protocols.add(provider.api);
+  if (Array.isArray(provider.models)) {
+    for (const model of provider.models) {
+      const entry = asRecord(model);
+      if (typeof entry?.api === "string") protocols.add(entry.api);
+    }
+  }
+  return [...protocols];
+}
+
+/** Token-free account switcher data. The active account remains the default for older APIs. */
+export async function GET(request: Request) {
+  if (!isApiRequestAllowed(request)) return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+  const { accounts, activeAccountId } = await listRelayAccounts();
+  const indexedGroups = readRelayGroups();
+  const providers = asRecord(readModelsConfig().providers);
+  const safeAccounts = accounts.map((account) => ({
+    accountId: account.accountId,
+    email: account.email,
+    username: account.user?.username,
+    balance: account.user?.balance,
+    status: account.user?.status,
+    active: account.accountId === activeAccountId,
+    groups: indexedGroups
+      .filter((group) => group.accountId === account.accountId)
+      .map((group) => {
+        const provider = asRecord(providers?.[group.providerId]);
+        return {
+          ...group,
+          modelCount: Array.isArray(provider?.models) ? provider.models.length : 0,
+          protocols: protocolsFor(provider),
+        };
+      }),
+  }));
+  return NextResponse.json({
+    ok: true,
+    accounts: safeAccounts,
+    groups: safeAccounts.flatMap((account) => account.groups),
+    activeAccountId,
+  }, { headers: { "Cache-Control": "no-store" } });
+}

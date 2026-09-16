@@ -4,12 +4,14 @@
  * 品牌登录门禁（W-D 填充）。
  * 契约：<AuthGate>{ children }</AuthGate>
  * NEXT_PUBLIC_AUTH_GATE !== "1" 时直接放行（pi-web 主线默认无门禁）。
- * 门禁启用时：unauthenticated → 渲染全屏品牌登录页；其余 → 渲染 children。
+ * 启动校验 → 登录 → 渠道同步摘要 → 工作区；校验中不挂载工作区。
  */
 import { useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
+import { RelayOnboarding } from "./RelayOnboarding";
+import { RelayAccountSettings } from "./RelayAccountSettings";
 
 const GATE_ENABLED = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 
@@ -29,17 +31,38 @@ function errorKeyToMessage(message?: string): string | null {
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const { status, expired, login } = useRelaySession();
+  const { status, expired, login, recheck, generation } = useRelaySession();
   const { t } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
+  const [readyGeneration, setReadyGeneration] = useState<number | null>(null);
 
-  // 门禁未启用、会话校验中、或已登录：直接渲染 children（loading 态放行避免闪烁）。
-  if (!GATE_ENABLED || status === "disabled" || status === "loading" || status === "authenticated") {
+  if (!GATE_ENABLED || status === "disabled") {
     return <>{children}</>;
+  }
+  // No workspace effects or historical content until startup is complete.
+  if (status === "loading" || status === "error") {
+    return (
+      <div style={startupStyle} role="status">
+        <h1>MeteorAgent</h1>
+        <p>{t(status === "loading" ? "brand.auth.checking" : "brand.auth.networkError")}</p>
+        {status === "error" && <button type="button" onClick={() => void recheck()}>{t("brand.auth.retry")}</button>}
+      </div>
+    );
+  }
+  if (status === "authenticated") {
+    if (readyGeneration === generation) return <>{children}</>;
+    return (
+      <div style={startupStyle}>
+        <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
+          <RelayOnboarding key={generation} onSuccess={() => setReadyGeneration(generation)} />
+          <RelayAccountSettings />
+        </div>
+      </div>
+    );
   }
 
   const onSubmit = async (event: FormEvent) => {
@@ -50,8 +73,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     try {
       const result = await login(email, password);
       if (result.ok) {
-        // 登录成功：以已登录态重载，让 AppShell 重渲染。
-        window.location.reload();
+        setPassword("");
         return;
       }
       const mapped = errorKeyToMessage(result.message);
@@ -77,11 +99,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
       }}
     >
       <div
+        className="ui-msg-enter"
         style={{
           width: "100%",
           maxWidth: 384,
           padding: "32px 28px",
-          borderRadius: 20,
+          borderRadius: 24,
           background: "rgba(22, 26, 38, 0.92)",
           border: "1px solid rgba(255,255,255,0.08)",
           boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
@@ -177,7 +200,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
             </div>
           )}
 
-          <button type="submit" disabled={submitting} style={buttonStyle(submitting)}>
+          <button type="submit" disabled={submitting} className="ui-send-btn" style={buttonStyle(submitting)}>
             {submitting ? t("brand.auth.loggingIn") : t("brand.auth.login")}
           </button>
         </form>
@@ -209,11 +232,17 @@ const inputStyle: React.CSSProperties = {
   outline: "none",
 };
 
+const startupStyle: React.CSSProperties = {
+  minHeight: "100vh", display: "flex", flexDirection: "column",
+  alignItems: "center", justifyContent: "center", padding: 24,
+  background: "var(--bg)", color: "var(--text)", textAlign: "center",
+};
+
 function buttonStyle(disabled: boolean): React.CSSProperties {
   return {
     height: 44,
     marginTop: 4,
-    borderRadius: 12,
+    borderRadius: 999,
     border: "none",
     cursor: disabled ? "default" : "pointer",
     opacity: disabled ? 0.7 : 1,

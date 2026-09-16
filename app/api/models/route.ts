@@ -11,6 +11,7 @@ import {
 import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
+import { readModelsConfig } from "@/lib/models-config-store";
 
 export const dynamic = "force-dynamic";
 
@@ -51,10 +52,12 @@ async function loadModels(cwd: string): Promise<ModelsData> {
     settings.getEnabledModels(),
   );
   const { visible, thinkingLevelPins, warnings } = scope;
+  const configured = readModelsConfig().providers as Record<string, { name?: unknown }> | undefined;
   modelList = visible.map((m) => ({
     id: m.id,
     name: m.name,
     provider: m.provider,
+    providerDisplayName: typeof configured?.[m.provider]?.name === "string" ? configured[m.provider].name as string : m.provider,
     input: m.input,
   })).sort(compareModelEntries);
   for (const m of visible) {

@@ -6,6 +6,7 @@
  * `next build` 的 route 类型校验失败（tsc --noEmit 不覆盖此约束）。
  */
 import { getRelayBaseUrl, RELAY_MODELS_ENDPOINT } from "./relay-config";
+import { sanitizeBaseUrlOverride } from "./relay-config-save";
 
 const GPT_RE = /gpt|codex/i;
 const CLAUDE_RE = /claude/i;
@@ -23,23 +24,15 @@ export interface RelayTestResult {
   message?: string;
 }
 
-/**
- * Format-only SSRF guard: allow a client-supplied baseUrl override only when it
- * is a syntactically valid http(s) URL (no credential, no path). We do NOT
- * resolve the host — the server fetch to a fixed, operator-controlled relay is
- * the actual trust boundary. Returns null when the override is malformed.
- */
-function sanitizeBaseUrlOverride(base?: unknown): string | null {
-  if (typeof base !== "string" || !base.trim()) return null;
-  const trimmed = base.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(trimmed)) return null;
-  try {
-    // Syntax validation only (not DNS resolution).
-    new URL(trimmed);
-  } catch {
-    return null;
+/** Reject malformed catalogs instead of accepting arbitrary HTTP-200 payloads. */
+export function parseRelayModelIds(json: unknown): string[] {
+  if (!json || typeof json !== "object" || !("data" in json) || !Array.isArray(json.data)) {
+    throw new Error("Invalid model catalog");
   }
-  return trimmed;
+  if (json.data.some((m: unknown) => !m || typeof m !== "object" || !("id" in m) || typeof m.id !== "string" || !m.id.trim())) {
+    throw new Error("Invalid model catalog entry");
+  }
+  return [...new Set(json.data.map((m: { id: string }) => m.id.trim()))];
 }
 
 /** Probe the relay's /v1/models endpoint with the candidate API key. */
@@ -48,19 +41,22 @@ export async function testRelayConnection(
   baseUrlOverride?: string,
 ): Promise<RelayTestResult> {
   const base = sanitizeBaseUrlOverride(baseUrlOverride) ?? getRelayBaseUrl();
+  if (baseUrlOverride && !sanitizeBaseUrlOverride(baseUrlOverride)) return { ok: false, reason: "relay-error", message: "Invalid relay root URL" };
   const url = `${base}${RELAY_MODELS_ENDPOINT}`;
   try {
     const res = await fetch(url, {
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey.trim()}` },
       cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+      redirect: "error",
     });
 
     if (res.status === 200) {
       const json = (await res.json().catch(() => null)) as { data?: Array<{ id?: string }> } | null;
-      const ids = (json && Array.isArray(json.data) ? json.data : [])
-        .map((m) => String(m.id ?? ""))
-        .filter(Boolean);
+      let ids: string[];
+      try { ids = parseRelayModelIds(json); } catch { return { ok: false, reason: "relay-error", message: "Invalid model catalog" }; }
+      if (!ids.length) return { ok: false, reason: "relay-error", message: "No visible models" };
       let gptCount = 0;
       let claudeCount = 0;
       for (const id of ids) {
@@ -71,7 +67,7 @@ export async function testRelayConnection(
     }
 
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, reason: "invalid-key", message: "API key rejected (401)" };
+      return { ok: false, reason: "invalid-key", message: `API key rejected (${res.status})` };
     }
 
     return { ok: false, reason: "relay-error", message: `Relay returned ${res.status}` };

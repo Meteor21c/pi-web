@@ -4,12 +4,19 @@
  * 背景：中转站 /v1/models 只返回模型 id，不含 contextWindow / maxTokens / 价格。
  * pi 对缺失字段按保守默认（128K 上下文）处理，会造成长会话中途截断，
  * 因此这里内置 M0 实测收集的双分组模型目录（GPT 10 + Claude 12）。
- * 价格为估算值（USD / 百万 tokens），仅影响本地成本显示，可按站内定价校准。
+ * 价格为公开目录参考值（USD / 百万 tokens），仅影响本地成本显示；
+ * MeteorAgent 产品界面将其作为只读信息，不允许用户手工改写。
  *
  * 目录来源：M0 实测（2026-09-15），见 A3 方案设计文档 §10。
  */
 
 import { getRelayBaseUrl, getRelayResponsesBaseUrl } from "./relay-config";
+import {
+  RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
+  RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW,
+  RELAY_OTHER_DEFAULT_CONTEXT_WINDOW,
+  clampRelayContextWindow,
+} from "./relay-model-policy";
 
 export interface RelayModelDef {
   id: string;
@@ -19,15 +26,17 @@ export interface RelayModelDef {
   cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow?: number;
   maxTokens?: number;
+  api?: string;
+  baseUrl?: string;
 }
 
-const GPT_FAMILY = { contextWindow: 400_000, maxTokens: 128_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
-const GPT_CODEX_FAMILY = { contextWindow: 272_000, maxTokens: 100_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
-const GPT_MINI_FAMILY = { contextWindow: 400_000, maxTokens: 128_000, cost: { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 } } as const;
-const GPT_FLAGSHIP_FAMILY = { contextWindow: 400_000, maxTokens: 128_000, cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 } } as const;
-const OPUS_FAMILY = { contextWindow: 200_000, maxTokens: 64_000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } } as const;
-const SONNET_FAMILY = { contextWindow: 200_000, maxTokens: 64_000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } as const;
-const HAIKU_FAMILY = { contextWindow: 200_000, maxTokens: 64_000, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } } as const;
+const GPT_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
+const GPT_CODEX_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 100_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
+const GPT_MINI_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 } } as const;
+const GPT_FLAGSHIP_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 } } as const;
+const OPUS_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } } as const;
+const SONNET_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } as const;
+const HAIKU_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } } as const;
 
 /** GPT 分组（M0 实测目录） */
 const GPT_MODELS: RelayModelDef[] = [
@@ -69,11 +78,11 @@ const TABLE_BY_FAMILY: Record<"gpt" | "claude", Map<string, RelayModelDef>> = {
 
 const FALLBACK: RelayModelDef = {
   id: "",
-  reasoning: true,
+  reasoning: false,
   input: ["text"],
-  contextWindow: 200_000,
-  maxTokens: 64_000,
-  cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  contextWindow: RELAY_OTHER_DEFAULT_CONTEXT_WINDOW,
+  maxTokens: 16_384,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
 
 /**
@@ -96,11 +105,44 @@ export function resolveRelayModels(
   const table = TABLE_BY_FAMILY[family];
   const match = family === "gpt" ? GPT_MATCH : CLAUDE_MATCH;
   if (!remoteIds || remoteIds.length === 0) {
-    return [...table.values()];
+    return [...table.values()].map(withKnownCapabilities);
   }
   return remoteIds
     .filter((id) => match.test(id))
-    .map((id) => ({ ...(table.get(id) ?? FALLBACK), id, name: id }));
+    .map((id) => ({
+      ...(table.has(id)
+        ? withKnownCapabilities(table.get(id)!)
+        : {
+            ...FALLBACK,
+            contextWindow: family === "gpt"
+              ? RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW
+              : RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
+          }),
+      id,
+      name: id,
+    }));
+}
+
+// Relay aliases use their documented family capabilities, not catalog presence
+// as evidence. Fable/review/spark remain conservative pending upstream validation.
+function withKnownCapabilities(model: RelayModelDef): RelayModelDef {
+  const conservative = /fable|auto-review|spark/.test(model.id);
+  return { ...model, reasoning: !conservative, input: conservative ? ["text"] : ["text", "image"] };
+}
+
+/** SDK supports per-model api/baseUrl; preserve all families under one key. */
+export function resolveMixedRelayModels(ids: string[], base = getRelayBaseUrl()): RelayModelDef[] {
+  return [...new Set(ids)].flatMap((id) => {
+    // Non-chat endpoints must not be advertised as conversational models.
+    if (/embedding|dall-e|gpt-image|whisper|tts|sora|rerank/i.test(id)) return [];
+    const family = CLAUDE_MATCH.test(id) ? "claude" : GPT_MATCH.test(id) ? "gpt" : "other";
+    return resolveRelayModels(family, [id]).map((model) => ({
+      ...model,
+      contextWindow: clampRelayContextWindow(id, model.contextWindow),
+      api: family === "claude" ? "anthropic-messages" : family === "gpt" ? "openai-responses" : "openai-completions",
+      baseUrl: family === "claude" ? base : `${base}/v1`,
+    }));
+  });
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   ConfigPanelShell,
   ConfigSectionTitle,
   ConfigSidebar,
+  ConfigSidebarGroupLabel,
   ConfigSidebarItem,
   ConfigSidebarList,
   ConfigSidebarText,
@@ -44,6 +45,8 @@ import { RelayUsageSummary } from "./RelayUsageSummary";
 import { RelayKeyRefresh } from "./RelayKeyRefresh";
 import { RelayOnboarding } from "./RelayOnboarding";
 import { isRelayProviderId } from "@/lib/relay-config";
+import { useRelaySession } from "@/hooks/useRelaySession";
+import { clampRelayContextWindow, relayContextWindowLimit } from "@/lib/relay-model-policy";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -81,6 +84,7 @@ interface ModelEntry {
   id: string;
   name?: string;
   api?: string;
+  baseUrl?: string;
   reasoning?: boolean;
   thinkingLevelMap?: Record<string, string | null>;
   input?: string[];
@@ -92,6 +96,7 @@ interface ModelEntry {
 }
 
 interface ProviderEntry {
+  name?: string;
   baseUrl?: string;
   api?: string;
   apiKey?: string;
@@ -104,6 +109,50 @@ interface ProviderEntry {
 interface ModelsJson {
   providers?: Record<string, ProviderEntry>;
 }
+
+/** Product-mode data returned by /api/relay-accounts. Keep this separate from
+ * the editable models.json shape: an account owns several API-key groups. */
+interface RelayAccountSummary {
+  accountId: string;
+  email: string;
+  username?: string;
+  balance?: number | string;
+  status?: string | number;
+  active?: boolean;
+  groups?: RelayGroupSummary[];
+}
+
+interface RelayGroupSummary {
+  accountId: string;
+  providerId: string;
+  keyId: string | number;
+  keyName: string;
+  maskedKey: string;
+  groupId?: string | number;
+  groupName?: string;
+  platform?: string;
+  rateMultiplier?: number;
+  modelCount: number;
+  protocols?: string[];
+  syncedAt?: string | number;
+}
+
+interface RelayAccountsResponse {
+  ok?: boolean;
+  accounts?: RelayAccountSummary[];
+  activeAccountId?: string;
+  groups?: RelayGroupSummary[];
+  error?: string;
+}
+
+type RelaySelection =
+  | { type: "account"; accountId: string }
+  | { type: "group"; accountId: string; providerId: string }
+  | { type: "model"; accountId: string; providerId: string; modelId: string }
+  | { type: "add-account" };
+
+const RELAY_PRODUCT_MODE = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
+const RELAY_CONSOLE_URL = "https://api.meteor21c.fun";
 
 type ModelTestState =
   | { phase: "idle" }
@@ -265,8 +314,8 @@ function SecretTextInput({
   );
 }
 
-function NumInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  return <input type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={inputStyle} />;
+function NumInput({ value, onChange, placeholder, max }: { value: string; onChange: (v: string) => void; placeholder?: string; max?: number }) {
+  return <input type="number" min={0} max={max} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={inputStyle} />;
 }
 
 function Select({ value, onChange, options, required }: { value: string; onChange: (v: string) => void; options: readonly string[]; required?: boolean }) {
@@ -813,12 +862,15 @@ function ModelDetail({
   model,
   onChange,
   onDelete,
+  relayMode = false,
 }: {
   providerName: string;
   provider: ProviderEntry;
   model: ModelEntry;
   onChange: (m: ModelEntry) => void;
   onDelete: () => void;
+  /** Relay metadata controls prices and request transport in product mode. */
+  relayMode?: boolean;
 }) {
   const [testState, setTestState] = useState<ModelTestState>({ phase: "idle" });
   const { t } = useI18n();
@@ -1022,6 +1074,7 @@ function ModelDetail({
   const advancedSummary = advancedSummaryParts.length
     ? advancedSummaryParts.join(" · ")
     : t("models.providerDefaults");
+  const relayContextLimit = relayMode ? relayContextWindowLimit(model.id) : undefined;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1030,7 +1083,7 @@ function ModelDetail({
           <SectionTitle>{t("i18n.model")}</SectionTitle>
         </ConfigDetailHeaderInfo>
         <ConfigDetailActions>
-          {testSummary && (
+          {!relayMode && testSummary && (
             <span
               title={testSummary}
               style={{
@@ -1053,7 +1106,7 @@ function ModelDetail({
               {testSummary}
             </span>
           )}
-          <ConfigButton
+          {!relayMode && <ConfigButton
             size="small"
             variant={testState.phase === "success" ? "primary" : "secondary"}
             onClick={testState.phase === "success" ? () => setTestState({ phase: "idle" }) : handleTest}
@@ -1067,17 +1120,26 @@ function ModelDetail({
               </svg>
             )}
              {testState.phase === "testing" ? t("i18n.checking") : testState.phase === "success" ? t("common.ok") : t("i18n.test")}
+          </ConfigButton>}
+          <ConfigButton variant="danger" size="small" onClick={onDelete}>
+            {relayMode ? "移出列表" : t("i18n.remove")}
           </ConfigButton>
-          <ConfigButton variant="danger" size="small" onClick={onDelete}>{t("i18n.remove")}</ConfigButton>
         </ConfigDetailActions>
       </ConfigDetailHeader>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="ID *"><TextInput value={model.id} onChange={(v) => set("id", v)} placeholder="model-id" mono /></Field>
-        <Field label="Name"><TextInput value={model.name ?? ""} onChange={(v) => set("name", v || undefined)} placeholder="Display name" /></Field>
-      </div>
+      {relayMode ? (
+        <div className="relay-model-identity">
+          <span>{model.name || model.id}</span>
+          <code>{model.id}</code>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="ID *"><TextInput value={model.id} onChange={(v) => set("id", v)} placeholder="model-id" mono /></Field>
+          <Field label="Name"><TextInput value={model.name ?? ""} onChange={(v) => set("name", v || undefined)} placeholder="Display name" /></Field>
+        </div>
+      )}
 
-      <div style={{ padding: "2px 0" }}>
+      {!relayMode && <div style={{ padding: "2px 0" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={() => void handleCatalogFill()}
@@ -1126,7 +1188,7 @@ function ModelDetail({
             )}
           </div>
         )}
-      </div>
+      </div>}
 
       <div>
         <SectionTitle>{t("models.capabilities")}</SectionTitle>
@@ -1140,20 +1202,32 @@ function ModelDetail({
       <section>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <SectionTitle>{t("models.modelSpecs")}</SectionTitle>
-          <button
+          {!relayMode && <button
             type="button"
             onClick={toggleCostEditing}
             aria-expanded={costEditing}
             style={{ padding: "2px 4px", border: "none", background: "transparent", color: "var(--accent)", cursor: "pointer", fontSize: 10 }}
           >
             {costEditing ? t("models.finishEditingCosts") : t("models.editCosts")}
-          </button>
+          </button>}
         </div>
 
         <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
-          <Field label={t("models.contextWindow")}>
-            <NumInput value={model.contextWindow !== undefined ? String(model.contextWindow) : ""}
-              onChange={(v) => set("contextWindow", v ? parseInt(v) : undefined)} placeholder="128000" />
+          <Field label={relayMode ? "上下文窗口（首阶计费范围）" : t("models.contextWindow")}>
+            <NumInput
+              value={model.contextWindow !== undefined ? String(model.contextWindow) : ""}
+              onChange={(v) => set(
+                "contextWindow",
+                v ? (relayMode ? clampRelayContextWindow(model.id, parseInt(v)) : parseInt(v)) : relayContextLimit,
+              )}
+              placeholder={String(relayContextLimit ?? 128_000)}
+              max={relayContextLimit}
+            />
+            {relayMode && relayContextLimit && (
+              <span style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 10 }}>
+                默认上限 {relayContextLimit.toLocaleString()} tokens，避免进入更高上下文计费档。
+              </span>
+            )}
           </Field>
           <Field label={t("models.maxOutputTokens")}>
             <NumInput value={model.maxTokens !== undefined ? String(model.maxTokens) : ""}
@@ -1162,10 +1236,11 @@ function ModelDetail({
         </div>
 
         <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 600, textTransform: "uppercase" }}>
-            {t("models.costPerMillion")}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 10, color: "var(--text-dim)", fontWeight: 600, textTransform: "uppercase" }}>
+            <span>{t("models.costPerMillion")}</span>
+            {relayMode && <span style={{ fontWeight: 400, textTransform: "none" }}>只读参考价，实际扣费以流星 API 账单为准</span>}
           </div>
-          {costEditing ? (
+          {costEditing && !relayMode ? (
             <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
               {costFields.map(({ key, label }) => (
                 <Field key={key} label={label}>
@@ -1196,7 +1271,7 @@ function ModelDetail({
         </div>
       </section>
 
-      <section style={{ borderTop: "1px solid var(--border)", paddingTop: 4 }}>
+      {!relayMode && <section style={{ borderTop: "1px solid var(--border)", paddingTop: 4 }}>
         <button
           type="button"
           onClick={() => setAdvancedOpen((open) => !open)}
@@ -1281,7 +1356,7 @@ function ModelDetail({
             )}
           </div>
         )}
-      </section>
+      </section>}
     </div>
   );
 }
@@ -1549,7 +1624,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
 
       <ProviderUsageSummary providerId={provider.id} enabled={provider.loggedIn} />
       {isRelayProviderId(provider.id) && <RelayKeyRefresh providerId={provider.id} enabled={provider.loggedIn} />}
-      {isRelayProviderId(provider.id) && <RelayUsageSummary enabled={provider.loggedIn} />}
+      {isRelayProviderId(provider.id) && <RelayUsageSummary providerId={provider.id} enabled={provider.loggedIn} />}
     </div>
   );
 }
@@ -1682,7 +1757,7 @@ function ApiKeyDetail({ provider, onRefresh }: { provider: ApiKeyProvider; onRef
 
       <ProviderUsageSummary providerId={provider.id} enabled={provider.configured} />
       {isRelayProviderId(provider.id) && <RelayKeyRefresh providerId={provider.id} enabled={provider.configured} />}
-      {isRelayProviderId(provider.id) && <RelayUsageSummary enabled={provider.configured} />}
+      {isRelayProviderId(provider.id) && <RelayUsageSummary providerId={provider.id} enabled={provider.configured} />}
     </div>
   );
 }
@@ -1828,10 +1903,279 @@ function AddProviderPicker({
   );
 }
 
+// ── MeteorAgent product-mode details ─────────────────────────────────────────
+
+function RelayAccountDetail({ account, onAddAccount }: {
+  account: RelayAccountSummary;
+  onAddAccount: () => void;
+}) {
+  const balance = typeof account.balance === "number"
+    ? `$${account.balance.toFixed(2)}`
+    : typeof account.balance === "string" && account.balance.trim()
+      ? account.balance
+      : "暂不可用";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <ConfigDetailHeader>
+        <ConfigDetailHeaderInfo>
+          <SectionTitle>账户</SectionTitle>
+          <div style={{ marginTop: 5, color: "var(--text)", fontSize: 16, fontWeight: 650 }}>
+            {account.username?.trim() || account.email}
+          </div>
+          {account.username && <div style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 11 }}>{account.email}</div>}
+        </ConfigDetailHeaderInfo>
+        <ConfigDetailActions>
+          <a className="config-button config-button-primary config-button-small" href={RELAY_CONSOLE_URL} target="_blank" rel="noreferrer">
+            充值
+          </a>
+          <ConfigButton size="small" onClick={onAddAccount}>登录其他账户</ConfigButton>
+        </ConfigDetailActions>
+      </ConfigDetailHeader>
+
+      <section className="relay-account-summary">
+        <div>
+          <span>账户余额</span>
+          <strong>{balance}</strong>
+        </div>
+        <div>
+          <span>今日请求</span>
+          <strong>暂不可用</strong>
+        </div>
+        <div>
+          <span>今日花费</span>
+          <strong>暂不可用</strong>
+        </div>
+      </section>
+      <p style={{ margin: 0, color: "var(--text-dim)", fontSize: 11, lineHeight: 1.6 }}>
+        站点暂未提供可靠的账户级今日统计。选择下方分组可查看该 API Key 的请求与花费，避免重复汇总造成误差。
+      </p>
+    </div>
+  );
+}
+
+function RelayAddAccountDetail({ login, onDone }: {
+  login: (email: string, password: string) => Promise<{ ok: boolean; message?: string }>;
+  onDone: () => Promise<void> | void;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async () => {
+    if (!email.trim() || !password || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await login(email.trim(), password);
+      if (!result.ok) {
+        setError(result.message === "invalid-credentials" ? "邮箱或密码不正确。" : "登录失败，请检查网络后重试。");
+        return;
+      }
+      await onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ maxWidth: 460, display: "flex", flexDirection: "column", gap: 14 }}>
+      <ConfigDetailHeader>
+        <ConfigDetailHeaderInfo>
+          <SectionTitle>登录其他账户</SectionTitle>
+          <p style={{ margin: "6px 0 0", color: "var(--text-muted)", fontSize: 12, lineHeight: 1.6 }}>
+            登录后会保留现有账户，并自动同步新账户下的分组。
+          </p>
+        </ConfigDetailHeaderInfo>
+      </ConfigDetailHeader>
+      <Field label="邮箱">
+        <TextInput value={email} onChange={setEmail} placeholder="you@example.com" />
+      </Field>
+      <Field label="密码">
+        <SecretTextInput
+          value={password}
+          onChange={setPassword}
+          autoComplete="current-password"
+          onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
+        />
+      </Field>
+      {error && <div role="alert" style={{ color: "#f87171", fontSize: 12 }}>{error}</div>}
+      <div>
+        <ConfigButton variant="primary" disabled={busy || !email.trim() || !password} onClick={() => void submit()}>
+          {busy ? "正在登录..." : "登录并同步"}
+        </ConfigButton>
+      </div>
+    </div>
+  );
+}
+
+function relayProtocolLabel(protocol: string): string {
+  if (protocol === "openai-responses") return "OpenAI Responses";
+  if (protocol === "anthropic-messages") return "Anthropic Messages";
+  if (protocol === "openai-completions") return "OpenAI Chat Completions";
+  return protocol;
+}
+
+function RelayModelImport({ providerName, provider, onAddModels }: {
+  providerName: string;
+  provider: ProviderEntry;
+  onAddModels: (models: DiscoveredModel[]) => void;
+}) {
+  const [state, setState] = useState<ModelDiscoveryState>({ phase: "idle" });
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const existing = new Set((provider.models ?? []).map((model) => model.id));
+  const discover = async () => {
+    if (state.phase === "loading") return;
+    setState({ phase: "loading" });
+    setSelected([]);
+    try {
+      const response = await fetch("/api/models-config/discover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerName, provider: { ...provider, models: undefined } }),
+      });
+      const result = await response.json() as { models?: DiscoveredModel[]; endpoint?: string; error?: string };
+      if (!response.ok || !result.models) throw new Error(result.error ?? `HTTP ${response.status}`);
+      setState({ phase: "success", models: result.models, endpoint: result.endpoint ?? provider.baseUrl ?? "" });
+    } catch (caught) {
+      setState({ phase: "error", message: caught instanceof Error ? caught.message : String(caught) });
+    }
+  };
+  const visible = state.phase === "success"
+    ? state.models.filter((model) => {
+        const normalized = query.trim().toLocaleLowerCase();
+        return !normalized || model.id.toLocaleLowerCase().includes(normalized) || model.name?.toLocaleLowerCase().includes(normalized);
+      }).slice(0, 300)
+    : [];
+  const add = () => {
+    if (state.phase !== "success") return;
+    const ids = new Set(selected);
+    const additions = state.models.filter((model) => ids.has(model.id) && !existing.has(model.id));
+    if (!additions.length) return;
+    onAddModels(additions);
+    setSelected([]);
+  };
+  return (
+    <section style={{ borderTop: "1px solid var(--border)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <SectionTitle>选择和导入模型</SectionTitle>
+          <div style={{ marginTop: 4, color: "var(--text-dim)", fontSize: 10 }}>从当前分组的可用目录中选择，无需填写接口参数。</div>
+        </div>
+        <ConfigButton size="small" disabled={state.phase === "loading"} onClick={() => void discover()}>
+          {state.phase === "loading" ? "正在读取..." : state.phase === "success" ? "重新读取" : "读取可用模型"}
+        </ConfigButton>
+      </div>
+      {state.phase === "error" && <div role="alert" style={{ color: "#f87171", fontSize: 11 }}>{state.message}</div>}
+      {state.phase === "success" && (
+        <>
+          <TextInput value={query} onChange={setQuery} placeholder={`搜索 ${state.models.length} 个可用模型`} />
+          <div className="relay-model-import-list">
+            {visible.map((model) => {
+              const imported = existing.has(model.id);
+              const checked = imported || selected.includes(model.id);
+              return (
+                <label key={model.id} className={imported ? "is-imported" : undefined}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={imported}
+                    onChange={() => setSelected((current) => current.includes(model.id)
+                      ? current.filter((id) => id !== model.id)
+                      : [...current, model.id])}
+                  />
+                  <span title={model.id}>{model.name || model.id}</span>
+                  <small>{imported ? "已导入" : "可导入"}</small>
+                </label>
+              );
+            })}
+          </div>
+          <div>
+            <ConfigButton variant="primary" size="small" disabled={selected.length === 0} onClick={add}>
+              导入已选模型{selected.length ? ` (${selected.length})` : ""}
+            </ConfigButton>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function RelayGroupDetail({ group, provider, onSync, onAddModels }: {
+  group: RelayGroupSummary;
+  provider: ProviderEntry;
+  onSync: () => Promise<void>;
+  onAddModels: (models: DiscoveredModel[]) => void;
+}) {
+  const [syncing, setSyncing] = useState(false);
+  const [billing, setBilling] = useState<{ effectiveRateMultiplier?: number; observedAt?: string } | null>(null);
+  const [billingLoading, setBillingLoading] = useState(true);
+  useEffect(() => {
+    const controller = new AbortController();
+    setBillingLoading(true);
+    fetch(`/api/relay-billing?providerId=${encodeURIComponent(group.providerId)}`, { signal: controller.signal })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((result: {
+        ok?: boolean;
+        status?: string;
+        effectiveRateMultiplier?: number;
+        effective_rate_multiplier?: number;
+        observedAt?: string;
+        observed_at?: string;
+        capturedAt?: number;
+        billing?: { effective_rate_multiplier?: number; observed_at?: string };
+      } | null) => {
+        if (!result || result.ok === false || (result.status && result.status !== "ready")) return setBilling(null);
+        const value = result.billing?.effective_rate_multiplier ?? result.effectiveRateMultiplier ?? result.effective_rate_multiplier;
+        setBilling({
+          effectiveRateMultiplier: typeof value === "number" ? value : undefined,
+          observedAt: result.billing?.observed_at ?? result.observedAt ?? result.observed_at ?? (result.capturedAt ? new Date(result.capturedAt).toISOString() : undefined),
+        });
+      })
+      .catch(() => { if (!controller.signal.aborted) setBilling(null); })
+      .finally(() => { if (!controller.signal.aborted) setBillingLoading(false); });
+    return () => controller.abort();
+  }, [group.providerId]);
+  const protocols = group.protocols?.length
+    ? group.protocols
+    : Array.from(new Set((provider.models ?? []).flatMap((model) => model.api ? [model.api] : [])));
+  const multiplier = billing?.effectiveRateMultiplier ?? group.rateMultiplier;
+  const sync = async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try { await onSync(); } finally { setSyncing(false); }
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <ConfigDetailHeader>
+        <ConfigDetailHeaderInfo>
+          <SectionTitle>分组</SectionTitle>
+          <div style={{ marginTop: 5, color: "var(--text)", fontSize: 16, fontWeight: 650 }}>{group.keyName}</div>
+          {group.groupName && group.groupName !== group.keyName && <div style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 11 }}>站点分组：{group.groupName}</div>}
+        </ConfigDetailHeaderInfo>
+        <ConfigDetailActions>
+          <ConfigButton size="small" onClick={() => void sync()} disabled={syncing}>
+            {syncing ? "正在同步..." : "同步分组"}
+          </ConfigButton>
+        </ConfigDetailActions>
+      </ConfigDetailHeader>
+      <dl className="relay-group-facts">
+        <div><dt>API Key</dt><dd>{group.maskedKey || "已安全保存"}</dd></div>
+        <div><dt>实时倍率</dt><dd>{billingLoading ? "读取中..." : multiplier === undefined ? "暂不可用" : `${multiplier}x`}</dd></div>
+        <div><dt>接口协议</dt><dd>{protocols.length ? protocols.map(relayProtocolLabel).join(" / ") : "自动匹配"}</dd></div>
+        <div><dt>可用模型</dt><dd>{provider.models?.length ?? group.modelCount ?? 0} 个</dd></div>
+      </dl>
+      {billing?.observedAt && <div style={{ color: "var(--text-dim)", fontSize: 10 }}>倍率更新时间：{new Date(billing.observedAt).toLocaleString()}</div>}
+      <RelayUsageSummary providerId={group.providerId} enabled />
+      <RelayModelImport providerName={group.providerId} provider={provider} onAddModels={onAddModels} />
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ModelsConfig({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const relaySession = useRelaySession();
   const [config, setConfig] = useState<ModelsJson>({ providers: {} });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1841,6 +2185,49 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
   const [apiKeyProviders, setApiKeyProviders] = useState<ApiKeyProvider[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [relayAccounts, setRelayAccounts] = useState<RelayAccountSummary[]>([]);
+  const [relayGroups, setRelayGroups] = useState<RelayGroupSummary[]>([]);
+  const [relayActiveAccountId, setRelayActiveAccountId] = useState<string | null>(null);
+  const [relayAccountsLoading, setRelayAccountsLoading] = useState(RELAY_PRODUCT_MODE);
+  const [relaySelection, setRelaySelection] = useState<RelaySelection | null>(null);
+  const [expandedRelayGroups, setExpandedRelayGroups] = useState<Set<string>>(() => new Set());
+  const [revision, setRevision] = useState<string | null>(null);
+  const [conflicted, setConflicted] = useState(false);
+  const baseConfigRef = useRef(JSON.stringify({ providers: {} }));
+  const currentConfigRef = useRef(config);
+  const configRequestRef = useRef(0);
+  useEffect(() => { currentConfigRef.current = config; }, [config]);
+
+  const refreshRelayAccounts = useCallback(async () => {
+    if (!RELAY_PRODUCT_MODE) return;
+    setRelayAccountsLoading(true);
+    try {
+      const response = await fetch("/api/relay-accounts", { cache: "no-store" });
+      const data = await response.json() as RelayAccountsResponse;
+      if (!response.ok || data.ok === false) throw new Error(data.error ?? `HTTP ${response.status}`);
+      const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+      const groups = Array.isArray(data.groups)
+        ? data.groups
+        : accounts.flatMap((account) => Array.isArray(account.groups) ? account.groups : []);
+      setRelayAccounts(accounts);
+      setRelayGroups(groups);
+      setRelayActiveAccountId(data.activeAccountId ?? accounts.find((account) => account.active)?.accountId ?? accounts[0]?.accountId ?? null);
+      setRelaySelection((current) => {
+        if (current?.type === "add-account") return current;
+        const currentAccountId = current?.accountId;
+        if (currentAccountId && accounts.some((account) => account.accountId === currentAccountId)) return current;
+        const accountId = data.activeAccountId ?? accounts[0]?.accountId;
+        return accountId ? { type: "account", accountId } : { type: "add-account" };
+      });
+    } catch {
+      setRelayAccounts([]);
+      setRelayGroups([]);
+      setRelayActiveAccountId(null);
+      setRelaySelection({ type: "add-account" });
+    } finally {
+      setRelayAccountsLoading(false);
+    }
+  }, []);
 
   const refreshAuthProviders = useCallback(() => {
     fetch("/api/auth/providers")
@@ -1852,11 +2239,32 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
+  const reloadConfig = useCallback((options?: { discardDraft?: boolean }) => {
+    const requestId = ++configRequestRef.current;
+    const requestBase = baseConfigRef.current;
+    const discardDraft = options?.discardDraft === true;
+    setLoading(true);
     fetch("/api/models-config")
-      .then((r) => r.json())
-      .then((d: ModelsJson) => {
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return { data: await r.json() as ModelsJson, etag: r.headers.get("etag") };
+      })
+      .then(({ data: d, etag }) => {
+        if (requestId !== configRequestRef.current) return;
         const normalized = d.providers ? d : { ...d, providers: {} };
+        // A refresh can finish after the user starts editing. Keep that draft
+        // visible and surface a conflict instead of replacing it silently.
+        const draftChangedSinceRequest = JSON.stringify(currentConfigRef.current) !== requestBase;
+        if (!discardDraft && draftChangedSinceRequest) {
+          setConflicted(true);
+          setSaveError("Configuration changed while loading. Review the draft before saving.");
+          return;
+        }
+        baseConfigRef.current = JSON.stringify(normalized);
+        currentConfigRef.current = normalized;
+        setRevision(etag);
+        setConflicted(false);
+        setSaveError(null);
         setConfig(normalized);
         const keys = Object.keys(normalized.providers ?? {});
         setSelection((current) => current && customSelectionExists(normalized, current)
@@ -1865,10 +2273,28 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
             ? { type: "provider", name: keys[0] }
             : null);
       })
-      .catch(() => setConfig({ providers: {} }))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (requestId === configRequestRef.current) setSaveError("Unable to load configuration. Please retry.");
+      })
+      .finally(() => {
+        if (requestId === configRequestRef.current) setLoading(false);
+      });
     refreshAuthProviders();
   }, [refreshAuthProviders]);
+
+  useEffect(() => { reloadConfig(); }, [reloadConfig]);
+  useEffect(() => { void refreshRelayAccounts(); }, [refreshRelayAccounts, relaySession.generation]);
+  useEffect(() => {
+    const changed = () => {
+      refreshAuthProviders();
+      void refreshRelayAccounts();
+      if (JSON.stringify(currentConfigRef.current) !== baseConfigRef.current) {
+        setConflicted(true); // Preserve the draft; never silently replace unsaved edits.
+      } else reloadConfig();
+    };
+    window.addEventListener("relay-config-updated", changed);
+    return () => window.removeEventListener("relay-config-updated", changed);
+  }, [reloadConfig, refreshAuthProviders, refreshRelayAccounts]);
 
   useEffect(() => {
     if (selection) setLastSettingsSelection("models", JSON.stringify(selection));
@@ -1936,11 +2362,47 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
       for (const discoveredModel of discovered) {
         if (existingIds.has(discoveredModel.id)) continue;
         existingIds.add(discoveredModel.id);
-        models.push({ id: discoveredModel.id, name: discoveredModel.name });
+        if (RELAY_PRODUCT_MODE && isRelayProviderId(providerName)) {
+          const id = discoveredModel.id;
+          const relayRoot = (provider.baseUrl ?? RELAY_CONSOLE_URL).replace(/\/v1\/?$/, "");
+          const claude = /claude/i.test(id);
+          const gpt = /gpt|codex/i.test(id);
+          models.push({
+            id,
+            name: discoveredModel.name,
+            contextWindow: relayContextWindowLimit(id),
+            maxTokens: 16_384,
+            api: claude ? "anthropic-messages" : gpt ? "openai-responses" : "openai-completions",
+            baseUrl: claude ? relayRoot : `${relayRoot}/v1`,
+          });
+        } else {
+          models.push({ id: discoveredModel.id, name: discoveredModel.name });
+        }
       }
       return { ...prev, providers: { ...(prev.providers ?? {}), [providerName]: { ...provider, models } } };
     });
   }, []);
+
+  const syncRelayAccount = useCallback(async (accountId: string) => {
+    if (JSON.stringify(currentConfigRef.current) !== baseConfigRef.current) {
+      setSaveError("请先保存当前模型修改，再同步分组。");
+      return;
+    }
+    const response = await fetch("/api/relay-config/auto", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId }),
+    });
+    const result = await response.json() as { ok?: boolean; reason?: string; message?: string };
+    if (!response.ok || !result.ok) {
+      setSaveError(result.message ?? (result.reason === "no-key" ? "这个账户还没有可用的 API Key。" : "分组同步失败，请稍后重试。"));
+      return;
+    }
+    setSaveError(null);
+    await refreshRelayAccounts();
+    reloadConfig({ discardDraft: true });
+    window.dispatchEvent(new Event("relay-config-updated"));
+  }, [refreshRelayAccounts, reloadConfig]);
 
   const updateModel = useCallback((providerName: string, index: number, m: ModelEntry) => {
     setConfig((prev) => {
@@ -1962,32 +2424,63 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
   }, []);
 
   const handleSave = useCallback(async () => {
+    if (!revision || conflicted) return;
     setSaving(true);
     setSaveError(null);
     setSavedOk(false);
     try {
       const res = await fetch("/api/models-config", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "If-Match": revision },
         body: JSON.stringify(config),
       });
       const d = await res.json() as { success?: boolean; error?: string };
-      if (!res.ok || d.error) setSaveError(d.error ?? `HTTP ${res.status}`);
-      else { setSavedOk(true); setTimeout(() => setSavedOk(false), 2000); }
+      if (!res.ok || d.error) {
+        if (res.status === 409 || res.status === 428) setConflicted(true);
+        setSaveError(d.error ?? `HTTP ${res.status}`);
+      } else {
+        baseConfigRef.current = JSON.stringify(config);
+        setRevision(res.headers.get("etag"));
+        setSavedOk(true); setTimeout(() => setSavedOk(false), 2000);
+      }
     } catch (e) {
       setSaveError(String(e));
     } finally {
       setSaving(false);
     }
-  }, [config]);
+  }, [config, revision, conflicted]);
 
   const providers = Object.entries(config.providers ?? {});
   const activeOAuth = oauthProviders.filter((p) => p.loggedIn);
-  const activeApiKey = apiKeyProviders.filter((p) => p.configured);
+  const activeApiKey = apiKeyProviders.filter((p) => p.configured && !(isRelayProviderId(p.id) && config.providers?.[p.id]));
   const hasRelayProvider =
     activeOAuth.some((p) => isRelayProviderId(p.id))
     || activeApiKey.some((p) => isRelayProviderId(p.id))
     || providers.some(([name]) => isRelayProviderId(name));
+  const selectedRelayAccountId = relaySelection && relaySelection.type !== "add-account"
+    ? relaySelection.accountId
+    : relayActiveAccountId;
+  const selectedRelayAccount = relayAccounts.find((account) => account.accountId === selectedRelayAccountId);
+  const indexedRelayProviderIds = new Set(relayGroups.map((group) => group.providerId));
+  const legacyGroups: RelayGroupSummary[] = selectedRelayAccountId === relayActiveAccountId
+    ? providers.flatMap(([providerId, provider]) => {
+        if (!isRelayProviderId(providerId) || indexedRelayProviderIds.has(providerId)) return [];
+        const protocols = Array.from(new Set((provider.models ?? []).flatMap((model) => model.api ? [model.api] : [])));
+        return [{
+          accountId: selectedRelayAccountId ?? "",
+          providerId,
+          keyId: providerId,
+          keyName: provider.name?.trim() || providerId,
+          maskedKey: "已安全保存",
+          modelCount: provider.models?.length ?? 0,
+          protocols,
+        }];
+      })
+    : [];
+  const selectedRelayGroups = [
+    ...relayGroups.filter((group) => group.accountId === selectedRelayAccountId),
+    ...legacyGroups,
+  ].sort((a, b) => a.keyName.localeCompare(b.keyName, "zh-CN"));
 
   // Resolve current detail
   const detailContent = (() => {
@@ -2006,6 +2499,11 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
       const provider = config.providers?.[selection.name];
       if (!provider) return null;
       return (
+        <>
+        {isRelayProviderId(selection.name) && <>
+          <RelayKeyRefresh providerId={selection.name} enabled />
+          <RelayUsageSummary providerId={selection.name} enabled />
+        </>}
         <ProviderDetail
           key={selection.name}
           name={selection.name}
@@ -2015,6 +2513,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
           onDelete={() => deleteProvider(selection.name)}
           onAddModels={(models) => addDiscoveredModels(selection.name, models)}
         />
+        </>
       );
     }
     const provider = config.providers?.[selection.providerName];
@@ -2032,6 +2531,57 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
     );
   })();
 
+  const relayDetailContent = (() => {
+    if (relaySelection?.type === "add-account") {
+      return <RelayAddAccountDetail
+        login={relaySession.login}
+        onDone={async () => { await refreshRelayAccounts(); }}
+      />;
+    }
+    if (!relaySelection || relaySelection.type === "account") {
+      const account = relaySelection?.type === "account"
+        ? relayAccounts.find((entry) => entry.accountId === relaySelection.accountId)
+        : selectedRelayAccount;
+      return account
+        ? <RelayAccountDetail account={account} onAddAccount={() => setRelaySelection({ type: "add-account" })} />
+        : <RelayAddAccountDetail login={relaySession.login} onDone={refreshRelayAccounts} />;
+    }
+    const group = selectedRelayGroups.find((entry) => entry.providerId === relaySelection.providerId);
+    const provider = config.providers?.[relaySelection.providerId];
+    if (!group || !provider) return <ConfigEmptyState>这个分组正在同步，请稍后重试。</ConfigEmptyState>;
+    if (relaySelection.type === "group") {
+      return <RelayGroupDetail
+        key={group.providerId}
+        group={group}
+        provider={provider}
+        onSync={() => syncRelayAccount(group.accountId)}
+        onAddModels={(models) => addDiscoveredModels(group.providerId, models)}
+      />;
+    }
+    const index = (provider.models ?? []).findIndex((model) => model.id === relaySelection.modelId);
+    const model = index >= 0 ? provider.models?.[index] : undefined;
+    if (!model || index < 0) return <ConfigEmptyState>该模型已不在当前分组中。</ConfigEmptyState>;
+    return <ModelDetail
+      key={`${group.providerId}-${model.id}`}
+      providerName={group.providerId}
+      provider={provider}
+      model={model}
+      relayMode
+      onChange={(next) => updateModel(group.providerId, index, {
+        ...next,
+        contextWindow: clampRelayContextWindow(next.id, next.contextWindow),
+      })}
+      onDelete={() => {
+        removeModel(group.providerId, index);
+        setRelaySelection({
+          type: "group",
+          accountId: group.accountId,
+          providerId: group.providerId,
+        });
+      }}
+    />;
+  })();
+
   return (
     <>
     <ConfigPanelShell embedded={embedded} title={t("common.models")} subtitle="~/.pi/agent/models.json" closeLabel={t("i18n.close")} onClose={onClose}>
@@ -2042,6 +2592,111 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
           {/* Left: tree */}
           <ConfigSidebar>
             <ConfigSidebarList>
+              {RELAY_PRODUCT_MODE ? (
+                <>
+                  <ConfigSidebarGroupLabel>账户</ConfigSidebarGroupLabel>
+                  {relayAccountsLoading ? (
+                    <div style={{ padding: "10px 12px", color: "var(--text-dim)", fontSize: 11 }}>正在读取账户...</div>
+                  ) : relayAccounts.map((account) => {
+                    const active = relaySelection?.type === "account" && relaySelection.accountId === account.accountId;
+                    return (
+                      <ConfigSidebarItem
+                        key={account.accountId}
+                        active={active}
+                        onClick={() => {
+                          setRelaySelection({ type: "account", accountId: account.accountId });
+                          setExpandedRelayGroups(new Set());
+                        }}
+                      >
+                        <span className="relay-account-avatar" aria-hidden="true">
+                          {(account.username?.trim() || account.email).slice(0, 1).toLocaleUpperCase()}
+                        </span>
+                        <ConfigSidebarText className="is-grow" title={account.email}>
+                          {account.username?.trim() || account.email}
+                        </ConfigSidebarText>
+                        {(account.active || account.accountId === relayActiveAccountId) && <span className="relay-active-dot" title="当前登录账户" />}
+                      </ConfigSidebarItem>
+                    );
+                  })}
+
+                  <ConfigSidebarItem
+                    active={relaySelection?.type === "add-account"}
+                    className="models-sidebar-add-account"
+                    onClick={() => setRelaySelection({ type: "add-account" })}
+                  >
+                    <span aria-hidden="true" style={{ width: 18, textAlign: "center", color: "var(--accent)", fontSize: 16 }}>+</span>
+                    <ConfigSidebarText>登录其他账户</ConfigSidebarText>
+                  </ConfigSidebarItem>
+
+                  <div className="relay-sidebar-separator" />
+                  <ConfigSidebarGroupLabel>分组</ConfigSidebarGroupLabel>
+                  {!selectedRelayAccountId ? (
+                    <div style={{ padding: "10px 12px", color: "var(--text-dim)", fontSize: 11 }}>请先登录一个账户</div>
+                  ) : selectedRelayGroups.length === 0 ? (
+                    <div style={{ padding: "10px 12px", color: "var(--text-dim)", fontSize: 11, lineHeight: 1.5 }}>
+                      暂无分组。请先在流星 API 创建 API Key，再点击同步。
+                    </div>
+                  ) : selectedRelayGroups.map((group) => {
+                    const expanded = expandedRelayGroups.has(group.providerId);
+                    const provider = config.providers?.[group.providerId];
+                    const models = provider?.models ?? [];
+                    const groupSelected = relaySelection?.type === "group" && relaySelection.providerId === group.providerId;
+                    return (
+                      <div key={group.providerId} className="relay-sidebar-group">
+                        <ConfigSidebarItem
+                          active={groupSelected}
+                          aria-expanded={expanded}
+                          onClick={() => {
+                            setExpandedRelayGroups((current) => {
+                              const next = new Set(current);
+                              if (next.has(group.providerId)) next.delete(group.providerId);
+                              else next.add(group.providerId);
+                              return next;
+                            });
+                            setRelaySelection({ type: "group", accountId: group.accountId, providerId: group.providerId });
+                          }}
+                        >
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            aria-hidden="true"
+                            style={{ color: "var(--text-dim)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform .15s", flexShrink: 0 }}
+                          >
+                            <polyline points="9 18 15 12 9 6" />
+                          </svg>
+                          <ConfigSidebarText className="is-grow" title={group.keyName}>{group.keyName}</ConfigSidebarText>
+                          {group.rateMultiplier !== undefined && <small className="relay-group-rate">{group.rateMultiplier}x</small>}
+                        </ConfigSidebarItem>
+                        {expanded && models.map((model) => {
+                          const active = relaySelection?.type === "model"
+                            && relaySelection.providerId === group.providerId
+                            && relaySelection.modelId === model.id;
+                          return (
+                            <ConfigSidebarItem
+                              key={model.id}
+                              active={active}
+                              className="models-sidebar-indented-item"
+                              onClick={() => setRelaySelection({
+                                type: "model",
+                                accountId: group.accountId,
+                                providerId: group.providerId,
+                                modelId: model.id,
+                              })}
+                            >
+                              <ConfigSidebarText className="is-grow" title={model.id}>{model.name || model.id}</ConfigSidebarText>
+                              {model.reasoning && <span className="relay-reasoning-badge">T</span>}
+                            </ConfigSidebarItem>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </>
+              ) : (<>
               {/* Active OAuth subscriptions */}
               {activeOAuth.map((p) => {
                 const isSelected = selection?.type === "oauth" && selection.providerId === p.id;
@@ -2098,7 +2753,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
                         <line x1="1" y1="9" x2="4" y2="9" /><line x1="1" y1="14" x2="4" y2="14" />
                       </svg>
                       <ConfigSidebarText className="is-grow">
-                        {pName}
+                        {pData.name || pName}
                       </ConfigSidebarText>
                     </ConfigSidebarItem>
 
@@ -2132,16 +2787,28 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
                   </div>
                 );
               })}
+              </>)}
             </ConfigSidebarList>
 
             {/* Add provider */}
-            <ConfigListAction onClick={() => setPickerOpen(true)}>{t("i18n.addProvider")}</ConfigListAction>
+            {RELAY_PRODUCT_MODE ? (
+              <ConfigListAction
+                disabled={!selectedRelayAccountId}
+                onClick={() => selectedRelayAccountId && void syncRelayAccount(selectedRelayAccountId)}
+              >
+                同步当前账户分组
+              </ConfigListAction>
+            ) : (
+              <ConfigListAction onClick={() => setPickerOpen(true)}>{t("i18n.addProvider")}</ConfigListAction>
+            )}
           </ConfigSidebar>
 
           {/* Right: detail */}
           <ConfigDetail>
             <ConfigDetailStack className="is-fill">
-              {loading ? null : detailContent ?? (
+              {RELAY_PRODUCT_MODE ? (
+                loading || relayAccountsLoading ? null : relayDetailContent
+              ) : loading ? null : detailContent ?? (
                 <>
                   {!hasRelayProvider && <RelayOnboarding />}
                   <ConfigEmptyState>{t("i18n.selectProviderModel")}</ConfigEmptyState>
@@ -2152,12 +2819,13 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
         </ConfigSplitView>
 
         {/* Footer */}
-        <ConfigFooter status={saveError && <span style={{ color: "#f87171" }}>{saveError}</span>}>
+        <ConfigFooter status={(saveError || conflicted) && <span style={{ color: "#f87171" }}>{conflicted ? (locale.startsWith("zh") ? "配置已更新，当前未保存修改已保留。请重新载入后再编辑。" : "Configuration changed. Your draft is retained; reload before editing again.") : saveError}</span>}>
+          {(conflicted || (!revision && !loading)) && <ConfigButton onClick={() => reloadConfig({ discardDraft: true })}>{locale.startsWith("zh") ? "放弃未保存修改并重新载入" : "Discard draft and reload"}</ConfigButton>}
           {!embedded && <ConfigButton onClick={onClose}>{t("i18n.cancel")}</ConfigButton>}
           <ConfigButton
             variant="primary"
             onClick={handleSave}
-            disabled={saving || savedOk}
+            disabled={saving || savedOk || !revision || conflicted}
             className={savedOk ? "is-success" : undefined}
           >
             {savedOk && (

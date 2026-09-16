@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { readRelaySessionFile, relayListKeys } from "@/lib/relay-auth";
+import { safeRelayKey } from "@/lib/relay-group-store";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/relay-auth/keys — 用本地会话的 JWT 列出当前用户在 sub2api 的 API key（明文）。 */
+/** GET /api/relay-auth/keys — 只返回浏览器展示所需的安全元数据，不返回完整 API key。 */
 export async function GET(request: Request) {
   if (!isApiRequestAllowed(request)) return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
 
@@ -15,7 +16,7 @@ export async function GET(request: Request) {
 
   try {
     const keys = await relayListKeys(session.accessToken);
-    return NextResponse.json({ ok: true, keys });
+    return NextResponse.json({ ok: true, keys: keys.map(safeRelayKey) }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("Network error")) {
       return NextResponse.json({ ok: false, reason: "network" });

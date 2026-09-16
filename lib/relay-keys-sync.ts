@@ -1,46 +1,43 @@
-/**
- * relay 密钥同步核心：以"每个 API key = 一个 provider"为单位组织。
- *
- * 产品语义（用户要求）：客户在中转站创建 key 时选分组并命名，
- * 客户端按 key 的名字区分渠道、展示所属分组，数据与中转站实时一致。
- *
- * 协议判定不依赖分组名（分组名客户端拿不到，且名字会骗人——实测
- * 名为 "deepseek" 的 key 实际是 gemini 分组），而是按该 key 模型目录的
- * 主导家族判定：
- *   claude 主导 → anthropic-messages（baseUrl 根域名）
- *   gpt/codex 主导 → openai-responses（baseUrl 带 /v1）
- *   其他/混杂 → openai-completions（baseUrl 带 /v1）
- *
- * provider id 约定：
- *   - `meteor21c-k<keyId>`：由密钥同步管理（key 删除后随之清理）
- *   - `meteor21c`：手动贴 key（save 路由创建，同步不清理）
- */
-import { getRelayBaseUrl, RELAY_MODELS_ENDPOINT } from "./relay-config";
-import { resolveRelayModels } from "./relay-models";
+/** Account-scoped relay key synchronization. Full API keys never leave this server module. */
+import { getRelayBaseUrl } from "./relay-config";
+import { resolveMixedRelayModels } from "./relay-models";
 import { readModelsConfig } from "./models-config-store";
 import { persistRelayProvider, removeRelayProvider, dominantFamily, protocolFor } from "./relay-config-save";
+import { testRelayConnection } from "./relay-config-test";
 import {
+  checkRelaySession,
   readRelaySessionFile,
   relayListKeys,
-  writeRelaySessionFile,
+  RelayAuthError,
+  relayOperationEpoch,
+  sameRelayAccount,
+  type RelayKey,
+  type RelaySessionFile,
+  withRelaySessionMutation,
 } from "./relay-auth";
+import {
+  metadataForRelayKey,
+  providerAccountSegment,
+  readRelayGroups,
+  replaceRelayGroupsForAccount,
+  stableRelayAccountId,
+  type RelayGroupMetadata,
+} from "./relay-group-store";
 
-const SYNC_PREFIX = "meteor21c-k";
-const LEGACY_IDS = ["meteor21c-claude", "meteor21c-openai"];
-
-export interface RelayKeyInfo {
-  id: number | string;
-  key: string;
-  name?: string;
-  status?: number | string;
-  groupId?: number | string;
-}
+type AccountSession = RelaySessionFile;
 
 export interface RelayProviderSummary {
   providerId: string;
   displayName: string;
   family: "claude" | "gpt" | "other";
+  accountId: string;
+  keyId: string;
+  maskedKey: string;
   groupId: number | string | undefined;
+  groupName?: string;
+  platform?: string;
+  rateMultiplier?: number;
+  longContextPricingEnabled?: boolean;
   modelCount: number;
 }
 
@@ -48,136 +45,207 @@ export interface RelaySyncResult {
   ok: boolean;
   reason?: "unauthenticated" | "network" | "no-key" | "no-usable-key" | "save-failed";
   message?: string;
+  accountId?: string;
   providers?: RelayProviderSummary[];
   totalModelCount?: number;
+  warnings?: Array<{ providerId: string; reason: string }>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function providerIdFor(keyId: number | string): string {
-  return `${SYNC_PREFIX}-k${keyId}`;
+function providersNow(): Record<string, unknown> {
+  const value = readModelsConfig().providers;
+  return isRecord(value) ? value : {};
 }
 
-function displayNameFor(key: RelayKeyInfo): string {
-  const name = key.name?.trim() || `key-${key.id}`;
-  // 分组标记语言无关（G<id>）；分组名待 sub2api 暴露分组端点后替换。
-  return key.groupId !== undefined ? `${name} · G${key.groupId}` : name;
+async function readSession(accountId?: string): Promise<AccountSession | null> {
+  return readRelaySessionFile(accountId);
 }
 
-/** 用某个 key 拉取它实际可见的模型目录（失败返回 null）。 */
-async function fetchVisibleModelIds(apiKey: string): Promise<string[] | null> {
+async function validateSession(accountId?: string): Promise<Record<string, unknown>> {
+  return checkRelaySession(accountId);
+}
+
+function sessionAccountId(session: AccountSession, requested?: string): string {
+  return session.accountId || requested || stableRelayAccountId(session.email);
+}
+
+function legacyProviderIds(keyId: string): string[] {
+  return [`meteor21c-k${keyId}`, `meteor21c-k-k${keyId}`];
+}
+
+function providerIdFor(
+  accountId: string,
+  keyId: string,
+  existing: Record<string, unknown>,
+  indexed: RelayGroupMetadata[],
+): string {
+  const previous = indexed.find((entry) => entry.accountId === accountId && entry.keyId === keyId);
+  if (previous) return previous.providerId;
+
+  for (const candidate of legacyProviderIds(keyId)) {
+    const owner = indexed.find((entry) => entry.providerId === candidate)?.accountId;
+    if (Object.hasOwn(existing, candidate) && (!owner || owner === accountId)) return candidate;
+  }
+
+  const candidate = `meteor21c-a${providerAccountSegment(accountId)}-k${keyId}`;
+  const owner = indexed.find((entry) => entry.providerId === candidate)?.accountId;
+  if (!owner || owner === accountId) return candidate;
+  const collision = stableRelayAccountId(`${accountId}:${keyId}`).slice(0, 8);
+  return `${candidate}-${collision}`;
+}
+
+function displayNameFor(key: RelayKey): string {
+  return key.name?.trim() || `key-${key.id}`;
+}
+
+function summaryFor(
+  accountId: string,
+  key: RelayKey,
+  providerId: string,
+  family: RelayProviderSummary["family"],
+  modelCount: number,
+): RelayProviderSummary {
+  const metadata = metadataForRelayKey(accountId, providerId, key);
+  return {
+    providerId,
+    displayName: metadata.keyName,
+    family,
+    accountId,
+    keyId: metadata.keyId,
+    maskedKey: metadata.maskedKey,
+    groupId: metadata.groupId,
+    groupName: metadata.groupName,
+    platform: metadata.platform,
+    rateMultiplier: metadata.rateMultiplier,
+    longContextPricingEnabled: metadata.longContextPricingEnabled,
+    modelCount,
+  };
+}
+
+type SyncGlobal = { tasks: Map<string, Promise<RelaySyncResult>> };
+const syncGlobal = globalThis as typeof globalThis & { __meteorRelaySync?: SyncGlobal };
+const state = syncGlobal.__meteorRelaySync ??= { tasks: new Map() };
+
+export async function syncRelayProviders(requestedAccountId?: string): Promise<RelaySyncResult> {
+  let session = await readSession(requestedAccountId);
+  if (session && session.accessTokenExpiresAt <= Date.now()) {
+    const validation = await validateSession(requestedAccountId);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        reason: validation.reason === "network" || validation.reason === "relay-error" ? "network" : "unauthenticated",
+      };
+    }
+    session = await readSession(requestedAccountId);
+  }
+  if (!session?.accessToken) return { ok: false, reason: "unauthenticated" };
+
+  const accountId = sessionAccountId(session, requestedAccountId);
+  const epoch = relayOperationEpoch();
+  const identity = `${epoch}:${accountId}:${session.generation ?? session.accessToken}`;
+  const previous = state.tasks.get(identity);
+  if (previous) return previous;
+  const task = run(session, accountId, epoch);
+  state.tasks.set(identity, task);
   try {
-    const res = await fetch(`${getRelayBaseUrl()}${RELAY_MODELS_ENDPOINT}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    const json = (await res.json().catch(() => null)) as { data?: Array<{ id?: string }> } | null;
-    const ids = (json && Array.isArray(json.data) ? json.data : [])
-      .map((m) => String(m.id ?? ""))
-      .filter(Boolean);
-    return ids;
-  } catch {
-    return null;
+    return await task;
+  } finally {
+    if (state.tasks.get(identity) === task) state.tasks.delete(identity);
   }
 }
 
-/**
- * 同步：keys → 每 key 实测可见目录 → 每 key 一个 provider → 增量写入/清理。
- * 全部 key 实测失败 → no-usable-key（前端引导去控制台检查）。
- */
-export async function syncRelayProviders(): Promise<RelaySyncResult> {
-  const session = await readRelaySessionFile();
-  if (!session?.accessToken) {
-    return { ok: false, reason: "unauthenticated" };
-  }
-
-  let keys: RelayKeyInfo[];
+async function run(session: AccountSession, accountId: string, epoch: number): Promise<RelaySyncResult> {
+  let keys: Array<RelayKey & { id: number | string }>;
   try {
     const raw = await relayListKeys(session.accessToken);
-    keys = raw.map((k) => ({
-      id: k.id ?? k.key,
-      key: k.key,
-      name: k.name,
-      status: k.status,
-      groupId: k.group_id,
-    }));
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith("Network error")) {
-      return { ok: false, reason: "network" };
-    }
-    return { ok: false, reason: "unauthenticated" };
-  }
-
-  if (keys.length === 0) {
-    return { ok: false, reason: "no-key" };
-  }
-
-  const summaries: RelayProviderSummary[] = [];
-  const failures: string[] = [];
-
-  // 清理：已删除 key 的 provider/凭据 + 旧格式固定 id（迁移）。
-  const existing = readModelsConfig();
-  const existingProviderIds = isRecord(existing.providers) ? Object.keys(existing.providers) : [];
-  const staleIds = existingProviderIds.filter((id) => {
-    const isSynced = id.startsWith(`${SYNC_PREFIX}-k`);
-    const isLegacy = LEGACY_IDS.includes(id);
-    const stillExists = keys.some((k) => providerIdFor(k.id) === id);
-    return (isSynced && !stillExists) || (isLegacy && keys.length > 0);
-  });
-  for (const id of staleIds) {
-    await removeRelayProvider(id);
-  }
-
-  // 每 key：实测可见目录 → 家族判定 → persist（内部写 models.json + 凭据）。
-  for (const key of keys) {
-    const modelIds = await fetchVisibleModelIds(key.key);
-    if (!modelIds || modelIds.length === 0) {
-      failures.push(`${displayNameFor(key)}: no visible models`);
-      continue; // 该 key 不可用 → 跳过（不写入 provider）
-    }
-    const family = dominantFamily(modelIds);
-    const { api, baseUrl } = protocolFor(family);
-    const providerId = providerIdFor(key.id);
-    await persistRelayProvider({
-      providerId,
-      displayName: displayNameFor(key),
-      apiKey: key.key,
-      api,
-      baseUrl,
-      models: resolveRelayModels(family, modelIds),
-    });
-    summaries.push({
-      providerId,
-      displayName: displayNameFor(key),
-      family,
-      groupId: key.groupId,
-      modelCount: modelIds.length,
-    });
-  }
-
-  if (summaries.length === 0) {
+    keys = raw.map((key) => ({ ...key, id: key.id! }));
+  } catch (error) {
     return {
       ok: false,
-      reason: "no-usable-key",
-      message: failures.slice(0, 3).join("; "),
+      accountId,
+      reason: error instanceof RelayAuthError && [401, 403].includes(error.status ?? 0) ? "unauthenticated" : "network",
     };
   }
 
-  // 会话文件保持最新（CLI 门禁读它）。
-  await writeRelaySessionFile({
-    email: session.email,
-    accessToken: session.accessToken,
-    accessTokenExpiresAt: session.accessTokenExpiresAt,
-    refreshToken: session.refreshToken,
-    updatedAt: Date.now(),
-  }).catch(() => {});
+  const initial = providersNow();
+  const initialIndex = readRelayGroups();
+  const gathered: Array<{
+    key: RelayKey & { id: number | string };
+    providerId: string;
+    models: ReturnType<typeof resolveMixedRelayModels>;
+    failure?: string;
+  }> = [];
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(4, keys.length) }, async () => {
+    while (cursor < keys.length) {
+      if (epoch !== relayOperationEpoch()) return;
+      const key = keys[cursor++];
+      const providerId = providerIdFor(accountId, String(key.id), initial, initialIndex);
+      const test = await testRelayConnection(key.key);
+      const models = test.ok ? resolveMixedRelayModels(test.modelIds ?? [], getRelayBaseUrl()) : [];
+      gathered.push({ key, providerId, models, failure: !test.ok ? test.reason : !models.length ? "empty-catalog" : undefined });
+    }
+  }));
 
-  return {
-    ok: true,
-    providers: summaries,
-    totalModelCount: summaries.reduce((sum, p) => sum + p.modelCount, 0),
-  };
+  return withRelaySessionMutation(async () => {
+    const current = await readSession(accountId);
+    if (epoch !== relayOperationEpoch() || !sameRelayAccount(current, session)) {
+      return { ok: false, reason: "unauthenticated", accountId };
+    }
+
+    const summaries: RelayProviderSummary[] = [];
+    const warnings: NonNullable<RelaySyncResult["warnings"]> = [];
+    try {
+      const nextMetadata = gathered.map(({ key, providerId }) => metadataForRelayKey(accountId, providerId, key));
+      const presentProviderIds = new Set(nextMetadata.map((entry) => entry.providerId));
+
+      for (const previous of initialIndex.filter((entry) => entry.accountId === accountId)) {
+        if (!presentProviderIds.has(previous.providerId)) await removeRelayProvider(previous.providerId);
+      }
+
+      for (const item of gathered) {
+        const { key, providerId, models, failure } = item;
+        if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };
+        if (failure) {
+          warnings.push({ providerId, reason: failure });
+          if (failure === "invalid-key") await removeRelayProvider(providerId);
+          continue;
+        }
+        const family = dominantFamily(models.map((model) => model.id));
+        await persistRelayProvider({
+          providerId,
+          displayName: displayNameFor(key),
+          apiKey: key.key,
+          ...protocolFor(family),
+          models,
+        });
+        summaries.push(summaryFor(accountId, key, providerId, family, models.length));
+      }
+
+      if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };
+      replaceRelayGroupsForAccount(accountId, nextMetadata);
+    } catch {
+      return {
+        ok: false,
+        reason: "save-failed",
+        accountId,
+        message: "Configuration could not be saved; retry synchronization.",
+      };
+    }
+
+    if (!keys.length) return { ok: false, reason: "no-key", accountId, providers: [], totalModelCount: 0 };
+    if (!summaries.length) {
+      return { ok: false, reason: "no-usable-key", accountId, providers: [], totalModelCount: 0, warnings };
+    }
+    return {
+      ok: true,
+      accountId,
+      providers: summaries,
+      totalModelCount: summaries.reduce((count, provider) => count + provider.modelCount, 0),
+      warnings,
+    };
+  });
 }

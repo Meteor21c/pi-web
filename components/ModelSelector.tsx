@@ -6,6 +6,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 
 export interface ModelSelectorOption {
   provider: string;
+  providerDisplayName?: string;
   modelId: string;
   name: string;
 }
@@ -290,7 +291,7 @@ export function ModelSelector({
                 <div key={group.provider}>
                   {modelsByProvider.length > 1 && (
                     <div style={{ padding: "6px 12px 4px", borderTop: index > 0 || onClear ? "1px solid var(--border)" : "none", color: "var(--text-dim)", fontSize: 10, fontWeight: 600, letterSpacing: 0, textTransform: "uppercase" }}>
-                      {group.provider}
+                      {group.options[0]?.providerDisplayName || group.provider}
                     </div>
                   )}
                   {group.options.map((option) => (

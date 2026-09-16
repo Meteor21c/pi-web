@@ -23,8 +23,7 @@ export function dominantFamily(modelIds: string[]): RelayFamily {
   return "other";
 }
 
-export function protocolFor(family: RelayFamily): { api: string; baseUrl: string } {
-  const base = getRelayBaseUrl();
+export function protocolFor(family: RelayFamily, base = getRelayBaseUrl()): { api: string; baseUrl: string } {
   if (family === "claude") return { api: "anthropic-messages", baseUrl: base };
   return { api: family === "gpt" ? "openai-responses" : "openai-completions", baseUrl: `${base}/v1` };
 }
@@ -35,7 +34,8 @@ export function sanitizeBaseUrlOverride(base?: unknown): string | null {
   const trimmed = base.trim().replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(trimmed)) return null;
   try {
-    new URL(trimmed);
+    const url = new URL(trimmed);
+    if (url.username || url.password || url.search || url.hash || url.pathname !== "/") return null;
   } catch {
     return null;
   }
@@ -45,7 +45,7 @@ export function sanitizeBaseUrlOverride(base?: unknown): string | null {
 /**
  * 写入/更新单个 relay provider（models.json + auth.json 凭据）。
  * - providerId：`meteor21c`（手动贴 key）或 `meteor21c-k<keyId>`（密钥同步）
- * - models：该 key 实际可见目录经家族过滤后的模型定义
+ * - models：该 key 实际可见聊天目录，允许逐模型 api/baseUrl
  */
 export async function persistRelayProvider(opts: {
   providerId: string;

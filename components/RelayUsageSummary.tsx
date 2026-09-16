@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import type { RelayUsageReport } from "@/lib/relay-usage";
 
 /**
  * meteor21c relay 额度面板（三件套：余额 / 今日消耗 / 模型用量 TopN）。
@@ -14,100 +15,93 @@ import { useI18n } from "@/hooks/useI18n";
  * 手动刷新、错误态。区别仅在数据形态与渲染结构（余额 / 今日 / TopN 表）。
  */
 
-type RelayToday = {
-  date: string;
-  requests: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  cost: number;
-};
-type RelayTopModel = { model: string; requests: number; totalTokens: number; cost: number };
-type RelayReport = {
-  capturedAt: number;
-  balanceUsd: number;
-  mode: string;
-  today: RelayToday;
-  topModels: RelayTopModel[];
-};
 type RelayUsageResponse = {
   status: "ready" | "auth-unavailable" | "query-failed";
   message?: string;
-  report?: RelayReport;
+  report?: RelayUsageReport;
 };
 
-const STORAGE_KEY = "pi-web:relay-usage:meteor21c";
 const POLL_INTERVAL_MS = 60_000;
 const REFRESH_FLASH_MS = 2_000;
 
-export function RelayUsageSummary({ enabled }: { enabled: boolean }) {
+export function RelayUsageSummary({ enabled, providerId }: { enabled: boolean; providerId: string }) {
   if (!enabled) return null;
-  return <RelayUsageContent />;
+  return <RelayUsageContent key={providerId} providerId={providerId} />;
 }
 
-function RelayUsageContent() {
+function RelayUsageContent({ providerId }: { providerId: string }) {
   const [snapshot, setSnapshot] = useState<RelayUsageResponse | null>(null);
   const [querying, setQuerying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshDone, setRefreshDone] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { t } = useI18n();
+  const requestRef = useRef<AbortController | null>(null);
+  const { t, locale } = useI18n();
+  const zh = locale.startsWith("zh");
 
   const query = useCallback(async () => {
+    if (document.visibilityState === "hidden" || requestRef.current) return;
+    const controller = new AbortController();
+    requestRef.current = controller;
     setQuerying(true);
     setError(null);
     try {
       const response = await fetch("/api/relay-usage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ providerId }),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
       });
       const result = (await response.json()) as RelayUsageResponse & { error?: string };
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
       if (result.status === "ready" && result.report) {
         setSnapshot(result);
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(result));
-        } catch {}
         setRefreshDone(true);
         if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
         flashTimerRef.current = setTimeout(() => setRefreshDone(false), REFRESH_FLASH_MS);
       } else if (result.status === "auth-unavailable") {
+        setSnapshot(null);
         setError(t("relay.usage.invalidKey"));
       } else {
+        setSnapshot(null);
         setError(result.message ? `${t("relay.usage.failed")} ${result.message}` : t("relay.usage.failed"));
       }
     } catch (caught) {
+      if (controller.signal.aborted) return;
+      setSnapshot(null);
       setError(t("relay.usage.failed") + (caught instanceof Error ? ` ${caught.message}` : ""));
     } finally {
-      setQuerying(false);
+      if (requestRef.current === controller) requestRef.current = null;
+      if (!controller.signal.aborted) setQuerying(false);
     }
-  }, [t]);
+  }, [t, providerId]);
 
   useEffect(() => {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     setSnapshot(null);
     setError(null);
-    // 挂载先读缓存展示，再发起查询刷新。
-    try {
-      const cached = localStorage.getItem(STORAGE_KEY);
-      if (cached) {
-        const parsed = JSON.parse(cached) as RelayUsageResponse;
-        if (parsed?.status === "ready" && parsed.report) setSnapshot(parsed);
-      }
-    } catch {
-      try {
-        localStorage.removeItem(STORAGE_KEY);
-      } catch {}
-    }
+    // No persistent financial cache: changing accounts/channels cannot expose old amounts.
     void query();
     pollTimerRef.current = setInterval(() => {
       void query();
     }, POLL_INTERVAL_MS);
+    const invalidate = () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
+      setSnapshot(null);
+      setQuerying(false);
+      void query();
+    };
+    document.addEventListener("visibilitychange", query);
+    window.addEventListener("relay-config-updated", invalidate);
     return () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
+      document.removeEventListener("visibilitychange", query);
+      window.removeEventListener("relay-config-updated", invalidate);
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     };
@@ -117,7 +111,7 @@ function RelayUsageContent() {
   const todayTokens = report ? report.today.inputTokens + report.today.outputTokens + report.today.cacheReadTokens + report.today.cacheWriteTokens : 0;
 
   return (
-    <section style={{ paddingTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+    <section style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12, background: "var(--assistant-bg)", border: "1px solid var(--border)", borderRadius: 14 }}>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 13, color: "var(--text)", fontWeight: 600, lineHeight: 1.35 }}>{t("relay.usage.title")}</span>
         <button
@@ -177,24 +171,29 @@ function RelayUsageContent() {
         <>
           {/* 余额 */}
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("relay.usage.balance")}</span>
-            <span style={{ fontSize: 22, fontWeight: 700, color: "var(--text)", fontFamily: "var(--font-mono)", lineHeight: 1.2 }}>{formatUSD(report.balanceUsd)}</span>
+            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{report.kind === "wallet" ? (zh ? "账号钱包（不是单渠道余额）" : "Account wallet (shared across channels)") : (zh ? "本渠道剩余额度" : "Channel allowance remaining")}</span>
+            <span style={{ fontSize: 22, fontWeight: 700, color: "var(--text)", fontFamily: "var(--font-mono)", lineHeight: 1.2 }}>{report.unlimited ? (zh ? "无限额" : "Unlimited") : report.balanceUsd === null ? (zh ? "暂不可用" : "Unavailable") : formatUSD(report.balanceUsd)}</span>
+            {report.planName && <span>{report.planName}</span>}
+            {report.status && <span>{zh ? "状态：" : "Status: "}{report.status}</span>}
+            {report.expiresAt && <span>{zh ? "到期：" : "Expires: "}{report.expiresAt}</span>}
+            {report.rateLimits.map((limit) => <span key={limit.window}>{limit.window}: {limit.remaining === null ? "—" : formatUSD(limit.remaining)}{limit.resetAt ? ` · ${limit.resetAt}` : ""}</span>)}
           </div>
 
           {/* 今日消耗 */}
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>{t("relay.usage.today")}</span>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
+            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{report.timezone} · {report.costBasis === "actual" ? (zh ? "接口报告实扣" : "Reported actual charge") : (zh ? "接口估算费用，最终以账单为准" : "Estimated cost; refer to your bill")}</span>
+            {!report.todayAvailable ? <span>{zh ? "统计暂不可用" : "Statistics unavailable"}</span> : <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
               <RelayStat label={t("relay.usage.todayRequests")} value={formatInt(report.today.requests)} />
               <RelayStat label={t("relay.usage.todayCost")} value={formatUSD(report.today.cost)} />
               <RelayStat label={t("relay.usage.tokens")} value={formatTokens(todayTokens)} />
-            </div>
+            </div>}
           </div>
 
           {/* 模型用量 TopN */}
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>{t("relay.usage.topModels")}</span>
-            {report.topModels.length === 0 ? (
+            {!report.modelStatsAvailable ? <span>{zh ? "统计暂不可用" : "Statistics unavailable"}</span> : report.topModels.length === 0 ? (
               <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t("relay.usage.noData")}</span>
             ) : (
               <div style={{ overflowX: "auto" }}>
@@ -229,7 +228,7 @@ function RelayUsageContent() {
 
 function RelayStat({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, background: "var(--bg-subtle)", borderRadius: 10, padding: "8px 10px" }}>
       <span style={{ fontSize: 11, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
       <span style={{ fontSize: 14, color: "var(--text)", fontFamily: "var(--font-mono)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</span>
     </div>

@@ -14,7 +14,7 @@ export const RELAY_USAGE_ENDPOINT = "/v1/usage";
 
 /** relay 系 provider 判定（固定 id + 每 key 的 meteor21c-k<keyId> 形式）。 */
 export function isRelayProviderId(id: string): boolean {
-  return id === "meteor21c" || /^meteor21c-(k\d+|claude|openai)$/.test(id);
+  return id === "meteor21c" || /^meteor21c-(a[a-zA-Z0-9_-]+-k[a-zA-Z0-9_-]+|k(?:-k)?[a-zA-Z0-9_-]+|claude|openai)$/.test(id);
 }
 
 /** 中转站根域名（无尾斜杠）。METEOR21C_BASE_URL 可覆盖默认值。 */

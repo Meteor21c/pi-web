@@ -258,7 +258,7 @@ export interface AttachedImage {
 }
 
 type SelectedModel = { provider: string; modelId: string };
-type ModelEntry = { id: string; name: string; provider: string };
+type ModelEntry = { id: string; name: string; provider: string; providerDisplayName?: string };
 type ModelsResponse = {
   models: Record<string, string>;
   modelList?: ModelEntry[];
@@ -2088,6 +2088,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     }
   }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const updated = () => { void loadModels(controller.signal).catch(() => {}); };
+    window.addEventListener("relay-config-updated", updated);
+    return () => {
+      controller.abort();
+      window.removeEventListener("relay-config-updated", updated);
+    };
+  }, [loadModels]);
 
   // Load the model list with bounded retries; loadModels exposes each failure.
   useEffect(() => {

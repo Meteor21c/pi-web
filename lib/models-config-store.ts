@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
@@ -59,6 +60,21 @@ function sanitizeModelsConfig(data: Record<string, unknown>): Record<string, unk
 
 export function getModelsConfigPath(): string {
   return join(getAgentDir(), "models.json");
+}
+
+/** Opaque revision for HTTP optimistic concurrency; never exposes credentials. */
+export function modelsConfigRevision(config: Record<string, unknown>): string {
+  return `"${createHash("sha256").update(JSON.stringify(config)).digest("hex")}"`;
+}
+
+export function writeModelsConfigIfCurrent(
+  data: Record<string, unknown>, revision: string,
+  modelsPath = getModelsConfigPath(),
+): string | null {
+  // Synchronous check + write: no async boundary for other requests in this process.
+  if (modelsConfigRevision(readModelsConfig(modelsPath)) !== revision) return null;
+  writeModelsConfig(data, modelsPath);
+  return modelsConfigRevision(readModelsConfig(modelsPath));
 }
 
 export function readModelsConfig(
