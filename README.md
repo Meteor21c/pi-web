@@ -1,10 +1,10 @@
-# Pi Web
+# MeteorAgent
 
 [中文文档](./README.zh-CN.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
 
-Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi). Pi Web uses the same local configuration and session files as pi, so you can browse and resume conversations, run agent turns, configure models and resources, and inspect project files from a browser.
+MeteorAgent (Magent) is a local browser-based AI coding assistant for Meteor API customers. It keeps projects and conversations on the user's computer while providing account login, automatic group/model sync, project workspaces, tools, skills, and a curated plugin community.
 
-![Pi Web displaying a pi session with structured Markdown, tool calls, and project navigation](https://raw.githubusercontent.com/agegr/pi-web/main/docs/screenshot2.png)
+Customer downloads: [dl.meteor21c.fun](https://dl.meteor21c.fun/)
 
 ## Features
 
@@ -12,33 +12,30 @@ Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi)
 - **Two ways to branch**: **New session** creates an independent session file from an earlier message; **Edit from here** creates a branch inside the current session.
 - **Project file tools**: browse and upload files, inspect Git diffs, and preview source, Markdown, images, audio, PDFs, and DOCX files with automatic refresh.
 - **Git worktrees**: switch checkouts from the sidebar while keeping sessions from the same repository grouped together.
-- **Web-based configuration**: manage provider login and API keys, models, model tests, plugin packages, and skills without leaving Pi Web.
-- **English, Simplified Chinese, and Traditional Chinese UI**: Pi Web follows the browser language initially and provides a language switcher in the top bar.
+- **Friendly account setup**: sign in to Meteor API and sync API-key groups and models without editing provider JSON.
+- **Web-based configuration**: manage accounts, models, model tests, plugin packages, and skills without leaving MeteorAgent.
+- **English, Simplified Chinese, and Traditional Chinese UI**: MeteorAgent follows the browser language initially and provides a language switcher in the top bar.
 
 ## Quick Start
 
-Pi Web requires Node.js 22.19.0 or newer. Check your version with `node --version`, then run:
+MeteorAgent requires Node.js 22.19.0 or newer. Most customers should download the launcher for their operating system from the [official download page](https://dl.meteor21c.fun/).
+
+For a command-line install, run:
 
 ```bash
-npx @agegr/pi-web@latest
+npm install -g https://dl.meteor21c.fun/webagent/latest.tgz --registry=https://registry.npmmirror.com
+webagent
 ```
 
-The CLI opens a browser after the server is ready. If it does not, open [http://127.0.0.1:30141](http://127.0.0.1:30141). Pi Web listens only on `127.0.0.1` by default.
+The CLI opens a browser after the server is ready. If it does not, open [http://127.0.0.1:30141](http://127.0.0.1:30141). MeteorAgent listens only on `127.0.0.1` by default.
 
-If no model provider is configured yet, open the **Models** panel to sign in or add an API key.
+Open **Settings → Models** to sign in with a Meteor API account. The app then syncs that account's API-key groups and models.
 
-To install the `pi-web` command globally:
-
-```bash
-npm install -g @agegr/pi-web@latest
-pi-web
-```
-
-To update, stop the running process with `Ctrl+C` and run the same install command again. To uninstall, run `npm uninstall -g @agegr/pi-web`.
+To update, stop the running process with `Ctrl+C` and run the install command again. To uninstall, run `npm uninstall -g @meteor21c/webagent`.
 
 ## Configuration
 
-For port and hostname, command-line options override the corresponding environment variables. Either `--no-open` or `PI_WEB_NO_OPEN=1` disables automatic browser opening. Run `pi-web --help` (or `-h`) to print startup options and exit without starting the server. Unknown options exit with an error.
+For port and hostname, command-line options override the corresponding environment variables. Either `--no-open` or `PI_WEB_NO_OPEN=1` disables automatic browser opening. Run `webagent --help` (or `-h`) to print startup options and exit without starting the server. The `PI_WEB_*` environment prefix is retained for compatibility with the upstream runtime.
 
 | Option or environment variable | Purpose | Default |
 | --- | --- | --- |
@@ -46,7 +43,7 @@ For port and hostname, command-line options override the corresponding environme
 | `--port <port>`, `-p <port>`, or `PORT` | Server port | `30141` |
 | `--hostname <host>`, `-H <host>`, or `PI_WEB_HOSTNAME` | Bind hostname | `127.0.0.1` |
 | `--no-open` or `PI_WEB_NO_OPEN=1` | Do not open a browser automatically | Browser opens |
-| `PI_WEB_SKIP_VERSION_CHECK=1` | Disable Pi Web update checks | Unset |
+| `PI_WEB_SKIP_VERSION_CHECK=1` | Disable MeteorAgent update checks | Unset |
 | `PI_WEB_ALLOWED_HOSTS` | Additional exact proxy or custom hostnames, comma-separated | Unset |
 | `PI_WEB_PASSWORD` | Enable browser password login; API clients may use Basic Auth with username `pi` | Authentication disabled |
 | `PI_WEB_IDLE_TIMEOUT_MS` | Session idle timeout in milliseconds, up to `2147483647`; `0` disables idle shutdown; invalid or out-of-range values use the default | `600000` (10 min) |
@@ -54,8 +51,8 @@ For port and hostname, command-line options override the corresponding environme
 For example:
 
 ```bash
-pi-web --help
-pi-web -p 8080 -H 0.0.0.0 --no-open
+webagent --help
+webagent -p 8080 -H 0.0.0.0 --no-open
 ```
 
 ### Remote Access
@@ -63,10 +60,10 @@ pi-web -p 8080 -H 0.0.0.0 --no-open
 Binding to a non-loopback address exposes an agent that can execute high-privilege actions. On a trusted LAN, require a long random password:
 
 ```bash
-PI_WEB_PASSWORD='a-long-random-password' pi-web --hostname 0.0.0.0
+PI_WEB_PASSWORD='a-long-random-password' webagent --hostname 0.0.0.0
 ```
 
-Password authentication does not encrypt the connection. Do not expose Pi Web over plain HTTP to the internet; use HTTPS through a trusted reverse proxy or a trusted VPN. If a reverse proxy sends an external hostname, add that exact name to `PI_WEB_ALLOWED_HOSTS`. This allow-list does not change the address Pi Web binds to.
+Password authentication does not encrypt the connection. Do not expose MeteorAgent over plain HTTP to the internet; use HTTPS through a trusted reverse proxy or a trusted VPN. If a reverse proxy sends an external hostname, add that exact name to `PI_WEB_ALLOWED_HOSTS`. This allow-list does not change the address MeteorAgent binds to.
 
 ### HTTP Proxy
 
@@ -78,7 +75,7 @@ On macOS or Linux:
 HTTP_PROXY=http://127.0.0.1:7890 \
 HTTPS_PROXY=http://127.0.0.1:7890 \
 NO_PROXY=localhost,127.0.0.1 \
-npx @agegr/pi-web@latest
+webagent
 ```
 
 On Windows PowerShell:
@@ -87,21 +84,21 @@ On Windows PowerShell:
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
 $env:HTTPS_PROXY = "http://127.0.0.1:7890"
 $env:NO_PROXY = "localhost,127.0.0.1"
-npx @agegr/pi-web@latest
+webagent
 ```
 
 ## Notes
 
-- **Agent data**: Pi Web reads pi data from `~/.pi/agent` by default, including session files under `sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`. Set `PI_CODING_AGENT_DIR` to use another pi agent directory.
-- **Filesystem access**: Pi Web must be able to read the agent data directory and the working directories recorded by its sessions. Run Pi Web in the same filesystem environment as pi when sharing existing sessions.
-- **Shared configuration**: the Models panel uses pi's model, settings, and credential storage, so changes are visible to both interfaces.
-- **File access boundary**: the file browser is limited to working directories selected in Pi Web and project or session roots it already knows about; it is not a general filesystem browser.
-- **Git worktrees**: see [Worktrees in Pi Web](./docs/worktrees.md) for switcher visibility, worktree creation, and removal behavior.
+- **Agent data**: MeteorAgent currently retains the upstream-compatible `~/.pi/agent` data directory and `PI_CODING_AGENT_DIR` variable so existing sessions remain usable.
+- **Filesystem access**: MeteorAgent must be able to read the selected project directories. It runs with the current user's permissions.
+- **Shared configuration**: the Models panel uses the compatible model, settings, and credential storage used by the underlying agent runtime.
+- **File access boundary**: the file browser is limited to directories selected in MeteorAgent and project or session roots it already knows about; it is not a general filesystem browser.
+- **Git worktrees**: see [Worktrees](./docs/worktrees.md) for switcher visibility, worktree creation, and removal behavior.
 
 ### Downstream Session Context Menu
 
 Electron wrappers and other downstream integrations can provide a session-row
-context menu without patching `SessionSidebar`. Listen for the cancelable
+context menu without patching `SessionSidebar`. Listen for the compatibility
 `pi-web:session-row-contextmenu` browser event and call `preventDefault()`
 synchronously when the integration will handle it:
 
@@ -118,7 +115,7 @@ window.addEventListener("pi-web:session-row-contextmenu", (event) => {
 
 The detail object contains `id`, `path`, `cwd`, optional `name`, pointer
 coordinates, and a `refresh()` callback for actions that change the session
-list. If no listener cancels the extension event, Pi Web preserves the
+list. If no listener cancels the extension event, MeteorAgent preserves the
 browser's native context menu. This hook is browser-side and independent of
 Pi agent extensions.
 

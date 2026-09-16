@@ -37,6 +37,20 @@ test("ignores malformed auth provider responses", () => {
   );
 });
 
+test("relay login immediately syncs the authenticated account and drops stale refreshes", () => {
+  const loginDetail = source.slice(
+    source.indexOf("function RelayAddAccountDetail"),
+    source.indexOf("function relayProtocolLabel"),
+  );
+  assert.match(loginDetail, /onDone: \(accountId: string\)/);
+  assert.match(loginDetail, /await onDone\(result\.accountId\)/);
+  assert.match(source, /const requestId = \+\+relayAccountsRequestRef\.current/);
+  assert.match(source, /if \(requestId !== relayAccountsRequestRef\.current\) return/);
+  assert.match(source, /const completeRelayAccountLogin = useCallback/);
+  assert.match(source, /await refreshRelayAccounts\(\);[\s\S]*?await syncRelayAccount\(accountId\)/);
+  assert.match(source, /onDone=\{completeRelayAccountLogin\}/);
+});
+
 test("custom model config exposes provider-level request headers", () => {
   const providerDetail = source.slice(
     source.indexOf("function ProviderDetail"),

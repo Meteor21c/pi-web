@@ -70,6 +70,23 @@ test("a rejected submission preserves a different run reported by the server", (
   assert.match(reconcileSource, /if \(!agentRunningRef\.current\) return;[\s\S]*?finishPromptWithoutStream/);
 });
 
+test("ambiguous shell transport failures reconcile instead of inviting duplicate execution", () => {
+  const bashSource = source.slice(
+    source.indexOf("  const executeBash = useCallback"),
+    source.indexOf("  executeBashRef.current = executeBash"),
+  );
+
+  assert.match(bashSource, /await ensureEventsConnected\(sid\)/);
+  assert.match(bashSource, /requestStarted = true;[\s\S]*?await sendAgentCommand/);
+  assert.match(bashSource, /const definitivelyRejected = !requestStarted \|\| e instanceof AgentCommandError/);
+  assert.match(bashSource, /if \(!definitivelyRejected && sentSessionId\) \{[\s\S]*?waitForBashSettlement\(sentSessionId\)/);
+  assert.match(bashSource, /if \(!recovering\) \{[\s\S]*?setBashRunning\(false\)/);
+  assert.ok(
+    bashSource.indexOf("waitForBashSettlement(sentSessionId)")
+      < bashSource.indexOf("restoreSubmission(inputText"),
+  );
+});
+
 test("opening System or Tools lazily starts a dormant session without sending a prompt", () => {
   const loadSystemInfoSource = source.slice(
     source.indexOf("  const loadSystemInfo = useCallback"),

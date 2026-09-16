@@ -18,6 +18,8 @@ export type PluginPackageScope = "global" | "project";
 type PackageObject = Exclude<PackageSource, string>;
 export type PluginPackageSource = PackageObject & {
   activationMode?: PluginActivationMode;
+  /** Exact SDK package entry saved while the package is globally disabled. */
+  meteorAgentBeforeDisable?: PackageSource;
 };
 
 function isPackageObject(entry: PackageSource): entry is PackageObject {
@@ -69,16 +71,26 @@ function withActivationMode(entry: PackageSource, mode: PluginActivationMode): P
 }
 
 function makePackageDisabled(entry: PackageSource): PackageSource {
+  const previous = typeof entry === "string"
+    ? entry
+    : (entry as PluginPackageSource).meteorAgentBeforeDisable ?? entry;
   const objectEntry: PackageObject = typeof entry === "string"
     ? { source: entry }
     : { ...entry };
   return {
     ...objectEntry,
+    meteorAgentBeforeDisable: previous,
     extensions: [],
     skills: [],
     prompts: [],
     themes: [],
-  };
+  } as PluginPackageSource;
+}
+
+function restoreDisabledPackage(entry: PackageSource): PackageSource {
+  if (typeof entry === "string") return entry;
+  const previous = (entry as PluginPackageSource).meteorAgentBeforeDisable;
+  return previous ?? entry.source;
 }
 
 /**
@@ -103,7 +115,7 @@ export function setPluginActivationMode(
     // mode is therefore also the explicit opt-in that restores its package
     // resources; users can still use the regular disable action afterwards.
     if (mode === "session" && isDisabledPackage(nextEntry)) {
-      return withActivationMode(source, mode);
+      return withActivationMode(restoreDisabledPackage(nextEntry), mode);
     }
     return nextEntry;
   });
@@ -137,7 +149,7 @@ export function setPluginPackageDisabled(
     changed = true;
     if (disabled) return makePackageDisabled(entry);
     const mode = getPluginActivationMode(entry);
-    return mode === "session" ? withActivationMode(source, mode) : getPluginPackageSource(entry);
+    return withActivationMode(restoreDisabledPackage(entry), mode);
   });
   if (!changed) return false;
   if (scope === "project") settingsManager.setProjectPackages(next);

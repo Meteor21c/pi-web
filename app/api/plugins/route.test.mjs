@@ -17,6 +17,7 @@ await writeFile(join(agentDir, "extensions", "rtk.ts"), "export default () => {}
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
 const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
 const { GET } = await jiti.import("./route.ts");
+const { POST: CHECK_POST } = await jiti.import("./check/route.ts");
 allowFileRoot(cwd);
 
 after(async () => {
@@ -66,4 +67,27 @@ test("plugin listing rejects an empty session id", async () => {
   const body = await response.json();
   assert.equal(response.status, 400);
   assert.equal(body.error, "sessionId must be a non-empty string");
+});
+
+test("plugin update checks require a trusted JSON API request", async () => {
+  const crossSite = await CHECK_POST(new Request("http://localhost/api/plugins/check", {
+    method: "POST",
+    headers: {
+      host: "localhost",
+      origin: "https://attacker.example",
+      "sec-fetch-site": "cross-site",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ cwd }),
+  }));
+  assert.equal(crossSite.status, 403);
+  assert.deepEqual(await crossSite.json(), { error: "Untrusted API request" });
+
+  const wrongType = await CHECK_POST(new Request("http://localhost/api/plugins/check", {
+    method: "POST",
+    headers: { host: "localhost", "content-type": "text/plain" },
+    body: JSON.stringify({ cwd }),
+  }));
+  assert.equal(wrongType.status, 415);
+  assert.deepEqual(await wrongType.json(), { error: "Content-Type must be application/json" });
 });

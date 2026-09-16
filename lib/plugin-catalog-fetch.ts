@@ -9,6 +9,7 @@ const PI_CATALOG_ORIGIN = "https://pi.dev";
 const CATALOG_TYPES = ["skill", "prompt", "extension"] as const;
 const CATALOG_TTL_MS = 15 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
+const SEARCH_CACHE_MAX_ENTRIES = 100;
 
 interface CatalogCache {
   entries: CommunityPluginEntry[];
@@ -137,9 +138,9 @@ async function fetchCatalogType(type: (typeof CATALOG_TYPES)[number]): Promise<C
     headers: { Accept: "text/html", "User-Agent": "Magent/1.0 (+https://api.meteor21c.fun)" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Pi catalog returned HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`插件社区返回 HTTP ${response.status}`);
   const entries = parsePiPackageCatalogHtml(await response.text());
-  if (!entries.length) throw new Error(`Pi catalog returned no ${type} packages`);
+  if (!entries.length) throw new Error(`插件社区暂未返回 ${type} 类型组件`);
   return entries;
 }
 
@@ -152,8 +153,26 @@ async function fetchCatalogSearch(query: string): Promise<CommunityPluginEntry[]
     headers: { Accept: "text/html", "User-Agent": "Magent/1.0 (+https://api.meteor21c.fun)" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`Pi catalog search returned HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`插件社区搜索返回 HTTP ${response.status}`);
   return parsePiPackageCatalogHtml(await response.text());
+}
+
+function rememberSearch(
+  cache: Map<string, CatalogCache>,
+  key: string,
+  value: CatalogCache,
+  now: number,
+): void {
+  for (const [cachedKey, cached] of cache) {
+    if (cached.expiresAt <= now) cache.delete(cachedKey);
+  }
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > SEARCH_CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
 }
 
 export async function getCommunityPluginCatalog(
@@ -168,12 +187,15 @@ export async function getCommunityPluginCatalog(
       ??= new Map<string, CatalogCache>();
     const cachedSearch = searchCache.get(key);
     if (!forceRefresh && cachedSearch && cachedSearch.expiresAt > now) {
+      // Refresh insertion order so the fixed-size map behaves like an LRU.
+      searchCache.delete(key);
+      searchCache.set(key, cachedSearch);
       return { entries: cachedSearch.entries, fetchedAt: cachedSearch.fetchedAt, source: "cache" };
     }
     try {
       const entries = await fetchCatalogSearch(query);
       const fetchedAt = new Date().toISOString();
-      searchCache.set(key, { entries, fetchedAt, expiresAt: now + CATALOG_TTL_MS });
+      rememberSearch(searchCache, key, { entries, fetchedAt, expiresAt: now + CATALOG_TTL_MS }, now);
       return { entries, fetchedAt, source: "live" };
     } catch (error) {
       if (cachedSearch) {

@@ -2007,8 +2007,8 @@ function RelayAccountDetail({ account, onAddAccount }: {
 }
 
 function RelayAddAccountDetail({ login, onDone }: {
-  login: (email: string, password: string) => Promise<{ ok: boolean; message?: string }>;
-  onDone: () => Promise<void> | void;
+  login: (email: string, password: string) => Promise<{ ok: boolean; accountId?: string; message?: string }>;
+  onDone: (accountId: string) => Promise<void> | void;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -2020,11 +2020,11 @@ function RelayAddAccountDetail({ login, onDone }: {
     setError(null);
     try {
       const result = await login(email.trim(), password);
-      if (!result.ok) {
+      if (!result.ok || !result.accountId) {
         setError(result.message === "invalid-credentials" ? "邮箱或密码不正确。" : "登录失败，请检查网络后重试。");
         return;
       }
-      await onDone();
+      await onDone(result.accountId);
     } finally {
       setBusy(false);
     }
@@ -2249,15 +2249,18 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
   const baseConfigRef = useRef(JSON.stringify({ providers: {} }));
   const currentConfigRef = useRef(config);
   const configRequestRef = useRef(0);
+  const relayAccountsRequestRef = useRef(0);
   useEffect(() => { currentConfigRef.current = config; }, [config]);
 
   const refreshRelayAccounts = useCallback(async () => {
     if (!RELAY_PRODUCT_MODE) return;
+    const requestId = ++relayAccountsRequestRef.current;
     setRelayAccountsLoading(true);
     try {
       const response = await fetch("/api/relay-accounts", { cache: "no-store" });
       const data = await response.json() as RelayAccountsResponse;
       if (!response.ok || data.ok === false) throw new Error(data.error ?? `HTTP ${response.status}`);
+      if (requestId !== relayAccountsRequestRef.current) return;
       const accounts = Array.isArray(data.accounts) ? data.accounts : [];
       const groups = Array.isArray(data.groups)
         ? data.groups
@@ -2273,12 +2276,13 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
         return accountId ? { type: "account", accountId } : { type: "add-account" };
       });
     } catch {
+      if (requestId !== relayAccountsRequestRef.current) return;
       setRelayAccounts([]);
       setRelayGroups([]);
       setRelayActiveAccountId(null);
       setRelaySelection({ type: "add-account" });
     } finally {
-      setRelayAccountsLoading(false);
+      if (requestId === relayAccountsRequestRef.current) setRelayAccountsLoading(false);
     }
   }, []);
 
@@ -2460,6 +2464,15 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
     window.dispatchEvent(new Event("relay-config-updated"));
   }, [refreshRelayAccounts, reloadConfig]);
 
+  const completeRelayAccountLogin = useCallback(async (accountId: string) => {
+    // Make the newly authenticated account visible even when it has no usable
+    // key yet, then immediately run the same authoritative sync as the account
+    // action. This keeps the button label "登录并同步" truthful.
+    await refreshRelayAccounts();
+    setRelaySelection({ type: "account", accountId });
+    await syncRelayAccount(accountId);
+  }, [refreshRelayAccounts, syncRelayAccount]);
+
   const updateModel = useCallback((providerName: string, index: number, m: ModelEntry) => {
     setConfig((prev) => {
       const provider = prev.providers?.[providerName] ?? {};
@@ -2591,7 +2604,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
     if (relaySelection?.type === "add-account") {
       return <RelayAddAccountDetail
         login={relaySession.login}
-        onDone={async () => { await refreshRelayAccounts(); }}
+        onDone={completeRelayAccountLogin}
       />;
     }
     if (!relaySelection || relaySelection.type === "account") {
@@ -2600,7 +2613,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
         : selectedRelayAccount;
       return account
         ? <RelayAccountDetail account={account} onAddAccount={() => setRelaySelection({ type: "add-account" })} />
-        : <RelayAddAccountDetail login={relaySession.login} onDone={refreshRelayAccounts} />;
+        : <RelayAddAccountDetail login={relaySession.login} onDone={completeRelayAccountLogin} />;
     }
     const group = selectedRelayGroups.find((entry) => entry.providerId === relaySelection.providerId);
     const provider = config.providers?.[relaySelection.providerId];

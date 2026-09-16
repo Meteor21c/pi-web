@@ -55,16 +55,16 @@ export function createRelaySessionClient(enabled: boolean, request: typeof fetch
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     initialize: () => { if (initialized) return pending ?? Promise.resolve(); initialized = true; return recheck(); },
     recheck,
-    login: async (email: string, password: string): Promise<{ ok: boolean; message?: string }> => {
+    login: async (email: string, password: string): Promise<{ ok: boolean; accountId?: string; message?: string }> => {
       const generation = ++epoch;
       try {
         const res = await post("/api/relay-auth/login", { email, password });
         const body = await res.json();
         if (generation !== epoch) return { ok: false, message: "session-changed" };
-        if (res.ok && body.ok && body.user) {
+        if (res.ok && body.ok && body.user && typeof body.accountId === "string" && body.accountId) {
           publish({ status: "authenticated", user: body.user, expired: false, error: null, generation });
           notifyOtherTabs();
-          return { ok: true };
+          return { ok: true, accountId: body.accountId };
         }
         return { ok: false, message: body.message };
       } catch { return { ok: false, message: "network" }; }

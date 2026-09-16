@@ -1,6 +1,6 @@
 {
   "name": "@meteor21c/webagent",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MeteorAgent — AI coding agent for meteor21c relay customers",
   "homepage": "https://github.com/Meteor21c/pi-web#readme",
   "repository": {
@@ -22,6 +22,11 @@
     ".next",
     "!.next/cache",
     "!.next/dev",
+    "!.next/diagnostics",
+    "!.next/trace",
+    "!.next/trace-build",
+    "!.next/types",
+    "!.next/_events_*.json",
     "!.next/**/*.js.map",
     "public",
     "next.config.ts",
@@ -38,7 +43,7 @@
     "test:terminal": "node e2e/terminal.mjs",
     "test:e2e": "node e2e/run.mjs",
     "test": "node --experimental-strip-types --test \"app/**/*.test.mjs\" \"components/**/*.test.mjs\" \"hooks/**/*.test.mjs\" \"lib/**/*.test.mjs\" \"public/**/*.test.mjs\"",
-    "release": "npm version patch --no-git-tag-version && npm run build && npm publish --access public"
+    "release": "npm run build && npm pack"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.85.1",

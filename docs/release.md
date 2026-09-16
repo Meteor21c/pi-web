@@ -1,177 +1,86 @@
-# Release Checklist
+# MeteorAgent Release Checklist
 
-This repo publishes two artifacts for each release:
-
-- npm package: `@agegr/pi-web`
-- GitHub Release: `agegr/pi-web`
-
-Use this checklist from a clean `main` checkout.
+MeteorAgent releases are downloadable files, not public npm-registry publications. Each release contains one audited cross-platform npm tarball plus separate Windows and macOS launchers.
 
 ## 1. Preflight
+
+Run from a clean release branch:
 
 ```bash
 git status --short --branch
 git log --oneline --decorate -5
 gh auth status
-npm whoami
-node -e "const p=require('./package.json'); console.log(p.version)"
+node -e "const p=require('./package.json'); console.log(p.version, p.engines.node)"
+npm test
+npx tsc --noEmit
+npm run lint
+npm audit --omit=dev --registry=https://registry.npmjs.org/
 ```
 
-Expected:
+The source tree must be clean. Release builds are the explicit exception to the normal rule against running `next build` during development.
 
-- `git status` is clean, or only contains changes you intentionally plan to release.
-- GitHub is authenticated as an account that can push and create releases.
-- npm is authenticated as an account that can publish `@agegr/pi-web`.
+## 2. Build the customer artifacts
 
-## 2. Publish to npm
+The private companion workspace `meteoragent-brand` performs an isolated locked build, verifies the tarball, and creates the update manifest:
 
 ```bash
-npm run release
+cd ../meteoragent-brand
+bash build.sh
+bash scripts/make-launchers.sh
 ```
 
-The release script runs:
+Use the exact `release.*` and `launchers.*` directories printed by those commands:
 
 ```bash
-npm version patch --no-git-tag-version && npm run build && npm publish --access public
+RELEASE_DIR=/absolute/release.directory \
+LAUNCHER_DIR=/absolute/launchers.directory \
+bash scripts/assemble-customer-release.sh
 ```
 
-Notes:
+The final `customer-release.<version>.*` directory must contain only:
 
-- This bumps `package.json` and `package-lock.json`.
-- It intentionally runs a production build. Do not run `next build` during normal development; release work is the exception.
-- If `npm view @agegr/pi-web version` briefly shows the previous version, check the exact version instead:
+- `meteor21c-webagent-<version>.tgz`
+- `MeteorAgent-launcher-Windows.zip`
+- `MeteorAgent-launcher-macOS.zip`
+- `latest.json`
+- `source.json`
+- `README-client.txt`
+- `SHA256SUMS`
+
+The `.tgz` is portable. The launchers are separated because Windows uses BAT/PowerShell/VBS/ICO while macOS uses an app bundle/ICNS and has different unsigned-app instructions. Both support x64 and ARM64 through the customer's installed Node.js runtime.
+
+## 3. Smoke test
+
+Install the generated tarball into a fresh temporary npm prefix, run `webagent --help`, start it on a free loopback port, and verify `/api/relay-health` reports `MeteorAgent` and `ok`. Also verify both ZIP files with `unzip -t`.
+
+Windows launcher behavior cannot be fully executed on macOS; GitHub CI plus static PowerShell/BAT inspection is the minimum first-release check until a Windows runner is added.
+
+## 4. Commit, tag, and push
+
+Use the product-specific tag namespace so it cannot be confused with upstream tags:
 
 ```bash
-npm view @agegr/pi-web@<version> version --registry https://registry.npmjs.org/
-npm view @agegr/pi-web versions --json --registry https://registry.npmjs.org/
+git tag -a meteoragent-v<version> -m "MeteorAgent v<version>"
+git push meteor ui/visual-refresh
+git push meteor meteoragent-v<version>
 ```
 
-## 3. Commit the Version Bump
+## 5. Publish
 
-Replace `<version>` with the new package version, for example `0.7.5`.
+Create a GitHub Release in `Meteor21c/pi-web` and attach every file from the clean customer directory. Then deploy the same main tarball, manifest, download page, and the two launcher ZIPs to `dl.meteor21c.fun`.
+
+Do not publish the private brand/deployment repository: it contains infrastructure details. Never put customer credentials, API keys, SSH passwords, `.env` files, local caches, traces, or personal build paths in an artifact.
+
+## 6. Final verification
+
+Verify all of the following from an external network when possible:
 
 ```bash
-git diff -- package.json package-lock.json
-git add package.json package-lock.json
-git commit -m "Release v<version>"
+gh release view meteoragent-v<version> --repo Meteor21c/pi-web
+curl -fsS https://dl.meteor21c.fun/webagent/latest.json
+curl -fI https://dl.meteor21c.fun/webagent/latest.tgz
+curl -fI https://dl.meteor21c.fun/launcher/MeteorAgent-launcher-Windows.zip
+curl -fI https://dl.meteor21c.fun/launcher/MeteorAgent-launcher-macOS.zip
 ```
 
-## 4. Tag and Push
-
-```bash
-git tag -a v<version> -m "v<version>"
-git push origin main --tags
-```
-
-Confirm the tag does not already exist before creating it when unsure:
-
-```bash
-git ls-remote --tags origin v<version>
-gh release view v<version> --repo agegr/pi-web
-```
-
-## 5. Generate Release Notes from Commits
-
-Use the previous release tag as the base.
-
-```bash
-git log --oneline --decorate v<previous>..v<version>
-git log --format='%h%x09%s%n%b' v<previous>..v<version>
-git diff --stat v<previous>..v<version>
-```
-
-Write the release notes from those commits, not from memory. Include both Chinese and English sections. Keep commit hashes next to each item when useful.
-
-Suggested structure:
-
-```markdown
-## 中文
-
-基于 `v<previous>..v<version>` 的提交整理。
-
-### 新增
-
-- ...
-
-### 修复
-
-- ...
-
-### 改进
-
-- ...
-
-### 内部调整
-
-- 发布 npm 包 `@agegr/pi-web@<version>`。
-
-## English
-
-Prepared from commits in `v<previous>..v<version>`.
-
-### Added
-
-- ...
-
-### Fixed
-
-- ...
-
-### Improved
-
-- ...
-
-### Internal
-
-- Published npm package `@agegr/pi-web@<version>`.
-```
-
-## 6. Create or Update the GitHub Release
-
-Create a new release:
-
-```bash
-gh release create v<version> \
-  --repo agegr/pi-web \
-  --verify-tag \
-  --title "v<version>" \
-  --notes-file release-notes.md
-```
-
-If the release already exists and only the notes need updating:
-
-```bash
-gh release edit v<version> \
-  --repo agegr/pi-web \
-  --notes-file release-notes.md
-```
-
-You can avoid a temporary file by passing notes through stdin:
-
-```bash
-gh release edit v<version> --repo agegr/pi-web --notes-file - <<'EOF'
-## 中文
-
-...
-
-## English
-
-...
-EOF
-```
-
-## 7. Final Verification
-
-```bash
-gh release view v<version> --repo agegr/pi-web
-npm view @agegr/pi-web@<version> version --registry https://registry.npmjs.org/
-git status --short --branch
-git log --oneline --decorate -3
-```
-
-Expected:
-
-- GitHub Release exists and is not a draft unless intentionally published as one.
-- npm exact version resolves.
-- `main` is aligned with `origin/main`.
-- `HEAD` points at the release commit and `v<version>` tag.
+The manifest SHA-256 must match both the download-server tarball and the GitHub Release asset. Keep the GitHub Release links as the fallback if the regional download path is unavailable.

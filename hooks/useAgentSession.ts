@@ -14,7 +14,7 @@ import type {
 } from "@/lib/types";
 import { isBlockingExtensionUiRequest } from "@/lib/browser-notifications";
 import { normalizeToolCalls } from "@/lib/normalize";
-import { isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
+import { AgentCommandError, isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
@@ -1491,9 +1491,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     bashRunningRef.current = true;
     setPendingBash({ command, excludeFromContext });
     setBashRunning(true);
+    let sentSessionId: string | null = null;
+    let requestStarted = false;
+    let recovering = false;
     try {
       const sid = sessionIdRef.current ?? session?.id ?? await ensureNewSession();
       if (!sid) throw new Error("Unable to create a session for the shell command");
+      sentSessionId = sid;
+      await ensureEventsConnected(sid);
+      requestStarted = true;
       await sendAgentCommand(sid, {
         type: "bash",
         command,
@@ -1503,14 +1509,30 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       promoteNewSession(1, inputText);
     } catch (e) {
       console.error("Failed to execute shell command:", e);
+      // A transport/proxy failure after dispatch is ambiguous: the wrapper may
+      // already be executing the command even though the response was lost.
+      // Keep the command busy and reconcile with server state instead of
+      // restoring a submission that the user could accidentally run twice.
+      const definitivelyRejected = !requestStarted || e instanceof AgentCommandError;
+      if (!definitivelyRejected && sentSessionId) {
+        recovering = true;
+        addNotice({
+          type: "warning",
+          message: "连接中断，正在确认命令状态。请勿重复执行；确认完成后会自动恢复。",
+        });
+        void waitForBashSettlement(sentSessionId);
+        return;
+      }
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
       restoreSubmission(inputText, undefined, composerDraftKey);
     } finally {
-      bashRunningRef.current = false;
-      setPendingBash(null);
-      setBashRunning(false);
+      if (!recovering) {
+        bashRunningRef.current = false;
+        setPendingBash(null);
+        setBashRunning(false);
+      }
     }
-  }, [addNotice, composerDraftKey, ensureNewSession, loadSession, promoteNewSession, restoreSubmission, session]);
+  }, [addNotice, composerDraftKey, ensureEventsConnected, ensureNewSession, loadSession, promoteNewSession, restoreSubmission, session, waitForBashSettlement]);
   executeBashRef.current = executeBash;
 
   const handleAbort = useCallback(async () => {

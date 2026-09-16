@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import Image from "next/image";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
 import { RelayOnboarding, type RelayOnboardingPhase } from "./RelayOnboarding";
@@ -146,9 +147,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
                 MeteorAgent
               </div>
             ) : (
-              <img
+              <Image
                 src="/icons/logo.png"
                 alt="MeteorAgent"
+                width={96}
+                height={96}
                 style={{ width: 96, height: 96, borderRadius: 24, objectFit: "cover" }}
                 onError={() => setLogoFailed(true)}
               />
