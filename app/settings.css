@@ -40,8 +40,10 @@
 }
 
 .config-panel-root.is-modal > .config-panel-surface {
-  width: min(var(--config-panel-width), calc(100vw / var(--ui-scale, 1) - 16px));
-  height: min(var(--config-panel-height), calc(100dvh / var(--ui-scale, 1) - 16px));
+  /* 基准宽高也除以缩放系数：根 zoom 会把 78vh/900px 这类基准再放大，
+     否则弹窗在 125% 下会撑到接近全屏。 */
+  width: min(calc(var(--config-panel-width, 900px) / var(--ui-scale, 1)), calc(100vw / var(--ui-scale, 1) - 16px));
+  height: min(calc(var(--config-panel-height, 78vh) / var(--ui-scale, 1)), calc(100dvh / var(--ui-scale, 1) - 16px));
   border: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
   border-radius: 18px;
   box-shadow:
@@ -1563,9 +1565,9 @@
 .settings-dialog-surface {
   display: flex;
   flex-direction: column;
-  width: 1080px;
+  width: calc(1080px / var(--ui-scale, 1));
   max-width: calc(100vw / var(--ui-scale, 1) - 16px);
-  height: 84vh;
+  height: calc(84vh / var(--ui-scale, 1));
   max-height: calc(100dvh / var(--ui-scale, 1) - 16px);
   overflow: hidden;
   border: 1px solid var(--border);
