@@ -50,6 +50,25 @@ export interface InitialModelScopeResult {
   scopedModels: ScopedModel[];
 }
 
+/** Restrict a resolved scope to product-owned providers without re-resolving model patterns. */
+export function filterModelScopeByProviders(
+  scope: ModelScopeResult,
+  allowedProviders: ReadonlySet<string> | null,
+): ModelScopeResult {
+  if (allowedProviders === null) return scope;
+  const visible = scope.visible.filter((model) => allowedProviders.has(model.provider));
+  const scopedModels = scope.scopedModels.filter((scoped) => allowedProviders.has(scoped.model.provider));
+  const visibleKeys = new Set(visible.map((model) => `${model.provider}/${model.id}`));
+  return {
+    ...scope,
+    visible,
+    scopedModels,
+    thinkingLevelPins: Object.fromEntries(
+      Object.entries(scope.thinkingLevelPins).filter(([key]) => visibleKeys.has(key)),
+    ),
+  };
+}
+
 function matchesModel(
   model: { provider: string; id: string },
   ref: { provider: string; modelId: string },
