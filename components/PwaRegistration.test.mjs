@@ -11,6 +11,7 @@ test("offers desktop installation only when the browser exposes the PWA prompt",
   assert.match(source, /promptEvent\.preventDefault\(\)/);
   assert.match(source, /await installPrompt\.prompt\(\)/);
   assert.match(source, /await installPrompt\.userChoice/);
+  assert.match(source, /choice\.outcome === "accepted" \|\| choice\.outcome === "dismissed"/);
   assert.match(source, /if \(!showInstallPrompt \|\| !installPrompt\) return null/);
 });
 

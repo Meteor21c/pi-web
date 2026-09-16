@@ -108,7 +108,9 @@ export function PwaRegistration() {
     try {
       await installPrompt.prompt();
       const choice = await installPrompt.userChoice;
-      if (choice.outcome === "dismissed") dismissInstallPrompt();
+      if (choice.outcome === "accepted" || choice.outcome === "dismissed") {
+        dismissInstallPrompt();
+      }
     } finally {
       setInstalling(false);
     }
