@@ -1207,9 +1207,9 @@ function ModelDetail({
       <div>
         <SectionTitle>{t("models.capabilities")}</SectionTitle>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
-          <Check label={t("models.reasoning")} checked={model.reasoning ?? false} onChange={(v) => set("reasoning", v || undefined)} />
+          <Check label={t("models.reasoning")} checked={model.reasoning ?? false} onChange={(v) => set("reasoning", v)} />
           <Check label={t("models.imageInput")} checked={model.input?.includes("image") ?? false}
-            onChange={(v) => set("input", v ? ["text", "image"] : undefined)} />
+            onChange={(v) => set("input", v ? ["text", "image"] : ["text"])} />
         </div>
       </div>
 

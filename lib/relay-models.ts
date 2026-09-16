@@ -11,6 +11,7 @@
  */
 
 import { getRelayBaseUrl, getRelayResponsesBaseUrl } from "./relay-config";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
   RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW,
@@ -76,6 +77,22 @@ const TABLE_BY_FAMILY: Record<"gpt" | "claude", Map<string, RelayModelDef>> = {
   claude: new Map(CLAUDE_MODELS.map((x) => [x.id, x])),
 };
 
+type RelayModelCapabilities = Pick<RelayModelDef, "reasoning" | "input">;
+
+/**
+ * Only enrich exact IDs from well-known upstream catalogs. An unknown or
+ * relay-specific alias must keep the existing conservative fallback so that a
+ * similar-looking name never enables a request feature the relay cannot use.
+ */
+const COMMON_CAPABILITIES = new Map<string, RelayModelCapabilities>(
+  (["xai", "google", "deepseek"] as const).flatMap((provider) => (
+    getBuiltinModels(provider).map((model) => [model.id.toLocaleLowerCase(), {
+      reasoning: model.reasoning,
+      input: model.input.filter((value): value is "text" | "image" => value === "text" || value === "image"),
+    }] as const)
+  )),
+);
+
 const FALLBACK: RelayModelDef = {
   id: "",
   reasoning: false,
@@ -89,7 +106,7 @@ const FALLBACK: RelayModelDef = {
  * 用内置元数据补全远端 /v1/models 返回的模型 id 列表。
  * family:
  *  - "gpt" / "claude"：内置表命中取元数据，未命中走保守 FALLBACK；无远端列表时返回内置全表（离线兜底）
- *  - "other"：远端目录中不属于 gpt/claude 家族的其余模型（deepseek/grok/qwen/绘图等长尾分组），统一走 FALLBACK
+ *  - "other"：远端目录中不属于 gpt/claude 家族的其余模型；精确命中常见上游目录时补全能力，未知模型保持 FALLBACK
  */
 export function resolveRelayModels(
   family: "gpt" | "claude" | "other",
@@ -99,7 +116,7 @@ export function resolveRelayModels(
     if (!remoteIds || remoteIds.length === 0) return [];
     return remoteIds
       .filter((id) => !GPT_MATCH.test(id) && !CLAUDE_MATCH.test(id))
-      .map((id) => ({ ...FALLBACK, id, name: id }));
+      .map((id) => withCommonCapabilities({ ...FALLBACK, id, name: id }));
   }
 
   const table = TABLE_BY_FAMILY[family];
@@ -128,6 +145,16 @@ export function resolveRelayModels(
 function withKnownCapabilities(model: RelayModelDef): RelayModelDef {
   const conservative = /fable|auto-review|spark/.test(model.id);
   return { ...model, reasoning: !conservative, input: conservative ? ["text"] : ["text", "image"] };
+}
+
+function withCommonCapabilities(model: RelayModelDef): RelayModelDef {
+  const capabilities = COMMON_CAPABILITIES.get(model.id.toLocaleLowerCase());
+  if (!capabilities) return model;
+  return {
+    ...model,
+    reasoning: capabilities.reasoning,
+    input: capabilities.input ? [...capabilities.input] : model.input,
+  };
 }
 
 /** SDK supports per-model api/baseUrl; preserve all families under one key. */
