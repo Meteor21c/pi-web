@@ -321,7 +321,7 @@ export function AppShell() {
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "plugins" | "session" | null>(null);
-  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
 
   useEffect(() => {
     if (!sessionHasBranches) {
@@ -426,15 +426,19 @@ export function AppShell() {
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
       // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，需先换算。
+      const panelTop = divideByUiScale(topBarRect.bottom);
+      // maxHeight 也要换算：100dvh 在根 zoom 下会放大（见 lib/ui-scale.ts）。
+      const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop;
       if (activeTopPanel === "agents") {
         setTopPanelPos({
-          top: divideByUiScale(topBarRect.bottom),
+          top: panelTop,
           left: divideByUiScale(topBarRect.left),
           width: Math.min(AGENT_PANEL_WIDTH, divideByUiScale(topBarRect.width)),
+          maxHeight: panelMaxHeight,
         });
         return;
       }
-      setTopPanelPos({ top: divideByUiScale(topBarRect.bottom), left: divideByUiScale(topBarRect.left), width: divideByUiScale(topBarRect.width) });
+      setTopPanelPos({ top: panelTop, left: divideByUiScale(topBarRect.left), width: divideByUiScale(topBarRect.width), maxHeight: panelMaxHeight });
     };
     update();
     const ro = new ResizeObserver(update);
@@ -2006,7 +2010,7 @@ export function AppShell() {
               top: topPanelPos.top,
               left: topPanelPos.left,
               width: topPanelPos.width,
-              maxHeight: `calc(100dvh - ${topPanelPos.top}px)`,
+              maxHeight: topPanelPos.maxHeight,
               overflowY: "auto",
               zIndex: 500,
             }}>

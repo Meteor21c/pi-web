@@ -2,7 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sendAgentCommand } from "@/lib/agent-client";
-import type { PluginPackageInfo, PluginStandaloneExtensionInfo, PluginUpdateResult, PluginsResponse } from "@/lib/api-types";
+import type {
+  PluginActivationMode,
+  PluginPackageInfo,
+  PluginStandaloneExtensionInfo,
+  PluginUpdateResult,
+  PluginsResponse,
+} from "@/lib/api-types";
+import {
+  COMMUNITY_PLUGIN_CATEGORY_ORDER,
+  COMMUNITY_PLUGIN_CATALOG,
+  filterCommunityPluginCatalog,
+  sameCommunityPluginSource,
+  type CommunityPluginCategory,
+  type CommunityPluginEntry,
+} from "@/lib/plugin-catalog";
 import { useI18n } from "@/hooks/useI18n";
 import {
   getLastSettingsSelection,
@@ -34,6 +48,24 @@ import {
 
 type PluginScope = PluginPackageInfo["scope"];
 type PluginAction = "install" | "remove" | "update" | "disable" | "enable";
+type PluginView = "community" | "installed";
+type InstallStage = 0 | 1 | 2 | 3;
+
+interface PendingPluginInstall {
+  source: string;
+  scope: PluginScope;
+  name: string;
+  description?: string;
+  packageUrl?: string;
+  category?: CommunityPluginCategory;
+}
+
+interface InstallProgressState {
+  source: string;
+  scope: PluginScope;
+  stage: InstallStage;
+}
+
 const METEORAGENT_PRODUCT_MODE = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 
 function shortenPath(path: string): string {
@@ -97,6 +129,350 @@ function statusColor(status: PluginPackageInfo["status"]): string {
   if (status === "installed") return "#f59e0b";
   if (status === "disabled") return "var(--text-dim)";
   return "#ef4444";
+}
+
+function communityCategoryLabel(
+  category: CommunityPluginCategory,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (category === "skill") return t("i18n.pluginCategorySkill");
+  if (category === "prompt") return t("i18n.pluginCategoryPrompt");
+  return t("i18n.pluginCategoryTool");
+}
+
+function communityRiskLabel(
+  risk: CommunityPluginEntry["risk"],
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  return risk === "low" ? t("i18n.pluginRiskLow") : t("i18n.pluginRiskReview");
+}
+
+function PluginViewTabs({
+  value,
+  installedCount,
+  onChange,
+}: {
+  value: PluginView;
+  installedCount: number;
+  onChange: (value: PluginView) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="plugins-view-tabs" role="tablist" aria-label={t("i18n.pluginViews")}>
+      {(["community", "installed"] as const).map((view) => {
+        const active = value === view;
+        return (
+          <button
+            key={view}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            className={`plugins-view-tab${active ? " is-active" : ""}`}
+            data-plugin-view={view}
+            onClick={() => onChange(view)}
+          >
+            {view === "community" ? t("i18n.pluginCommunity") : t("i18n.pluginInstalled")}
+            {view === "installed" && (
+              <span className="plugins-view-tab-count" aria-label={t("i18n.pluginInstalledCount", { count: installedCount })}>
+                {installedCount}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PluginInstallProgress({ progress }: { progress: InstallProgressState }) {
+  const { t } = useI18n();
+  const labels = [
+    t("i18n.pluginInstallStagePreparing"),
+    t("i18n.pluginInstallStageDownloading"),
+    t("i18n.pluginInstallStageInstalling"),
+    t("i18n.pluginInstallStageFinalizing"),
+  ];
+  return (
+    <div
+      className="plugin-install-progress"
+      role="status"
+      aria-live="polite"
+      data-plugin-install-progress="true"
+    >
+      <div className="plugin-install-progress-heading">
+        <strong>{t("i18n.pluginInstallProgressTitle")}</strong>
+        <span title={progress.source}>
+          {progress.source} · {progress.scope === "global" ? t("skills.scope.global") : t("skills.scope.project")} · {t("i18n.pluginInstallProgressBackground")}
+        </span>
+      </div>
+      <ol className="plugin-install-progress-steps">
+        {labels.map((label, index) => {
+          const complete = index < progress.stage;
+          const current = index === progress.stage;
+          return (
+            <li
+              key={label}
+              className={`${complete ? "is-complete" : ""}${current ? " is-current" : ""}`}
+            >
+              <span className="plugin-install-progress-marker" aria-hidden="true">
+                {complete ? "✓" : index + 1}
+              </span>
+              <span>{label}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function PluginInstallWarningDialog({
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  pending: PendingPluginInstall;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useI18n();
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  useEffect(() => {
+    setAcknowledged(false);
+  }, [pending.source, pending.scope]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="plugin-install-warning-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        className="plugin-install-warning-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="plugin-install-warning-title"
+        aria-describedby="plugin-install-warning-body"
+      >
+        <div className="plugin-install-warning-icon" aria-hidden="true">!</div>
+        <div className="plugin-install-warning-copy">
+          <h2 id="plugin-install-warning-title">{t("i18n.pluginInstallWarningTitle")}</h2>
+          <p id="plugin-install-warning-body">{t("i18n.pluginInstallWarningBody")}</p>
+        </div>
+        <div className="plugin-install-warning-source">
+          <span>{t("i18n.pluginInstallWarningSource")}</span>
+          <strong title={pending.name}>{pending.name}</strong>
+          <code title={pending.source}>{pending.source}</code>
+          <span>{pending.scope === "global" ? t("skills.scope.global") : t("skills.scope.project")}</span>
+        </div>
+        {pending.description && (
+          <p className="plugin-install-warning-description">{pending.description}</p>
+        )}
+        <label className="plugin-install-warning-acknowledge">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(event) => setAcknowledged(event.currentTarget.checked)}
+          />
+          <span>{t("i18n.pluginInstallWarningAcknowledge")}</span>
+        </label>
+        <div className="plugin-install-warning-actions">
+          <ConfigButton size="small" onClick={onCancel}>{t("i18n.cancel")}</ConfigButton>
+          <ConfigButton
+            size="small"
+            variant="primary"
+            disabled={!acknowledged}
+            onClick={onConfirm}
+          >
+            {t("i18n.pluginInstallWarningContinue")}
+          </ConfigButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CommunityPluginPanel({
+  packages,
+  projectResourcesLoaded,
+  busyKey,
+  actionError,
+  actionMessage,
+  onInstall,
+  catalog = COMMUNITY_PLUGIN_CATALOG,
+}: {
+  packages: PluginPackageInfo[];
+  projectResourcesLoaded: boolean;
+  busyKey: string | null;
+  actionError: string | null;
+  actionMessage: string | null;
+  onInstall: (entry: CommunityPluginEntry, scope: PluginScope) => void;
+  /** Future `/api/plugins/catalog` data can be injected without changing this UI. */
+  catalog?: readonly CommunityPluginEntry[];
+}) {
+  const { locale, t } = useI18n();
+  const [category, setCategory] = useState<CommunityPluginCategory | "all">("all");
+  const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<PluginScope>("global");
+  const entries = useMemo(
+    () => filterCommunityPluginCatalog(catalog, category, query),
+    [catalog, category, query],
+  );
+  const riskSections = useMemo(
+    () => (["low", "review"] as const)
+      .map((risk) => ({ risk, entries: entries.filter((entry) => entry.risk === risk) }))
+      .filter((section) => section.entries.length > 0),
+    [entries],
+  );
+  const busy = busyKey !== null;
+
+  return (
+    <div className="config-detail plugins-community-panel">
+      <ConfigDetailStack className="plugins-community-stack">
+        <div className="plugins-community-heading">
+          <div>
+            <ConfigDetailTitle>{t("i18n.pluginCommunity")}</ConfigDetailTitle>
+            <p>{t("i18n.pluginCommunityDescription")}</p>
+          </div>
+          <a
+            className="plugins-community-source-link"
+            href="https://pi.dev/packages"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t("i18n.pluginOpenCatalog")} ↗
+          </a>
+        </div>
+
+        <div className="plugins-community-toolbar">
+          <div className="plugins-community-category-tabs" role="tablist" aria-label={t("i18n.pluginCategory")}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={category === "all"}
+              className={`plugins-community-category-tab${category === "all" ? " is-active" : ""}`}
+              onClick={() => setCategory("all")}
+            >
+              {t("i18n.pluginCategoryAll")}
+            </button>
+            {COMMUNITY_PLUGIN_CATEGORY_ORDER.map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={category === item}
+                className={`plugins-community-category-tab${category === item ? " is-active" : ""}`}
+                data-plugin-community-category={item}
+                onClick={() => setCategory(item)}
+              >
+                {communityCategoryLabel(item, t)}
+              </button>
+            ))}
+          </div>
+          <input
+            className="plugins-community-search"
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder={t("i18n.pluginSearchPlaceholder")}
+            aria-label={t("i18n.pluginSearchPlaceholder")}
+          />
+          <SegmentedScope
+            value={scope}
+            projectResourcesLoaded={projectResourcesLoaded}
+            onChange={setScope}
+          />
+        </div>
+
+        <div className="plugins-community-safe-note" role="note">
+          <span className="plugins-community-safe-note-icon" aria-hidden="true">✓</span>
+          <span>{t("i18n.pluginLowRiskNotice")}</span>
+        </div>
+
+        {actionMessage && <div className="plugins-action-notice is-success" role="status">{actionMessage}</div>}
+        {actionError && <div className="plugins-action-notice is-error" role="alert">{actionError}</div>}
+
+        {entries.length > 0 ? (
+          <div className="plugins-community-risk-sections">
+            {riskSections.map((section) => (
+              <section className={`plugins-community-risk-section is-${section.risk}`} key={section.risk}>
+                <div className="plugins-community-risk-section-heading">
+                  <span>{section.risk === "low" ? "✓" : "!"}</span>
+                  <strong>{communityRiskLabel(section.risk, t)}</strong>
+                </div>
+                <div className="plugins-community-grid">
+                  {section.entries.map((entry) => {
+                    const installed = packages.some(
+                      (pkg) => pkg.scope === scope && sameCommunityPluginSource(pkg.source, entry.source),
+                    );
+                    return (
+                      <article
+                        key={entry.id}
+                        className={`plugins-community-card plugins-community-card-risk-${entry.risk}`}
+                        data-plugin-community-card={entry.id}
+                      >
+                        <div className="plugins-community-card-heading">
+                          <div className="plugins-community-card-title-wrap">
+                            <h3>{entry.name}</h3>
+                            <code title={entry.source}>{entry.source}</code>
+                          </div>
+                          <span className={`plugins-community-risk plugins-community-risk-${entry.risk}`}>
+                            {communityRiskLabel(entry.risk, t)}
+                          </span>
+                        </div>
+                        <div className="plugins-community-card-meta">
+                          <span className="plugins-community-category-badge">{communityCategoryLabel(entry.category, t)}</span>
+                          {(entry.capabilities[locale] ?? entry.capabilities.en)
+                            .map((capability) => <span key={capability}>{capability}</span>)}
+                        </div>
+                        <p className="plugins-community-card-description">
+                          {entry.description[locale] ?? entry.description.en}
+                        </p>
+                        <div className="plugins-community-card-actions">
+                          <a href={entry.packageUrl} target="_blank" rel="noopener noreferrer">
+                            {t("i18n.pluginDetails")} ↗
+                          </a>
+                          <ConfigButton
+                            size="small"
+                            variant={installed ? "secondary" : "primary"}
+                            disabled={installed || busy}
+                            onClick={() => onInstall(entry, scope)}
+                            data-plugin-community-install={entry.id}
+                          >
+                            {installed
+                              ? `✓ ${t("i18n.installed")}`
+                              : busyKey?.startsWith("install:") && busyKey.endsWith(`${scope}\0${entry.source}`)
+                                ? t("i18n.installing")
+                                : t("i18n.pluginInstallFromCommunity")}
+                          </ConfigButton>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <ConfigEmptyState>{t("i18n.pluginNoCommunityResults")}</ConfigEmptyState>
+        )}
+
+        <div className="plugins-community-hidden-note">
+          {t("i18n.pluginComplexHidden")} <a href="https://pi.dev/packages" target="_blank" rel="noopener noreferrer">{t("i18n.pluginOpenCatalog")}</a>.
+        </div>
+      </ConfigDetailStack>
+    </div>
+  );
 }
 
 function ResourceList({ pkg }: { pkg: PluginPackageInfo }) {
@@ -217,6 +593,7 @@ function SegmentedScope({
   const { t } = useI18n();
   return (
     <div
+      className="config-scope-control"
       style={{
         display: "inline-flex",
         border: "1px solid var(--border)",
@@ -427,7 +804,9 @@ function PackageDetail({
   updateStatus,
   checkingUpdate,
   updateError,
+  activationBusy,
   onAction,
+  onActivationChange,
   onCheckUpdate,
   onReloadSession,
 }: {
@@ -440,7 +819,9 @@ function PackageDetail({
   updateStatus?: PluginUpdateResult;
   checkingUpdate: boolean;
   updateError: string | null;
+  activationBusy: boolean;
   onAction: (action: PluginAction, pkg: PluginPackageInfo) => void;
+  onActivationChange: (mode: PluginActivationMode) => void;
   onCheckUpdate: () => void;
   onReloadSession: () => void;
 }) {
@@ -448,7 +829,7 @@ function PackageDetail({
   const key = packageKey(pkg);
   const busy = busyKey?.endsWith(key) ?? false;
   const reloadBusy = busyKey === "reload";
-  const enabled = !pkg.disabled;
+  const enabled = pkg.globalEnabled;
   const canCheckForUpdates = pkg.canCheckForUpdates;
   const updateAvailable = updateStatus?.state === "update-available";
 
@@ -503,7 +884,7 @@ function PackageDetail({
             onClick={updateAvailable || !canCheckForUpdates
               ? () => onAction("update", pkg)
               : onCheckUpdate}
-            disabled={busy || reloadBusy || checkingUpdate}
+            disabled={busy || reloadBusy || checkingUpdate || activationBusy}
             title={updateAvailable ? t("i18n.updateAvailable") : undefined}
           >
              {busyKey === `update:${key}`
@@ -517,7 +898,7 @@ function PackageDetail({
           <ConfigButton
             size="small"
             onClick={onReloadSession}
-            disabled={!sessionId || reloadBusy || busy}
+            disabled={!sessionId || reloadBusy || busy || activationBusy}
              title={sessionId ? t("i18n.reloadSession") : t("i18n.openSessionToReload")}
           >
              {reloadBusy ? t("i18n.reloading") : t("i18n.reloadSession")}
@@ -526,18 +907,50 @@ function PackageDetail({
             variant="danger"
             size="small"
             onClick={() => onAction("remove", pkg)}
-            disabled={busy || reloadBusy}
+            disabled={busy || reloadBusy || activationBusy}
           >
              {busyKey === `remove:${key}` ? t("i18n.removing") : t("i18n.remove")}
           </ConfigButton>
           <ConfigSwitch
             checked={enabled}
-            loading={busy || reloadBusy}
+            loading={busy || reloadBusy || activationBusy}
             onChange={() => onAction(pkg.disabled ? "enable" : "disable", pkg)}
             label={pkg.disabled ? t("i18n.enablePackage") : t("i18n.disablePackage")}
           />
         </ConfigDetailActions>
       </ConfigDetailHeader>
+
+      <ConfigField label={t("i18n.pluginActivationMode")}>
+        <div
+          className="plugin-activation-mode-control"
+          role="radiogroup"
+          aria-label={t("i18n.pluginActivationMode")}
+        >
+          {(["global", "session"] as const).map((mode) => {
+            const active = pkg.activationMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className={`plugin-activation-mode-option${active ? " is-active" : ""}`}
+                data-plugin-activation-mode={mode}
+                disabled={busy || reloadBusy || activationBusy}
+                onClick={() => onActivationChange(mode)}
+              >
+                {mode === "global" ? t("i18n.pluginActivationGlobal") : t("i18n.pluginActivationSession")}
+              </button>
+            );
+          })}
+        </div>
+        <span className="plugin-activation-mode-help">
+          {pkg.activationMode === "global"
+            ? t("i18n.pluginActivationGlobalDescription")
+            : t("i18n.pluginActivationSessionDescription")}
+        </span>
+        {activationBusy && <span className="plugin-activation-mode-saving">{t("i18n.pluginActivationSaving")}</span>}
+      </ConfigField>
 
       <div
         style={{
@@ -671,15 +1084,19 @@ export function PluginsConfig({
   onReloaded?: () => void;
   embedded?: boolean;
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const [data, setData] = useState<PluginsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(() => getLastSettingsSelection("plugins", cwd));
+  const [view, setView] = useState<PluginView>("community");
   const [addMode, setAddMode] = useState(false);
   const [installSource, setInstallSource] = useState("");
   const [installScope, setInstallScope] = useState<PluginScope>("global");
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [activationBusyKey, setActivationBusyKey] = useState<string | null>(null);
+  const [pendingInstall, setPendingInstall] = useState<PendingPluginInstall | null>(null);
+  const [installProgress, setInstallProgress] = useState<InstallProgressState | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [updateStatuses, setUpdateStatuses] = useState<Record<string, PluginUpdateResult>>({});
@@ -704,11 +1121,11 @@ export function PluginsConfig({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/plugins?cwd=${encodeURIComponent(cwd)}`);
+      const sessionQuery = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
+      const res = await fetch(`/api/plugins?cwd=${encodeURIComponent(cwd)}${sessionQuery}`);
       const next = (await res.json()) as PluginsResponse & { error?: string };
       if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
       setData(next);
-      setAddMode((current) => (next.packages.length === 0 && next.standaloneExtensions.length === 0) || current);
       setSelected((current) => {
         if (current && (
           next.packages.some((pkg) => packageKey(pkg) === current)
@@ -725,13 +1142,13 @@ export function PluginsConfig({
     } finally {
       setLoading(false);
     }
-  }, [cwd]);
+  }, [cwd, sessionId]);
 
   useEffect(() => {
     setUpdateStatuses({});
     setUpdateError(null);
     void loadPlugins();
-  }, [cwd]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cwd, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (selected) setLastSettingsSelection("plugins", selected, cwd);
@@ -855,34 +1272,113 @@ export function PluginsConfig({
     }
   }, [cwd]);
 
-  const installPlugin = useCallback(async () => {
-    const source = normalizePluginSourceInput(installSource).trim();
+  const changeActivationMode = useCallback(async (pkg: PluginPackageInfo, mode: PluginActivationMode) => {
+    if (pkg.activationMode === mode) return;
+    const key = packageKey(pkg);
+    setActivationBusyKey(key);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/plugins/activation", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cwd,
+          source: pkg.source,
+          scope: pkg.scope,
+          mode,
+        }),
+      });
+      const next = (await res.json()) as { error?: string };
+      if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
+      await loadPlugins();
+      setActionMessage(t("i18n.pluginActivationSaved"));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActivationBusyKey(null);
+    }
+  }, [cwd, loadPlugins, t]);
+
+  const performInstall = useCallback(async (sourceInput: string, scope: PluginScope) => {
+    const source = normalizePluginSourceInput(sourceInput).trim();
     if (!source) return;
-    setInstallSource(source);
-    const key = `${installScope}\0${source}`;
+    const key = `${scope}\0${source}`;
     setBusyKey(`install:${key}`);
+    setInstallProgress({ source, scope, stage: 0 });
     setActionError(null);
     setActionMessage(null);
     try {
       const res = await fetch("/api/plugins", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "install", source, scope: installScope, cwd }),
+        body: JSON.stringify({ action: "install", source, scope, cwd }),
       });
       const next = (await res.json()) as PluginsResponse & { error?: string };
       if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
       setData(next);
-      const installed = findInstalledPackage(next.packages, source, installScope);
+      const installed = findInstalledPackage(next.packages, source, scope);
       setSelected(installed ? packageKey(installed) : key);
+      setView("installed");
       setAddMode(false);
       setInstallSource("");
-      setActionMessage("Package installed.");
+      setActionMessage(t("i18n.packageInstalled"));
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyKey(null);
+      setInstallProgress(null);
     }
-  }, [cwd, installScope, installSource]);
+  }, [cwd, t]);
+
+  const requestManualInstall = useCallback(() => {
+    const source = normalizePluginSourceInput(installSource).trim();
+    if (!source || busyKey) return;
+    setInstallSource(source);
+    setActionError(null);
+    setActionMessage(null);
+    setPendingInstall({
+      source,
+      scope: installScope,
+      name: source,
+    });
+  }, [busyKey, installScope, installSource]);
+
+  const requestCommunityInstall = useCallback((entry: CommunityPluginEntry, scope: PluginScope) => {
+    if (busyKey) return;
+    setActionError(null);
+    setActionMessage(null);
+    setPendingInstall({
+      source: entry.source,
+      scope,
+      name: entry.name,
+      description: entry.description[locale] ?? entry.description.en,
+      packageUrl: entry.packageUrl,
+      category: entry.category,
+    });
+  }, [busyKey, locale]);
+
+  const confirmPendingInstall = useCallback(() => {
+    if (!pendingInstall) return;
+    const next = pendingInstall;
+    setPendingInstall(null);
+    setView("installed");
+    void performInstall(next.source, next.scope);
+  }, [pendingInstall, performInstall]);
+
+  const installProgressKey = installProgress
+    ? `${installProgress.scope}\0${installProgress.source}`
+    : null;
+
+  useEffect(() => {
+    if (!installProgressKey) return;
+    const timers = ([1, 2, 3] as InstallStage[]).map((stage, index) => window.setTimeout(() => {
+      setInstallProgress((current) => current && `${current.scope}\0${current.source}` === installProgressKey
+        ? { ...current, stage }
+        : current);
+    }, (index + 1) * 700));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [installProgressKey]);
 
   const reloadSession = useCallback(async () => {
     if (!sessionId) return;
@@ -906,7 +1402,7 @@ export function PluginsConfig({
     (status) => status.state === "update-available",
   ).length;
   const hasCheckablePackages = packages.some((pkg) => pkg.canCheckForUpdates);
-  const footerBusy = loading || busyKey !== null || checkingUpdates.size > 0 || updatingAll;
+  const footerBusy = loading || busyKey !== null || activationBusyKey !== null || checkingUpdates.size > 0 || updatingAll;
 
   return (
     <ConfigPanelShell embedded={embedded} title={t("common.plugins")} subtitle={shortenPath(cwd)} closeLabel={t("i18n.close")} onClose={onClose}>
@@ -917,6 +1413,27 @@ export function PluginsConfig({
           </div>
         )}
 
+        {installProgress && <PluginInstallProgress progress={installProgress} />}
+
+        <PluginViewTabs
+          value={view}
+          installedCount={packages.length + standaloneExtensions.length}
+          onChange={(next) => {
+            setView(next);
+            if (next === "community") setAddMode(false);
+          }}
+        />
+
+        {view === "community" ? (
+          <CommunityPluginPanel
+            packages={packages}
+            projectResourcesLoaded={projectResourcesLoaded}
+            busyKey={busyKey}
+            actionError={actionError}
+            actionMessage={actionMessage}
+            onInstall={requestCommunityInstall}
+          />
+        ) : (
         <ConfigSplitView>
           <ConfigSidebar>
             <ConfigSidebarList>
@@ -999,6 +1516,7 @@ export function PluginsConfig({
             <ConfigListAction
                 active={addMode}
                 onClick={() => {
+                  setView("installed");
                   setAddMode(true);
                   setActionError(null);
                   setActionMessage(null);
@@ -1010,6 +1528,12 @@ export function PluginsConfig({
 
           <ConfigDetail>
             <ConfigDetailStack className="is-fill">
+              {!loading && !addMode && !selectedPackage && !selectedExtension && actionError && (
+                <div className="plugins-action-notice is-error" role="alert">{actionError}</div>
+              )}
+              {!loading && !addMode && !selectedPackage && !selectedExtension && actionMessage && (
+                <div className="plugins-action-notice is-success" role="status">{actionMessage}</div>
+              )}
               {addMode ? (
               <AddPluginPanel
                 cwd={cwd}
@@ -1020,7 +1544,7 @@ export function PluginsConfig({
                 actionError={actionError}
                 onSourceChange={setInstallSource}
                 onScopeChange={setInstallScope}
-                onInstall={installPlugin}
+                onInstall={requestManualInstall}
               />
             ) : loading ? null : selectedExtension ? (
               <StandaloneExtensionDetail extension={selectedExtension} />
@@ -1036,7 +1560,9 @@ export function PluginsConfig({
                 updateStatus={updateStatuses[packageKey(selectedPackage)]}
                 checkingUpdate={checkingUpdates.has(packageKey(selectedPackage))}
                 updateError={updateError}
+                activationBusy={activationBusyKey === packageKey(selectedPackage)}
                 onAction={runAction}
+                onActivationChange={(mode) => void changeActivationMode(selectedPackage, mode)}
                 onCheckUpdate={() => void checkForUpdates(selectedPackage)}
                 onReloadSession={reloadSession}
               />
@@ -1046,6 +1572,7 @@ export function PluginsConfig({
             </ConfigDetailStack>
           </ConfigDetail>
         </ConfigSplitView>
+        )}
 
         <ConfigFooter status={
             availableUpdateCount > 0 ? (
@@ -1087,6 +1614,14 @@ export function PluginsConfig({
              {t("i18n.refresh")}
           </ConfigButton>
         </ConfigFooter>
+
+        {pendingInstall && (
+          <PluginInstallWarningDialog
+            pending={pendingInstall}
+            onCancel={() => setPendingInstall(null)}
+            onConfirm={confirmPendingInstall}
+          />
+        )}
     </ConfigPanelShell>
   );
 }

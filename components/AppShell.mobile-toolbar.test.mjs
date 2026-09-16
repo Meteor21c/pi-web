@@ -19,7 +19,7 @@ test("uses a compact narrow-mobile toolbar with a floating action layer", () => 
     /data-mobile-toolbar-actions="true"[\s\S]*?position: "absolute"[\s\S]*?right: 0,[\s\S]*?left: TOP_BAR_ICON_BUTTON_SIZE/,
   );
 
-  for (const action of ["history", "name", "agents", "branches", "system", "tools"]) {
+  for (const action of ["history", "name", "agents", "branches", "system", "tools", "plugins"]) {
     assert.match(source, new RegExp(`data-mobile-toolbar-action=(?:\\{mobile \\? )?"${action}"`));
   }
 });
@@ -34,7 +34,7 @@ test("keeps the Agents panel open while switching sessions and positions it at t
   assert.match(source, /const AGENT_PANEL_WIDTH = 420/);
   assert.match(
     source,
-    /if \(activeTopPanel === "agents"\)[\s\S]*?left: topBarRect\.left[\s\S]*?width: Math\.min\(AGENT_PANEL_WIDTH, topBarRect\.width\)/,
+    /if \(activeTopPanel === "agents"\)[\s\S]*?left: divideByUiScale\(topBarRect\.left\)[\s\S]*?width: Math\.min\(AGENT_PANEL_WIDTH, divideByUiScale\(topBarRect\.width\)\)/,
   );
   assert.match(source, /<AgentSessionPanel[\s\S]*?onSelectSession=\{handleSelectSession\}/);
 });
@@ -74,6 +74,7 @@ test("keeps the mobile action layer open after using an expanded action", () => 
   assert.match(source, /toggleTopPanel\("branches", true\)/);
   assert.match(source, /handleSystemInfoToggle\("system", mobile\)/);
   assert.match(source, /handleSystemInfoToggle\("tools", mobile\)/);
+  assert.match(source, /toggleTopPanel\("plugins", mobile\)/);
   assert.match(source, /onClick=\{\(\) => toggleTopPanel\("session"\)\}/);
 });
 

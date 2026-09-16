@@ -86,6 +86,7 @@ export interface PushConfigResponse {
 }
 
 export type PluginScope = "global" | "project";
+export type PluginActivationMode = "global" | "session";
 export type PluginResourceKind = "extension" | "skill" | "prompt" | "theme";
 
 export interface PluginResourceCounts {
@@ -133,6 +134,14 @@ export interface PluginUpdateResult {
 export interface PluginPackageInfo {
   source: string;
   scope: PluginScope;
+  /** Whether this package is active for every session or selected sessions only. */
+  activationMode: PluginActivationMode;
+  /** Persisted package availability (the settings-level enable/disable state). */
+  globalEnabled: boolean;
+  /** Selection for the requested session; local-mode packages default to false. */
+  sessionEnabled: boolean;
+  /** Whether the package will be loaded by the requested session after reload. */
+  effectiveEnabled: boolean;
   canCheckForUpdates: boolean;
   filtered: boolean;
   disabled: boolean;

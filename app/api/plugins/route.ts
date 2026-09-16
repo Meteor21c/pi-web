@@ -5,14 +5,24 @@ import {
   DefaultPackageManager,
   getAgentDir,
   SettingsManager,
-  type PackageSource,
   type ResolvedPaths,
   type ResolvedResource,
 } from "@earendil-works/pi-coding-agent";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
+import { samePath } from "@/lib/paths";
 import { isPluginSourceCheckable } from "@/lib/plugin-updates";
+import { getPluginSessionManager } from "@/lib/plugin-session-manager";
+import {
+  readSessionPluginSelection,
+} from "@/lib/session-plugin-selection";
+import {
+  getPluginActivationMode,
+  getPluginPackageSource,
+  isDisabledPackage,
+  setPluginPackageDisabled,
+} from "@/lib/plugin-activation";
 import type {
   PluginDiagnostic,
   PluginPackageInfo,
@@ -40,59 +50,15 @@ function keyFor(source: string, scope: PluginScope): string {
   return `${scope}\0${source}`;
 }
 
-function getPackageSource(entry: PackageSource): string {
-  return typeof entry === "string" ? entry : entry.source;
-}
-
-function isDisabledPackage(entry: PackageSource): boolean {
-  if (typeof entry === "string") return false;
-  return (
-    Array.isArray(entry.extensions) && entry.extensions.length === 0 &&
-    Array.isArray(entry.skills) && entry.skills.length === 0 &&
-    Array.isArray(entry.prompts) && entry.prompts.length === 0 &&
-    Array.isArray(entry.themes) && entry.themes.length === 0
-  );
-}
-
 function getDisabledPackages(settingsManager: SettingsManager): Map<string, boolean> {
   const disabled = new Map<string, boolean>();
   for (const entry of settingsManager.getGlobalSettings().packages ?? []) {
-    disabled.set(keyFor(getPackageSource(entry), "global"), isDisabledPackage(entry));
+    disabled.set(keyFor(getPluginPackageSource(entry), "global"), isDisabledPackage(entry));
   }
   for (const entry of settingsManager.getProjectSettings().packages ?? []) {
-    disabled.set(keyFor(getPackageSource(entry), "project"), isDisabledPackage(entry));
+    disabled.set(keyFor(getPluginPackageSource(entry), "project"), isDisabledPackage(entry));
   }
   return disabled;
-}
-
-function setPackageDisabled(
-  settingsManager: SettingsManager,
-  source: string,
-  scope: PluginScope,
-  disabled: boolean,
-): boolean {
-  const current = scope === "project"
-    ? settingsManager.getProjectSettings().packages ?? []
-    : settingsManager.getGlobalSettings().packages ?? [];
-  let changed = false;
-  const next = current.map((entry): PackageSource => {
-    if (getPackageSource(entry) !== source) return entry;
-    changed = true;
-    if (disabled) {
-      return {
-        ...(typeof entry === "string" ? { source: entry } : entry),
-        extensions: [],
-        skills: [],
-        prompts: [],
-        themes: [],
-      };
-    }
-    return getPackageSource(entry);
-  });
-  if (!changed) return false;
-  if (scope === "project") settingsManager.setProjectPackages(next);
-  else settingsManager.setPackages(next);
-  return true;
 }
 
 function addCount(counts: PluginResourceCounts, kind: keyof PluginResourceCounts): void {
@@ -217,7 +183,7 @@ function collectResources(paths: ResolvedPaths): {
   return { countsByPackage, resourcesByPackage, standaloneExtensions, totals };
 }
 
-async function readPlugins(cwd: string): Promise<PluginsResponse> {
+async function readPlugins(cwd: string, sessionId?: string): Promise<PluginsResponse> {
   const agentDir = getAgentDir();
   const projectTrust = getProjectTrustStatus(cwd, agentDir);
   const settingsManager = SettingsManager.create(cwd, agentDir, {
@@ -235,6 +201,15 @@ async function readPlugins(cwd: string): Promise<PluginsResponse> {
   let standaloneExtensions: PluginStandaloneExtensionInfo[] = [];
   let totals = emptyCounts();
   const disabledByPackage = getDisabledPackages(settingsManager);
+  const sessionSelection = sessionId
+    ? (await getPluginSessionManager(sessionId))
+    : null;
+  const selectedSessionPlugins = sessionSelection
+    ? readSessionPluginSelection(sessionSelection.getEntries() as never)
+    : undefined;
+  const selectedSessionPluginKeys = new Set(
+    (selectedSessionPlugins ?? []).filter((plugin) => plugin.enabled).map((plugin) => keyFor(plugin.source, plugin.scope)),
+  );
 
   try {
     const resolved = await packageManager.resolve(async (source) => {
@@ -257,6 +232,16 @@ async function readPlugins(cwd: string): Promise<PluginsResponse> {
     const scope = toPluginScope(pkg.scope);
     const key = keyFor(pkg.source, scope);
     const disabled = disabledByPackage.get(key) ?? false;
+    const activationMode = getPluginActivationMode(
+      scope === "project"
+        ? settingsManager.getProjectSettings().packages?.find((entry) => getPluginPackageSource(entry) === pkg.source) ?? pkg.source
+        : settingsManager.getGlobalSettings().packages?.find((entry) => getPluginPackageSource(entry) === pkg.source) ?? pkg.source,
+    );
+    const globalEnabled = !disabled;
+    const sessionEnabled = activationMode === "session"
+      ? selectedSessionPluginKeys.has(key)
+      : globalEnabled;
+    const effectiveEnabled = globalEnabled && (activationMode === "global" || sessionEnabled);
     const counts = countsByPackage.get(key) ?? emptyCounts();
     const resources = resourcesByPackage.get(key) ?? [];
     const resourceCount = counts.extensions + counts.skills + counts.prompts + counts.themes;
@@ -280,7 +265,11 @@ async function readPlugins(cwd: string): Promise<PluginsResponse> {
       configuredVersion: getConfiguredVersion(pkg.source),
       counts,
       resources,
-      status: disabled ? "disabled" : resourceCount > 0 ? "loaded" : pkg.installedPath ? "installed" : "missing",
+      activationMode,
+      globalEnabled,
+      sessionEnabled,
+      effectiveEnabled,
+      status: !effectiveEnabled ? "disabled" : resourceCount > 0 ? "loaded" : pkg.installedPath ? "installed" : "missing",
     } satisfies PluginPackageInfo;
   });
 
@@ -300,14 +289,26 @@ function readScope(scope: unknown): PluginScope {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const cwd = searchParams.get("cwd");
+  const rawSessionId = searchParams.get("sessionId");
+  const sessionId = rawSessionId?.trim() || undefined;
   if (!cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
+  if (rawSessionId !== null && !sessionId) {
+    return NextResponse.json({ error: "sessionId must be a non-empty string" }, { status: 400 });
+  }
 
   try {
     const allowedRoots = await getAllowedFileRoots();
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
-    return NextResponse.json(await readPlugins(cwd));
+    if (sessionId) {
+      const sessionManager = await getPluginSessionManager(sessionId);
+      if (!sessionManager) return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      if (!samePath(sessionManager.getCwd(), cwd)) {
+        return NextResponse.json({ error: "Session cwd mismatch" }, { status: 403 });
+      }
+    }
+    return NextResponse.json(await readPlugins(cwd, sessionId));
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -372,11 +373,11 @@ export async function POST(req: Request) {
       await packageManager.update(source);
     } else if (body.action === "disable") {
       if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      setPackageDisabled(settingsManager, source, scope, true);
+      setPluginPackageDisabled(settingsManager, source, scope, true);
       await settingsManager.flush();
     } else if (body.action === "enable") {
       if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      setPackageDisabled(settingsManager, source, scope, false);
+      setPluginPackageDisabled(settingsManager, source, scope, false);
       await settingsManager.flush();
     } else {
       return NextResponse.json({ error: `Unsupported action: ${body.action}` }, { status: 400 });

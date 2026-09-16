@@ -43,6 +43,7 @@ import { createSubagentController } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
+import { createSessionScopedSettingsManager } from "./plugin-activation";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -958,6 +959,10 @@ export class AgentSessionWrapper {
         await this.waitForExtensionsBound();
         this.extensionStatuses.clear();
         this.resetExtensionWidgetsForReload();
+        // Plugin mode changes are persisted outside this runtime. Refresh the
+        // settings snapshot before ResourceLoader resolves packages so the
+        // session-local filter sees the latest mode and package list.
+        await this.inner.settingsManager.reload?.();
         this.syncProjectTrust();
         await this.inner.reload();
         this.setActiveToolSelection(activeToolNames);
@@ -1646,6 +1651,7 @@ export class AgentSessionWrapper {
       reload: async () => {
         this.extensionStatuses.clear();
         this.resetExtensionWidgetsForReload();
+        await this.inner.settingsManager.reload?.();
         this.syncProjectTrust();
         await this.inner.reload({
           beforeSessionStart: () => {
@@ -2027,7 +2033,11 @@ export async function startRpcSession(
       : chatOnly
         ? undefined
         : projectTrustReloadOptions(sessionCwd, agentDir);
-    const settingsManager = SettingsManager.create(sessionCwd, agentDir);
+    const baseSettingsManager = SettingsManager.create(sessionCwd, agentDir);
+    // Session-mode packages must be excluded before the SDK evaluates any
+    // extension module. A dynamic settings view lets a normal reload observe
+    // the latest session snapshot without hot-unloading the live runner.
+    const settingsManager = createSessionScopedSettingsManager(baseSettingsManager, sessionManager);
     const services = await createAgentSessionServices({
       cwd: sessionCwd,
       agentDir,

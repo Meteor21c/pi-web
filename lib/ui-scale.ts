@@ -33,7 +33,7 @@ export function clampUiScaleOption(value: unknown): UiScaleOption {
  * vh/dvh、position:fixed 与底部锚定布局都按浏览器原生缩放语义工作，
  * 不会出现 body 缩放把 100dvh 外壳撑出视口、底部元素被推出屏幕的问题。
  */
-export const UI_SCALE_INIT_SCRIPT = `(function(){try{var p=localStorage.getItem("${UI_SCALE_STORAGE_KEY}")||"auto";var w=window.innerWidth;var s=p==="auto"?(${UI_SCALE_AUTO_BREAKPOINTS.map((b) => `w>=${b.minWidth}?${b.scale}`).join(":")}:1):Number(p)/100;if(s&&s!==1)document.documentElement.style.zoom=String(s);}catch(e){}})();`;
+export const UI_SCALE_INIT_SCRIPT = `(function(){try{var p=localStorage.getItem("${UI_SCALE_STORAGE_KEY}")||"auto";var w=window.innerWidth;var s=p==="auto"?(${UI_SCALE_AUTO_BREAKPOINTS.map((b) => `w>=${b.minWidth}?${b.scale}`).join(":")}:1):Number(p)/100;var d=document.documentElement;d.style.setProperty("--ui-scale",String(s));if(s&&s!==1)d.style.zoom=String(s);}catch(e){}})();`;
 
 type ZoomableStyle = CSSStyleDeclaration & { zoom?: string | number };
 

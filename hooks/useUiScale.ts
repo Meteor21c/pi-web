@@ -36,6 +36,8 @@ function applyScale(preference: UiScaleOption): void {
   const scale = preference === "auto" ? resolveAutoScale() : Number(preference) / 100;
   // zoom 施加在根元素（语义同浏览器缩放）；详见 lib/ui-scale.ts 说明。
   document.documentElement.style.zoom = scale === 1 ? "" : String(scale);
+  // 根 zoom 不会重算 dvh/vh：CSS 里显式视口尺寸需按系数缩除（--vp-h/--vp-w）。
+  document.documentElement.style.setProperty("--ui-scale", String(scale));
 }
 
 interface UiScaleState {

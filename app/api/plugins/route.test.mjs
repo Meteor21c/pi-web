@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -40,4 +40,30 @@ test("lists auto-discovered top-level extensions", async () => {
     enabled: true,
   }]);
   assert.equal(body.totals.extensions, 1);
+});
+
+test("plugin activation/session routes expose the reload-boundary contract", async () => {
+  const activationRoute = await readFile(new URL("./activation/route.ts", import.meta.url), "utf8");
+  const sessionRoute = await readFile(new URL("./session/route.ts", import.meta.url), "utf8");
+  const rpcSource = await readFile(new URL("../../../lib/rpc-manager.ts", import.meta.url), "utf8");
+
+  assert.match(activationRoute, /export async function PATCH/);
+  assert.match(activationRoute, /activationMode: mode/);
+  assert.match(activationRoute, /reloadRequired: true/);
+  assert.match(sessionRoute, /sessionId required/);
+  assert.match(sessionRoute, /Session cwd mismatch/);
+  assert.match(sessionRoute, /updateSessionPluginSelection/);
+  assert.match(sessionRoute, /plugins: pluginState/);
+  assert.match(rpcSource, /createSessionScopedSettingsManager\(baseSettingsManager, sessionManager\)/);
+  assert.match(rpcSource, /await this\.inner\.settingsManager\.reload\?\.\(\)/);
+  assert.match(rpcSource, /await this\.inner\.reload\(\)/);
+});
+
+test("plugin listing rejects an empty session id", async () => {
+  const response = await GET(new Request(
+    `http://localhost/api/plugins?cwd=${encodeURIComponent(cwd)}&sessionId=%20`,
+  ));
+  const body = await response.json();
+  assert.equal(response.status, 400);
+  assert.equal(body.error, "sessionId must be a non-empty string");
 });
