@@ -145,6 +145,16 @@ interface RelayAccountsResponse {
   error?: string;
 }
 
+interface RelayAccountUsageResponse {
+  status: "ready" | "unavailable";
+  usage?: {
+    todayRequests: number;
+    todayActualCost: number;
+    todayTokens: number;
+  };
+  capturedAt?: number;
+}
+
 type RelaySelection =
   | { type: "account"; accountId: string }
   | { type: "group"; accountId: string; providerId: string }
@@ -1909,6 +1919,34 @@ function RelayAccountDetail({ account, onAddAccount }: {
   account: RelayAccountSummary;
   onAddAccount: () => void;
 }) {
+  const [usage, setUsage] = useState<RelayAccountUsageResponse | null>(null);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const loadUsage = useCallback(async (signal?: AbortSignal) => {
+    setUsageLoading(true);
+    try {
+      const response = await fetch(`/api/relay-account-usage?accountId=${encodeURIComponent(account.accountId)}`, {
+        cache: "no-store",
+        signal,
+      });
+      const result = await response.json() as RelayAccountUsageResponse;
+      setUsage(response.ok ? result : { status: "unavailable" });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setUsage({ status: "unavailable" });
+    } finally {
+      if (!signal?.aborted) setUsageLoading(false);
+    }
+  }, [account.accountId]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadUsage(controller.signal);
+    const timer = window.setInterval(() => void loadUsage(controller.signal), 60_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [loadUsage]);
+  const usageReady = usage?.status === "ready" && usage.usage;
   const balance = typeof account.balance === "number"
     ? `$${account.balance.toFixed(2)}`
     : typeof account.balance === "string" && account.balance.trim()
@@ -1939,16 +1977,23 @@ function RelayAccountDetail({ account, onAddAccount }: {
         </div>
         <div>
           <span>今日请求</span>
-          <strong>暂不可用</strong>
+          <strong>{usageReady ? usage.usage!.todayRequests.toLocaleString("zh-CN") : usageLoading ? "读取中..." : "暂不可用"}</strong>
         </div>
         <div>
           <span>今日花费</span>
-          <strong>暂不可用</strong>
+          <strong>{usageReady ? `$${usage.usage!.todayActualCost.toFixed(2)}` : usageLoading ? "读取中..." : "暂不可用"}</strong>
         </div>
       </section>
-      <p style={{ margin: 0, color: "var(--text-dim)", fontSize: 11, lineHeight: 1.6 }}>
-        站点暂未提供可靠的账户级今日统计。选择下方分组可查看该 API Key 的请求与花费，避免重复汇总造成误差。
-      </p>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <p style={{ margin: 0, color: "var(--text-dim)", fontSize: 11, lineHeight: 1.6 }}>
+          {usageReady
+            ? `来自流星 API 的账户统计 · 今日 ${usage.usage!.todayTokens.toLocaleString("zh-CN")} tokens${usage.capturedAt ? ` · ${new Date(usage.capturedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 更新` : ""}`
+            : "账户统计暂时无法读取，不会使用本地估算冒充实际账单。"}
+        </p>
+        <ConfigButton size="small" disabled={usageLoading} onClick={() => void loadUsage()}>
+          {usageLoading ? "刷新中..." : "刷新统计"}
+        </ConfigButton>
+      </div>
     </div>
   );
 }
