@@ -231,7 +231,7 @@ async function exportSession(filePath: string, outputPath: string): Promise<void
   }
 
   const packageDir = await getPiPackageDir();
-  if (!packageDir) throw new Error("pi CLI not found");
+  if (!packageDir) throw new Error("Magent runtime not found");
 
   const exporterUrl = pathToFileURL(join(packageDir, "dist", "core", "export-html", "index.js")).href;
   const { exportFromFile } = (await import(exporterUrl)) as ExportHtmlModule;

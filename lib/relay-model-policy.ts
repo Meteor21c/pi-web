@@ -9,14 +9,17 @@ export const RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW = 258_000;
 export const RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW = 200_000;
 export const RELAY_OTHER_DEFAULT_CONTEXT_WINDOW = 128_000;
 
-export function relayContextWindowLimit(modelId: string): number {
+export function relayContextWindowLimit(modelId: string, synchronizedLimit?: number): number {
+  if (typeof synchronizedLimit === "number" && Number.isSafeInteger(synchronizedLimit) && synchronizedLimit > 0) {
+    return synchronizedLimit;
+  }
   if (/gpt|codex/i.test(modelId)) return RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW;
   if (/claude/i.test(modelId)) return RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW;
   return RELAY_OTHER_DEFAULT_CONTEXT_WINDOW;
 }
 
-export function clampRelayContextWindow(modelId: string, value?: number): number {
-  const limit = relayContextWindowLimit(modelId);
+export function clampRelayContextWindow(modelId: string, value?: number, synchronizedLimit?: number): number {
+  const limit = relayContextWindowLimit(modelId, synchronizedLimit);
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return limit;
   return Math.min(Math.floor(value), limit);
 }

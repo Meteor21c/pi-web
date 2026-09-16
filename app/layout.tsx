@@ -13,21 +13,21 @@ const notoSansMono = Noto_Sans_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pi Web",
-  description: "Pi Web interface for the pi coding agent",
-  applicationName: "Pi Web",
+  title: "MeteorAgent",
+  description: "MeteorAgent — 面向流星 API 用户的智能编程助手",
+  applicationName: "MeteorAgent",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
       {
-        url: "/icons/icon-192.png",
+        url: "/icons/meteoragent-192.png",
         sizes: "192x192",
         type: "image/png",
       },
     ],
     apple: [
       {
-        url: "/icons/apple-touch-icon.png",
+        url: "/icons/meteoragent-touch.png",
         sizes: "180x180",
         type: "image/png",
       },
@@ -36,7 +36,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Pi Web",
+    title: "MeteorAgent",
   },
   formatDetection: {
     telephone: false,

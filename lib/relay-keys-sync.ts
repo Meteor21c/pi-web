@@ -1,6 +1,12 @@
 /** Account-scoped relay key synchronization. Full API keys never leave this server module. */
 import { getRelayBaseUrl } from "./relay-config";
 import { resolveMixedRelayModels } from "./relay-models";
+import {
+  applyPlazaContextWindows,
+  contextWindowsForModels,
+  fetchRelayModelPlaza,
+  type RelayModelPlaza,
+} from "./relay-model-plaza";
 import { readModelsConfig } from "./models-config-store";
 import { persistRelayProvider, removeRelayProvider, dominantFamily, protocolFor } from "./relay-config-save";
 import { testRelayConnection } from "./relay-config-test";
@@ -38,6 +44,7 @@ export interface RelayProviderSummary {
   platform?: string;
   rateMultiplier?: number;
   longContextPricingEnabled?: boolean;
+  contextWindows?: Record<string, number>;
   modelCount: number;
 }
 
@@ -107,8 +114,9 @@ function summaryFor(
   providerId: string,
   family: RelayProviderSummary["family"],
   modelCount: number,
+  contextWindows?: Record<string, number>,
 ): RelayProviderSummary {
-  const metadata = metadataForRelayKey(accountId, providerId, key);
+  const metadata = metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows);
   return {
     providerId,
     displayName: metadata.keyName,
@@ -121,6 +129,7 @@ function summaryFor(
     platform: metadata.platform,
     rateMultiplier: metadata.rateMultiplier,
     longContextPricingEnabled: metadata.longContextPricingEnabled,
+    contextWindows: metadata.contextWindows,
     modelCount,
   };
 }
@@ -170,12 +179,21 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     };
   }
 
+  let plaza: RelayModelPlaza | null = null;
+  try {
+    plaza = await fetchRelayModelPlaza(session.accessToken);
+  } catch {
+    // Model discovery remains usable when the optional plaza is unavailable.
+    // Individual models retain conservative local limits in that case.
+  }
+
   const initial = providersNow();
   const initialIndex = readRelayGroups();
   const gathered: Array<{
     key: RelayKey & { id: number | string };
     providerId: string;
     models: ReturnType<typeof resolveMixedRelayModels>;
+    contextWindows: Record<string, number>;
     failure?: string;
   }> = [];
   let cursor = 0;
@@ -185,8 +203,10 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       const key = keys[cursor++];
       const providerId = providerIdFor(accountId, String(key.id), initial, initialIndex);
       const test = await testRelayConnection(key.key);
-      const models = test.ok ? resolveMixedRelayModels(test.modelIds ?? [], getRelayBaseUrl()) : [];
-      gathered.push({ key, providerId, models, failure: !test.ok ? test.reason : !models.length ? "empty-catalog" : undefined });
+      const resolved = test.ok ? resolveMixedRelayModels(test.modelIds ?? [], getRelayBaseUrl()) : [];
+      const contextWindows = contextWindowsForModels(plaza, key.group_id, resolved.map((model) => model.id));
+      const models = applyPlazaContextWindows(resolved, contextWindows);
+      gathered.push({ key, providerId, models, contextWindows, failure: !test.ok ? test.reason : !models.length ? "empty-catalog" : undefined });
     }
   }));
 
@@ -199,7 +219,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     const summaries: RelayProviderSummary[] = [];
     const warnings: NonNullable<RelaySyncResult["warnings"]> = [];
     try {
-      const nextMetadata = gathered.map(({ key, providerId }) => metadataForRelayKey(accountId, providerId, key));
+      const nextMetadata = gathered.map(({ key, providerId, contextWindows }) => metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows));
       const presentProviderIds = new Set(nextMetadata.map((entry) => entry.providerId));
 
       for (const previous of initialIndex.filter((entry) => entry.accountId === accountId)) {
@@ -207,7 +227,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       }
 
       for (const item of gathered) {
-        const { key, providerId, models, failure } = item;
+        const { key, providerId, models, contextWindows, failure } = item;
         if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };
         if (failure) {
           warnings.push({ providerId, reason: failure });
@@ -222,7 +242,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
           ...protocolFor(family),
           models,
         });
-        summaries.push(summaryFor(accountId, key, providerId, family, models.length));
+        summaries.push(summaryFor(accountId, key, providerId, family, models.length, contextWindows));
       }
 
       if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };

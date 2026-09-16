@@ -1,21 +1,21 @@
 {
-  "name": "@agegr/pi-web",
-  "version": "0.9.1",
-  "description": "Web UI for the pi coding agent",
-  "homepage": "https://github.com/agegr/pi-web#readme",
+  "name": "@meteor21c/webagent",
+  "version": "0.1.1",
+  "description": "MeteorAgent — AI coding agent for meteor21c relay customers",
+  "homepage": "https://github.com/Meteor21c/pi-web#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agegr/pi-web.git"
+    "url": "git+https://github.com/Meteor21c/pi-web.git"
   },
   "bugs": {
-    "url": "https://github.com/agegr/pi-web/issues"
+    "url": "https://github.com/Meteor21c/pi-web/issues"
   },
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"
   },
   "bin": {
-    "pi-web": "bin/pi-web.js"
+    "webagent": "bin/pi-web.js"
   },
   "files": [
     "bin",

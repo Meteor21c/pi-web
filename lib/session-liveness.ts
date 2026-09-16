@@ -84,7 +84,7 @@ function createRegistry(): SessionLivenessRegistry {
           }
           if (active) return true;
         } catch (error) {
-          console.error(`[pi-web] Session liveness provider '${provider.name}' failed; preserving the session:`, error);
+          console.error(`[meteoragent] Session liveness provider '${provider.name}' failed; preserving the session:`, error);
           return true;
         }
       }

@@ -6,6 +6,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
+import { createMeteorAgentBrandExtension, rebrandMeteorAgentSystemPrompt } from "./meteoragent-brand";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import {
   createProjectCommandBashExtension,
@@ -140,7 +141,7 @@ export function resolveSessionIdleTimeoutMs(
   if (rawValue !== undefined && rawValue.trim() !== "") {
     const parsed = Number(rawValue);
     if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 2_147_483_647) return parsed;
-    console.warn(`[pi-web] invalid PI_WEB_IDLE_TIMEOUT_MS "${rawValue}", falling back to 10 minutes`);
+    console.warn(`[meteoragent] invalid PI_WEB_IDLE_TIMEOUT_MS "${rawValue}", falling back to 10 minutes`);
   }
   return DEFAULT_SESSION_IDLE_TIMEOUT_MS;
 }
@@ -322,13 +323,13 @@ export class AgentSessionWrapper {
     try {
       this.onAgentRunComplete?.(this.sessionId);
     } catch (error) {
-      console.error("[pi-web] completion listener failed:", error instanceof Error ? error.message : error);
+      console.error("[meteoragent] completion listener failed:", error instanceof Error ? error.message : error);
     }
   }
 
   beginExtensionBinding(): void {
     void this.ensureExtensionsBound().catch((err) => {
-      console.error("[pi-web] failed to dispatch session_start to extensions:", err instanceof Error ? err.message : err);
+      console.error("[meteoragent] failed to dispatch session_start to extensions:", err instanceof Error ? err.message : err);
     });
   }
 
@@ -364,7 +365,7 @@ export class AgentSessionWrapper {
             id: randomUUID(),
             method: "notify",
             notifyType: "warning",
-            message: "Extension requested shutdown, but shutdown is not supported in Pi Web.",
+            message: "Extension requested shutdown, but shutdown is not supported in MeteorAgent.",
           } as ExtensionUiRequest as AgentEvent),
           onError: (error) => this.emit({
             type: "extension_error",
@@ -378,7 +379,7 @@ export class AgentSessionWrapper {
       }
       this.extensionsBound = true;
       this.applyExactSystemPrompt();
-      console.log(`[pi-web] session_start dispatched to extensions for session ${this.inner.sessionId}`);
+      console.log(`[meteoragent] session_start dispatched to extensions for session ${this.inner.sessionId}`);
     })().catch((err) => {
       this.extensionBindingError = err;
       throw err;
@@ -447,7 +448,7 @@ export class AgentSessionWrapper {
         listener(event);
       } catch (error) {
         console.error(
-          `[pi-web] failed to deliver ${event.type} event:`,
+          `[meteoragent] failed to deliver ${event.type} event:`,
           error instanceof Error ? error.message : error,
         );
       }
@@ -479,7 +480,7 @@ export class AgentSessionWrapper {
         return;
       }
       void this.shutdown().catch((error) => {
-        console.error("[pi-web] failed to shut down idle session:", error instanceof Error ? error.message : error);
+        console.error("[meteoragent] failed to shut down idle session:", error instanceof Error ? error.message : error);
       });
     }, SESSION_IDLE_TIMEOUT_MS);
   }
@@ -543,7 +544,7 @@ export class AgentSessionWrapper {
       await this.shutdown();
     } catch (error) {
       console.error(
-        `[pi-web] ${replacement} succeeded, but source session shutdown failed:`,
+        `[meteoragent] ${replacement} succeeded, but source session shutdown failed:`,
         error instanceof Error ? error.message : error,
       );
     }
@@ -659,7 +660,7 @@ export class AgentSessionWrapper {
             }
           }).catch((error) => {
             console.error(
-              "[pi-web] prompt completion handler failed:",
+              "[meteoragent] prompt completion handler failed:",
               error instanceof Error ? error.message : error,
             );
           });
@@ -1061,7 +1062,7 @@ export class AgentSessionWrapper {
     ))()
       .catch((error) => {
         console.error(
-          "[pi-web] session_shutdown before dispose failed:",
+          "[meteoragent] session_shutdown before dispose failed:",
           error instanceof Error ? error.message : error,
         );
       })
@@ -1078,7 +1079,7 @@ export class AgentSessionWrapper {
           await this.waitForExtensionsBound();
         } catch (error) {
           console.error(
-            "[pi-web] extension binding failed before session shutdown:",
+            "[meteoragent] extension binding failed before session shutdown:",
             error instanceof Error ? error.message : error,
           );
         }
@@ -1616,7 +1617,7 @@ export class AgentSessionWrapper {
       get theme() { return PLAIN_TEXT_THEME; },
       getAllThemes: () => [],
       getTheme: () => undefined,
-      setTheme: () => ({ success: false, error: "Theme switching is not supported in Pi Web extension UI yet" }),
+      setTheme: () => ({ success: false, error: "Theme switching is not supported in MeteorAgent extension UI yet" }),
       getToolsExpanded: () => false,
       setToolsExpanded: () => {},
     };
@@ -2052,6 +2053,7 @@ export async function startRpcSession(
                 () => listSubagentProfiles(sessionCwd),
                 isBuiltInSubagentsEnabled,
               ),
+              createMeteorAgentBrandExtension(),
             ],
             extensionsOverride: (base) => preferUserBashExtension(preferPiWebSubagentExtension(base)),
           },
@@ -2097,6 +2099,13 @@ export async function startRpcSession(
       ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES] } : {}),
     });
 
+    // The System panel can be opened before the first model turn, so brand the
+    // SDK-owned default prompt immediately as well as in before_agent_start.
+    // Custom/overridden prompts are left untouched by the guarded transformer.
+    if (!chatOnly && !subagentResources && inner.agent.state) {
+      inner.agent.state.systemPrompt = rebrandMeteorAgentSystemPrompt(inner.agent.state.systemPrompt);
+    }
+
     const persistedPreferences = await persistExplicitStartupPreferences(
       services.settingsManager,
       {
@@ -2132,7 +2141,7 @@ export async function startRpcSession(
       chatOnly,
       onAgentRunComplete: (completedSessionId) => {
         void notifySessionComplete(completedSessionId).catch((error) => {
-          console.error("[pi-web] failed to send completion push:", error instanceof Error ? error.message : error);
+          console.error("[meteoragent] failed to send completion push:", error instanceof Error ? error.message : error);
         });
       },
       suppressCompletionNotifications: Boolean(subagentResources),

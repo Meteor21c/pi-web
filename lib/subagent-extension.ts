@@ -195,7 +195,7 @@ export function createSubagentExtension(
                 .then((run) => runtime.notifyParent(run))
                 .catch((error) => {
                   console.error(
-                    "[pi-web] failed to deliver subagent completion:",
+                    "[meteoragent] failed to deliver subagent completion:",
                     error instanceof Error ? error.message : error,
                   );
                 });

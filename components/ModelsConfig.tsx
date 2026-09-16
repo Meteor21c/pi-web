@@ -132,6 +132,7 @@ interface RelayGroupSummary {
   groupName?: string;
   platform?: string;
   rateMultiplier?: number;
+  contextWindows?: Record<string, number>;
   modelCount: number;
   protocols?: string[];
   syncedAt?: string | number;
@@ -873,6 +874,7 @@ function ModelDetail({
   onChange,
   onDelete,
   relayMode = false,
+  relayFirstTierContextWindow,
 }: {
   providerName: string;
   provider: ProviderEntry;
@@ -881,6 +883,8 @@ function ModelDetail({
   onDelete: () => void;
   /** Relay metadata controls prices and request transport in product mode. */
   relayMode?: boolean;
+  /** Exact max_tokens returned for this group/model by the authenticated model plaza. */
+  relayFirstTierContextWindow?: number;
 }) {
   const [testState, setTestState] = useState<ModelTestState>({ phase: "idle" });
   const { t } = useI18n();
@@ -1084,7 +1088,7 @@ function ModelDetail({
   const advancedSummary = advancedSummaryParts.length
     ? advancedSummaryParts.join(" · ")
     : t("models.providerDefaults");
-  const relayContextLimit = relayMode ? relayContextWindowLimit(model.id) : undefined;
+  const relayContextLimit = relayMode ? relayContextWindowLimit(model.id, relayFirstTierContextWindow) : undefined;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1224,18 +1228,22 @@ function ModelDetail({
 
         <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
           <Field label={relayMode ? "上下文窗口（首阶计费范围）" : t("models.contextWindow")}>
-            <NumInput
-              value={model.contextWindow !== undefined ? String(model.contextWindow) : ""}
-              onChange={(v) => set(
-                "contextWindow",
-                v ? (relayMode ? clampRelayContextWindow(model.id, parseInt(v)) : parseInt(v)) : relayContextLimit,
-              )}
-              placeholder={String(relayContextLimit ?? 128_000)}
-              max={relayContextLimit}
-            />
+            {relayMode ? (
+              <div style={{ ...inputStyle, display: "flex", alignItems: "center", background: "var(--bg-subtle)", color: "var(--text)" }}>
+                {(model.contextWindow ?? relayContextLimit ?? 128_000).toLocaleString()} tokens
+              </div>
+            ) : (
+              <NumInput
+                value={model.contextWindow !== undefined ? String(model.contextWindow) : ""}
+                onChange={(v) => set("contextWindow", v ? parseInt(v) : undefined)}
+                placeholder="128000"
+              />
+            )}
             {relayMode && relayContextLimit && (
               <span style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 10 }}>
-                默认上限 {relayContextLimit.toLocaleString()} tokens，避免进入更高上下文计费档。
+                {relayFirstTierContextWindow
+                  ? `已从流星 API 同步：首档上限 ${relayContextLimit.toLocaleString()} tokens；Magent 会提前预留输出空间并自动压缩。`
+                  : `模型广场暂未返回该分组模型，当前使用 ${relayContextLimit.toLocaleString()} tokens 的保守上限。`}
               </span>
             )}
           </Field>
@@ -2415,7 +2423,10 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
           models.push({
             id,
             name: discoveredModel.name,
-            contextWindow: relayContextWindowLimit(id),
+            contextWindow: relayContextWindowLimit(
+              id,
+              relayGroups.find((group) => group.providerId === providerName)?.contextWindows?.[id],
+            ),
             maxTokens: 16_384,
             api: claude ? "anthropic-messages" : gpt ? "openai-responses" : "openai-completions",
             baseUrl: claude ? relayRoot : `${relayRoot}/v1`,
@@ -2426,7 +2437,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
       }
       return { ...prev, providers: { ...(prev.providers ?? {}), [providerName]: { ...provider, models } } };
     });
-  }, []);
+  }, [relayGroups]);
 
   const syncRelayAccount = useCallback(async (accountId: string) => {
     if (JSON.stringify(currentConfigRef.current) !== baseConfigRef.current) {
@@ -2612,9 +2623,10 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
       provider={provider}
       model={model}
       relayMode
+      relayFirstTierContextWindow={group.contextWindows?.[model.id]}
       onChange={(next) => updateModel(group.providerId, index, {
         ...next,
-        contextWindow: clampRelayContextWindow(next.id, next.contextWindow),
+        contextWindow: clampRelayContextWindow(next.id, next.contextWindow, group.contextWindows?.[next.id]),
       })}
       onDelete={() => {
         removeModel(group.providerId, index);
@@ -2629,7 +2641,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
 
   return (
     <>
-    <ConfigPanelShell embedded={embedded} title={t("common.models")} subtitle="~/.pi/agent/models.json" closeLabel={t("i18n.close")} onClose={onClose}>
+    <ConfigPanelShell embedded={embedded} title={t("common.models")} subtitle={RELAY_PRODUCT_MODE ? "Magent 模型配置" : "~/.pi/agent/models.json"} closeLabel={t("i18n.close")} onClose={onClose}>
 
         {/* Body */}
         <ConfigSplitView>

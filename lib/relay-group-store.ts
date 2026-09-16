@@ -17,6 +17,8 @@ export interface RelayGroupMetadata {
   platform?: string;
   rateMultiplier?: number;
   longContextPricingEnabled?: boolean;
+  /** Exact first-tier max_tokens keyed by model id, sourced from the authenticated model plaza. */
+  contextWindows?: Record<string, number>;
   currentConcurrency?: number;
   usage1d?: number;
   usage5h?: number;
@@ -146,6 +148,7 @@ export function metadataForRelayKey(
   providerId: string,
   key: RelayKey,
   syncedAt = Date.now(),
+  contextWindows?: Record<string, number>,
 ): RelayGroupMetadata {
   const safe = safeRelayKey(key);
   return {
@@ -160,6 +163,7 @@ export function metadataForRelayKey(
     platform: safe.platform,
     rateMultiplier: safe.rateMultiplier,
     longContextPricingEnabled: safe.longContextPricingEnabled,
+    ...(contextWindows && Object.keys(contextWindows).length ? { contextWindows } : {}),
     currentConcurrency: safe.currentConcurrency,
     usage1d: safe.usage1d,
     usage5h: safe.usage5h,

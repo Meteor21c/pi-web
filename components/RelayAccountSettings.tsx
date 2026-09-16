@@ -5,7 +5,7 @@ import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
 import { ConfigButton } from "./SettingsUi";
 
-/** Separate from Pi Web's optional local web-password session. */
+/** Separate from MeteorAgent's optional local web-password session. */
 export function RelayAccountSettings() {
   const { status, user, logout } = useRelaySession();
   const { t } = useI18n();
