@@ -4,14 +4,13 @@
  * 品牌登录门禁（W-D 填充）。
  * 契约：<AuthGate>{ children }</AuthGate>
  * NEXT_PUBLIC_AUTH_GATE !== "1" 时直接放行（pi-web 主线默认无门禁）。
- * 启动校验 → 登录 → 渠道同步摘要 → 工作区；校验中不挂载工作区。
+ * 启动校验 → 登录 → 渠道同步 → 直接进入工作区；校验中不挂载工作区。
  */
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
 import { RelayOnboarding } from "./RelayOnboarding";
-import { RelayAccountSettings } from "./RelayAccountSettings";
 
 const GATE_ENABLED = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 
@@ -39,6 +38,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
   const [readyGeneration, setReadyGeneration] = useState<number | null>(null);
+  const enterWorkspace = useCallback(() => setReadyGeneration(generation), [generation]);
 
   if (!GATE_ENABLED || status === "disabled") {
     return <>{children}</>;
@@ -58,8 +58,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return (
       <div style={startupStyle}>
         <div style={{ width: "100%", maxWidth: 520, textAlign: "left" }}>
-          <RelayOnboarding key={generation} onSuccess={() => setReadyGeneration(generation)} />
-          <RelayAccountSettings />
+          <RelayOnboarding key={generation} onSuccess={enterWorkspace} />
         </div>
       </div>
     );

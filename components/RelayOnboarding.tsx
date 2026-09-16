@@ -13,7 +13,7 @@ import { RelayAdvancedSettings } from "./RelayAdvancedSettings";
 import { syncRelayConfig } from "@/lib/relay-client";
 
 interface RelayOnboardingProps {
-  /** Called after a successful save. Defaults to a full page reload. */
+  /** Called as soon as synchronization succeeds. Defaults to a full page reload. */
   onSuccess?: () => void;
 }
 
@@ -24,7 +24,7 @@ interface RelayTestResult {
   message?: string;
 }
 
-type Phase = "login" | "auto" | "waiting" | "manual" | "done" | "error";
+type Phase = "login" | "auto" | "waiting" | "manual" | "error";
 type NoKeyReason = "no-key" | "no-usable-key";
 
 const REGISTER_URL = "https://api.meteor21c.fun";
@@ -38,7 +38,7 @@ const REGISTER_URL = "https://api.meteor21c.fun";
  *  - waiting：账号无 key / 全部 key 不可用 → 引导去控制台处理后点"更新密钥"
  *  - manual ：贴 key 流程（门禁关时默认进入，或用户主动选择）
  *  - error  ：保留登录态，提供重试、控制台与重新登录
- *  - done   ：成功页（显示 modelCount + 开始使用）
+ *  - 同步成功：立即调用 onSuccess 进入工作区，不停留在完成页
  *
  * 门禁（AuthGate）：useRelaySession().status 为 "disabled"（门禁未启用）时走 manual；
  * 为 "authenticated" 时走 auto。
@@ -53,11 +53,8 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  const [modelCount, setModelCount] = useState(0);
   const [autoError, setAutoError] = useState<string | null>(null);
   const [noKeyReason, setNoKeyReason] = useState<NoKeyReason>("no-key");
-  const [providerNames, setProviderNames] = useState<string[]>([]);
-  const [warningCount, setWarningCount] = useState(0);
 
   // M2 手动贴 key 流程状态
   const [apiKey, setApiKey] = useState("");
@@ -118,10 +115,8 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
         if (cancelled) return;
 
         if (body.ok && (body.totalModelCount ?? 0) > 0) {
-          setModelCount(body.totalModelCount ?? 0);
-          setProviderNames((body.providers ?? []).map((provider) => provider.displayName));
-          setWarningCount(body.warnings?.length ?? 0);
-          setPhase("done");
+          if (onSuccess) onSuccess();
+          else window.location.reload();
           return;
         }
         if (body.reason === "no-key" || body.reason === "no-usable-key" || body.ok) {
@@ -142,7 +137,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
     return () => {
       cancelled = true;
     };
-  }, [phase, generation]);
+  }, [phase, generation, onSuccess]);
 
   const handleTest = useCallback(() => {
     if (!apiKey.trim() || testing || saving) return;
@@ -178,9 +173,7 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
           setManualError(data.message ?? t("relay.onboarding.invalidKey"));
           return;
         }
-        setModelCount(data.modelCount ?? 0);
         window.dispatchEvent(new Event("relay-config-updated"));
-        setPhase("done");
         if (onSuccess) onSuccess();
         else window.location.reload();
       })
@@ -280,7 +273,6 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
         <p style={{ margin: "0 0 8px", fontSize: 13, color: "#4ade80", lineHeight: 1.6 }}>
           {t("brand.auth.autoSetup")}
         </p>
-        <RelayAdvancedSettings />
       </ConfigDetail>
     );
   }
@@ -317,31 +309,6 @@ export function RelayOnboarding({ onSuccess }: RelayOnboardingProps) {
           </ConfigButton>
         </div>
 
-        <RelayAdvancedSettings />
-      </ConfigDetail>
-    );
-  }
-
-  // ---- 完成步骤 ----
-  if (phase === "done") {
-    return (
-      <ConfigDetail>
-        <ConfigSectionTitle>{t("brand.setup.readyTitle")}</ConfigSectionTitle>
-        <p style={{ margin: "0 0 12px", fontSize: 13, color: "#4ade80", lineHeight: 1.6 }}>
-          {t("brand.auth.ready").replace("{count}", String(modelCount))}
-        </p>
-        {providerNames.length > 0 && <p>{providerNames.join(" · ")}</p>}
-        {warningCount > 0 && <p role="status">{t("brand.keys.partial").replace("{count}", String(warningCount))}</p>}
-        <p style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("brand.auth.catalogOnly")}</p>
-        <ConfigButton
-          variant="primary"
-          onClick={() => {
-            if (onSuccess) onSuccess();
-            else window.location.reload();
-          }}
-        >
-          {t("workspace.getStarted")}
-        </ConfigButton>
         <RelayAdvancedSettings />
       </ConfigDetail>
     );
