@@ -10,6 +10,7 @@ const CLI_OPTIONS = {
   hostname: { type: "string", short: "H" },
   "no-open": { type: "boolean" },
   help: { type: "boolean", short: "h" },
+  version: { type: "boolean", short: "v" },
 };
 
 function isEnabled(value) {
@@ -39,6 +40,7 @@ Options:
   -H, --hostname <host>      Bind hostname (default: 127.0.0.1, or PI_WEB_HOSTNAME)
       --no-open              Do not open a browser automatically
   -h, --help                 Show this help message and exit
+  -v, --version              Show the installed MeteorAgent version and exit
 
 Environment:
   PORT                       Default port when --port is omitted
@@ -70,6 +72,10 @@ function parseLaunchOptions(args = process.argv.slice(2), env = process.env) {
 
   if (values.help) {
     return { help: true };
+  }
+
+  if (values.version) {
+    return { version: true };
   }
 
   if (positionals.length > 0) {

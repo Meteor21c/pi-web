@@ -36,6 +36,13 @@ if (launchOptions.help) {
   process.exit(0);
 }
 
+if (launchOptions.version) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { version } = require("../package.json");
+  fs.writeSync(process.stdout.fd, `${version}\n`);
+  process.exit(0);
+}
+
 const { port, hostname, openBrowser } = launchOptions;
 
 const pkgDir = path.join(__dirname, "..");
