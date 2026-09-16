@@ -2210,7 +2210,7 @@ function RelayGroupDetail({ group, provider, onSync, onAddModels }: {
         <div><dt>可用模型</dt><dd>{provider.models?.length ?? group.modelCount ?? 0} 个</dd></div>
       </dl>
       {billing?.observedAt && <div style={{ color: "var(--text-dim)", fontSize: 10 }}>倍率更新时间：{new Date(billing.observedAt).toLocaleString()}</div>}
-      <RelayUsageSummary providerId={group.providerId} enabled />
+      <RelayUsageSummary providerId={group.providerId} enabled showBalance={false} />
       <RelayModelImport providerName={group.providerId} provider={provider} onAddModels={onAddModels} />
     </div>
   );

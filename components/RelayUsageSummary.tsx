@@ -5,7 +5,8 @@ import { useI18n } from "@/hooks/useI18n";
 import type { RelayUsageReport } from "@/lib/relay-usage";
 
 /**
- * meteor21c relay 额度面板（三件套：余额 / 今日消耗 / 模型用量 TopN）。
+ * meteor21c relay 用量面板。账户视图可显示余额；分组视图只显示
+ * 今日消耗与模型用量，避免重复展示账户钱包。
  *
  * 实现契约（W2 挂载依赖，勿改签名）：
  *   <RelayUsageSummary enabled={boolean} />
@@ -24,12 +25,20 @@ type RelayUsageResponse = {
 const POLL_INTERVAL_MS = 60_000;
 const REFRESH_FLASH_MS = 2_000;
 
-export function RelayUsageSummary({ enabled, providerId }: { enabled: boolean; providerId: string }) {
+export function RelayUsageSummary({
+  enabled,
+  providerId,
+  showBalance = true,
+}: {
+  enabled: boolean;
+  providerId: string;
+  showBalance?: boolean;
+}) {
   if (!enabled) return null;
-  return <RelayUsageContent key={providerId} providerId={providerId} />;
+  return <RelayUsageContent key={providerId} providerId={providerId} showBalance={showBalance} />;
 }
 
-function RelayUsageContent({ providerId }: { providerId: string }) {
+function RelayUsageContent({ providerId, showBalance }: { providerId: string; showBalance: boolean }) {
   const [snapshot, setSnapshot] = useState<RelayUsageResponse | null>(null);
   const [querying, setQuerying] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,15 +178,15 @@ function RelayUsageContent({ providerId }: { providerId: string }) {
 
       {report && (
         <>
-          {/* 余额 */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {/* 余额仅用于没有独立账户卡片的兼容界面。 */}
+          {showBalance && <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{report.kind === "wallet" ? (zh ? "账号钱包（不是单渠道余额）" : "Account wallet (shared across channels)") : (zh ? "本渠道剩余额度" : "Channel allowance remaining")}</span>
             <span style={{ fontSize: 22, fontWeight: 700, color: "var(--text)", fontFamily: "var(--font-mono)", lineHeight: 1.2 }}>{report.unlimited ? (zh ? "无限额" : "Unlimited") : report.balanceUsd === null ? (zh ? "暂不可用" : "Unavailable") : formatUSD(report.balanceUsd)}</span>
             {report.planName && <span>{report.planName}</span>}
             {report.status && <span>{zh ? "状态：" : "Status: "}{report.status}</span>}
             {report.expiresAt && <span>{zh ? "到期：" : "Expires: "}{report.expiresAt}</span>}
             {report.rateLimits.map((limit) => <span key={limit.window}>{limit.window}: {limit.remaining === null ? "—" : formatUSD(limit.remaining)}{limit.resetAt ? ` · ${limit.resetAt}` : ""}</span>)}
-          </div>
+          </div>}
 
           {/* 今日消耗 */}
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
