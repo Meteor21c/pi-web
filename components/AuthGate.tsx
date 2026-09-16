@@ -74,10 +74,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
   if (status === "authenticated") {
     if (readyGeneration === generation) return <>{children}</>;
-    // 自动配置进行中（含未上报前的首帧）→ 启动屏；交互阶段 → 居中卡片。
-    if (onboardingPhase === null || onboardingPhase === "auto") {
-      return <BootSplash progress={0.75} label={t("brand.auth.autoSetup")} />;
-    }
+    // busy（未上报首帧/auto）→ 启动屏遮罩；交互阶段 → 居中卡片。
+    // RelayOnboarding 必须始终挂载：自动配置的同步在它的 effect 里驱动，
+    // 若被条件渲染移除，同步永远不会执行、阶段也永远不会推进（会卡死在启动屏）。
+    const busy = onboardingPhase === null || onboardingPhase === "auto";
     return (
       <div
         style={{
@@ -88,10 +88,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
           padding: 24,
           background: "var(--bg)",
           color: "var(--text)",
+          position: "relative",
         }}
       >
+        {busy && <BootSplash progress={0.75} label={t("brand.auth.autoSetup")} />}
         <div
           className="ui-msg-enter"
+          aria-hidden={busy || undefined}
           style={{
             width: "100%",
             maxWidth: 520,
@@ -100,6 +103,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
             background: "var(--assistant-bg)",
             border: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)",
             boxShadow: "0 24px 60px rgba(0,0,0,0.14), 0 4px 16px rgba(0,0,0,0.06)",
+            ...(busy ? {
+              position: "absolute",
+              visibility: "hidden",
+              pointerEvents: "none",
+            } : undefined),
           }}
         >
           <RelayOnboarding key={generation} onSuccess={enterWorkspace} onPhaseChange={setOnboardingPhase} />
