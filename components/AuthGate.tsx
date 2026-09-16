@@ -7,7 +7,7 @@
  * 启动校验 → 登录 → 渠道同步 → 直接进入工作区；校验中不挂载工作区。
  * 校验与自动配置阶段统一使用 BootSplash 品牌启动屏（合并原先先后闪现的两页）。
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
@@ -17,6 +17,9 @@ import { BootSplash } from "./BootSplash";
 const GATE_ENABLED = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 
 const REGISTER_URL = "https://api.meteor21c.fun";
+
+/** 启动屏最短展示时长（ms）：检测太快时进度条也能完整走完，不显突兀。 */
+const SPLASH_MIN_VISIBLE_MS = 2000;
 
 function errorKeyToMessage(message?: string): string | null {
   switch (message) {
@@ -41,7 +44,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [logoFailed, setLogoFailed] = useState(false);
   const [readyGeneration, setReadyGeneration] = useState<number | null>(null);
   const [onboardingPhase, setOnboardingPhase] = useState<RelayOnboardingPhase | null>(null);
-  const enterWorkspace = useCallback(() => setReadyGeneration(generation), [generation]);
+  const splashShownAtRef = useRef<number | null>(null);
+
+  // 启动屏首次出现即计时：同步完成也至少让进度条走满 2s，观感完整。
+  useEffect(() => {
+    if (splashShownAtRef.current === null) splashShownAtRef.current = performance.now();
+  }, []);
+
+  const enterWorkspace = useCallback(() => {
+    const elapsed = splashShownAtRef.current === null
+      ? SPLASH_MIN_VISIBLE_MS
+      : performance.now() - splashShownAtRef.current;
+    const wait = Math.max(0, SPLASH_MIN_VISIBLE_MS - elapsed);
+    window.setTimeout(() => setReadyGeneration(generation), wait);
+  }, [generation]);
 
   if (!GATE_ENABLED || status === "disabled") {
     return <>{children}</>;
@@ -49,7 +65,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // No workspace effects or historical content until startup is complete.
   if (status === "loading" || status === "error") {
     return (
-      <BootSplash progress={0.35} label={t(status === "loading" ? "brand.auth.checking" : "brand.auth.networkError")} error={status === "error"}>
+      <BootSplash progress={0.5} label={t(status === "loading" ? "brand.auth.checking" : "brand.auth.networkError")} error={status === "error"}>
         {status === "error" && (
           <button
             type="button"
@@ -91,7 +107,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           position: "relative",
         }}
       >
-        {busy && <BootSplash progress={0.75} label={t("brand.auth.autoSetup")} />}
+        {busy && <BootSplash progress={0.92} label={t("brand.auth.autoSetup")} />}
         <div
           className="ui-msg-enter"
           aria-hidden={busy || undefined}

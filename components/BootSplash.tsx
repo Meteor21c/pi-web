@@ -1,18 +1,19 @@
 "use client";
 
 import Image from "next/image";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 /**
  * 品牌启动屏：金丝熊大 logo 居中偏上 + 品牌字标 + 当前检测项 + 进度条。
  * AuthGate 的账号检查与 RelayOnboarding 的自动配置共用，替代先后闪现的两页。
  *
- * 视觉：内容整体位于视口中间偏上；进度条随 progress 平滑推进并带微光扫过。
+ * 进度条：rAF 连续缓动（指数逼近目标 + 慢速爬行下限），阶段之间永远在动，
+ * 不会出现"从一个阶段直接跳到另一个阶段"的观感。
  * 缩放：继承根元素 zoom（layout 初始化脚本已应用），高度用 --vp-h 防溢出。
  */
 
 export interface BootSplashProps {
-  /** 0..1，进度条目标位置（宽度变化带过渡）。 */
+  /** 0..1，进度条目标位置（rAF 指数逼近，阶段间连续推进）。 */
   progress: number;
   /** 当前检测项文案（变化时淡入刷新）。 */
   label: string;
@@ -22,7 +23,35 @@ export interface BootSplashProps {
 }
 
 export function BootSplash({ progress, label, error = false, children }: BootSplashProps) {
-  const clamped = Math.max(0.06, Math.min(0.98, progress));
+  const targetRef = useRef(Math.max(0.06, Math.min(0.98, progress)));
+  const [display, setDisplay] = useState(0.04);
+
+  useEffect(() => {
+    targetRef.current = Math.max(0.06, Math.min(0.98, progress));
+  }, [progress]);
+
+  useEffect(() => {
+    const reduced = typeof window !== "undefined"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      setDisplay(targetRef.current);
+      return;
+    }
+    let raf = 0;
+    let current = 0.04;
+    const tick = () => {
+      const target = targetRef.current;
+      // 指数逼近 + 慢速爬行下限：永远在动，但不超过目标。
+      current += (target - current) * 0.055;
+      if (target - current > 0.0025) current += 0.0011;
+      if (current >= target) current = target;
+      setDisplay(current);
+      if (current < 0.995) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   return (
     <div
       role="status"
@@ -86,9 +115,9 @@ export function BootSplash({ progress, label, error = false, children }: BootSpl
         <div
           aria-hidden="true"
           style={{
-            marginTop: 16,
-            width: 300,
-            height: 5,
+            marginTop: 18,
+            width: 320,
+            height: 8,
             borderRadius: 999,
             background: "color-mix(in srgb, var(--border) 55%, transparent)",
             overflow: "hidden",
@@ -96,11 +125,10 @@ export function BootSplash({ progress, label, error = false, children }: BootSpl
         >
           <div
             style={{
-              width: `${Math.round(clamped * 100)}%`,
+              width: `${(display * 100).toFixed(2)}%`,
               height: "100%",
               borderRadius: 999,
               background: "var(--accent)",
-              transition: "width 700ms var(--ease-out-soft)",
               position: "relative",
               overflow: "hidden",
             }}
