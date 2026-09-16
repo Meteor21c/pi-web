@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { resolveSessionPath } from "@/lib/session-reader";
+import { rebrandMeteorAgentState } from "@/lib/meteoragent-brand";
 
 export async function GET(
   _req: Request,
@@ -10,7 +11,7 @@ export async function GET(
   try {
     const rpc = getRpcSession(id);
     if (rpc?.isAlive()) {
-      const state = await rpc.send({ type: "get_state" });
+      const state = rebrandMeteorAgentState(await rpc.send({ type: "get_state" }));
       return NextResponse.json({ running: true, state });
     }
 

@@ -22,6 +22,16 @@ export function rebrandMeteorAgentSystemPrompt(prompt: string): string {
     .replace(/(?<![/@._-])\bpi\b(?![/._*-])/gi, METEORAGENT_NAME);
 }
 
+/** Also sanitize state returned by a wrapper created before a dev-server hot reload. */
+export function rebrandMeteorAgentState<T>(state: T): T {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return state;
+  const record = state as Record<string, unknown>;
+  if (typeof record.systemPrompt !== "string") return state;
+  const systemPrompt = rebrandMeteorAgentSystemPrompt(record.systemPrompt);
+  if (systemPrompt === record.systemPrompt) return state;
+  return { ...record, systemPrompt } as T;
+}
+
 /** Runs after the built-in extensions so the prompt shown in System is branded too. */
 export function createMeteorAgentBrandExtension(): InlineExtension {
   return {

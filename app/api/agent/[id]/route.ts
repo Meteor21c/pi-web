@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession, setRpcSessionTools } from "@/lib/rpc-manager";
+import { rebrandMeteorAgentState } from "@/lib/meteoragent-brand";
 
 // POST /api/agent/[id] - Send a command to an existing session
 export async function POST(
@@ -39,7 +40,10 @@ export async function POST(
     if (existing?.isAlive()) {
       const result = await existing.send(body);
       promptAccepted = body.type === "prompt";
-      return NextResponse.json({ success: true, data: result });
+      return NextResponse.json({
+        success: true,
+        data: body.type === "get_state" ? rebrandMeteorAgentState(result) : result,
+      });
     }
 
     const filePath = await resolveSessionPath(id);
@@ -58,7 +62,10 @@ export async function POST(
     const result = await session.send(body);
     promptAccepted = body.type === "prompt";
 
-    return NextResponse.json({ success: true, data: result });
+    return NextResponse.json({
+      success: true,
+      data: body.type === "get_state" ? rebrandMeteorAgentState(result) : result,
+    });
   } catch (error) {
     return NextResponse.json({
       error: error instanceof Error ? error.message : String(error),
@@ -82,7 +89,7 @@ export async function GET(
       return NextResponse.json({ running: false });
     }
 
-    const state = await session.send({ type: "get_state" });
+    const state = rebrandMeteorAgentState(await session.send({ type: "get_state" }));
     return NextResponse.json({ running: true, state });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
