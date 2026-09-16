@@ -30,6 +30,7 @@
     "!.next/**/*.js.map",
     "public",
     "next.config.ts",
+    "npm-shrinkwrap.json",
     "package.json"
   ],
   "scripts": {
