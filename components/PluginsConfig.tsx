@@ -335,9 +335,17 @@ function CommunityPluginPanel({
   const [category, setCategory] = useState<CommunityPluginCategory | "all">("all");
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<PluginScope>("global");
+  const [searchCatalog, setSearchCatalog] = useState<CommunityPluginEntry[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const combinedCatalog = useMemo(() => {
+    const merged = new Map(catalog.map((entry) => [entry.source, entry]));
+    for (const entry of searchCatalog) merged.set(entry.source, entry);
+    return [...merged.values()];
+  }, [catalog, searchCatalog]);
   const entries = useMemo(
-    () => filterCommunityPluginCatalog(catalog, category, query),
-    [catalog, category, query],
+    () => filterCommunityPluginCatalog(combinedCatalog, category, query),
+    [combinedCatalog, category, query],
   );
   const riskSections = useMemo(
     () => (["low", "review"] as const)
@@ -346,6 +354,42 @@ function CommunityPluginPanel({
     [entries],
   );
   const busy = busyKey !== null;
+
+  useEffect(() => {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
+      setSearchCatalog([]);
+      setSearchLoading(false);
+      setSearchError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setSearchLoading(true);
+      setSearchError(null);
+      try {
+        const res = await fetch(`/api/plugins/catalog?q=${encodeURIComponent(normalizedQuery)}`, {
+          signal: controller.signal,
+        });
+        const next = (await res.json()) as CommunityPluginCatalogResponse & { error?: string };
+        if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
+        setSearchCatalog(next.entries);
+        if (next.warning) setSearchError(t("i18n.pluginCatalogSearchStaleWarning"));
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setSearchCatalog([]);
+        setSearchError(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!controller.signal.aborted) setSearchLoading(false);
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, t]);
 
   return (
     <div className="config-detail plugins-community-panel">
@@ -416,6 +460,18 @@ function CommunityPluginPanel({
             onChange={setScope}
           />
         </div>
+
+        {query.trim() && (
+          <div className={`plugins-community-search-status${searchError ? " is-error" : ""}`} role="status">
+            {searchLoading
+              ? t("i18n.pluginCatalogSearchingAll")
+              : searchError
+                ? t(searchCatalog.length > 0
+                  ? "i18n.pluginCatalogSearchStaleWarning"
+                  : "i18n.pluginCatalogSearchFailed")
+                : t("i18n.pluginCatalogSearchComplete", { count: searchCatalog.length })}
+          </div>
+        )}
 
         {catalogError && <div className="plugins-action-notice is-error" role="alert">{catalogError}</div>}
         {actionMessage && <div className="plugins-action-notice is-success" role="status">{actionMessage}</div>}

@@ -873,6 +873,16 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+.plugins-community-search-status {
+  margin-top: -4px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.plugins-community-search-status.is-error {
+  color: #b45309;
+}
+
 .plugins-action-notice {
   padding: 7px 9px;
   border-radius: 5px;

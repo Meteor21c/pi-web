@@ -10,7 +10,8 @@ export async function GET(request: NextRequest) {
   }
   try {
     const forceRefresh = request.nextUrl.searchParams.get("refresh") === "1";
-    const response = NextResponse.json(await getCommunityPluginCatalog(forceRefresh));
+    const query = (request.nextUrl.searchParams.get("q") ?? "").trim().slice(0, 120);
+    const response = NextResponse.json(await getCommunityPluginCatalog(forceRefresh, query));
     response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (error) {

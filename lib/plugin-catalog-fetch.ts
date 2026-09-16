@@ -18,6 +18,7 @@ interface CatalogCache {
 
 declare global {
   var __magentPluginCatalogCache: CatalogCache | undefined;
+  var __magentPluginCatalogSearchCache: Map<string, CatalogCache> | undefined;
 }
 
 function decodeHtml(value: string): string {
@@ -142,8 +143,51 @@ async function fetchCatalogType(type: (typeof CATALOG_TYPES)[number]): Promise<C
   return entries;
 }
 
-export async function getCommunityPluginCatalog(forceRefresh = false): Promise<CommunityPluginCatalogResponse> {
+async function fetchCatalogSearch(query: string): Promise<CommunityPluginEntry[]> {
+  const url = new URL("/packages", PI_CATALOG_ORIGIN);
+  url.searchParams.set("name", query);
+  url.searchParams.set("sort", "downloads");
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: { Accept: "text/html", "User-Agent": "Magent/1.0 (+https://api.meteor21c.fun)" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Pi catalog search returned HTTP ${response.status}`);
+  return parsePiPackageCatalogHtml(await response.text());
+}
+
+export async function getCommunityPluginCatalog(
+  forceRefresh = false,
+  searchQuery = "",
+): Promise<CommunityPluginCatalogResponse> {
   const now = Date.now();
+  const query = searchQuery.trim().slice(0, 120);
+  if (query) {
+    const key = query.toLocaleLowerCase();
+    const searchCache = globalThis.__magentPluginCatalogSearchCache
+      ??= new Map<string, CatalogCache>();
+    const cachedSearch = searchCache.get(key);
+    if (!forceRefresh && cachedSearch && cachedSearch.expiresAt > now) {
+      return { entries: cachedSearch.entries, fetchedAt: cachedSearch.fetchedAt, source: "cache" };
+    }
+    try {
+      const entries = await fetchCatalogSearch(query);
+      const fetchedAt = new Date().toISOString();
+      searchCache.set(key, { entries, fetchedAt, expiresAt: now + CATALOG_TTL_MS });
+      return { entries, fetchedAt, source: "live" };
+    } catch (error) {
+      if (cachedSearch) {
+        return {
+          entries: cachedSearch.entries,
+          fetchedAt: cachedSearch.fetchedAt,
+          source: "cache",
+          warning: error instanceof Error ? error.message : String(error),
+        };
+      }
+      throw error;
+    }
+  }
+
   const cached = globalThis.__magentPluginCatalogCache;
   if (!forceRefresh && cached && cached.expiresAt > now) {
     return { entries: cached.entries, fetchedAt: cached.fetchedAt, source: "cache" };

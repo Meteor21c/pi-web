@@ -20,6 +20,8 @@ test("plugin settings load the official community catalog before installed packa
   assert.match(source, /filterCommunityPluginCatalog/);
   assert.match(source, /sameCommunityPluginSource/);
   assert.match(source, /fetch\(`\/api\/plugins\/catalog/);
+  assert.match(source, /\/api\/plugins\/catalog\?q=\$\{encodeURIComponent\(normalizedQuery\)\}/);
+  assert.match(source, /controller\.abort\(\)/);
   assert.match(source, /onRefreshCatalog/);
   assert.match(source, /window\.setInterval\(\(\) => void loadCatalog\(\), COMMUNITY_CATALOG_REFRESH_MS\)/);
   assert.doesNotMatch(source, /pluginLowRiskNotice/);
