@@ -33,7 +33,9 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
       role="tablist"
       style={{
         display: "flex",
-        alignItems: "flex-end",
+        alignItems: "center",
+        gap: 4,
+        padding: "0 8px",
         background: "var(--bg-panel)",
         overflowX: "auto",
         flexShrink: 0,
@@ -77,11 +79,12 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
               display: "flex",
               alignItems: "center",
               gap: 6,
-              height: 36,
+              height: 28,
               paddingLeft: 12,
-              paddingRight: 6,
-              borderRight: "1px solid var(--border)",
-              background: isActive ? "var(--bg)" : "var(--bg-panel)",
+              paddingRight: 4,
+              borderRadius: 8,
+              background: isActive ? "var(--assistant-bg)" : "transparent",
+              boxShadow: isActive ? "0 1px 3px rgba(0,0,0,0.08), 0 0 0 0.5px color-mix(in srgb, var(--border) 60%, transparent)" : "none",
               cursor: "pointer",
               fontSize: 12,
               color: isActive ? "var(--text)" : "var(--text-muted)",
@@ -90,7 +93,7 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
               minWidth: 80,
               flexShrink: 0,
               userSelect: "none",
-              transition: "background 0.1s, color 0.1s",
+              transition: "background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease",
             }}
           >
             <span style={{ flexShrink: 0, opacity: isActive ? 1 : 0.7, display: "flex", alignItems: "center" }}>
@@ -118,15 +121,15 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
               onMouseLeave={() => setHoveredClose(null)}
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
-                width: 24, height: 24,
+                width: 22, height: 22,
                 background: hoveredClose === tab.id ? "var(--bg-hover)" : "transparent",
                 border: "none",
-                borderRadius: 4,
+                borderRadius: 6,
                 color: hoveredClose === tab.id ? "var(--text)" : "var(--text-dim)",
                 cursor: "pointer",
                 padding: 0,
                 flexShrink: 0,
-                transition: "background 0.1s, color 0.1s",
+                transition: "background 0.15s ease, color 0.15s ease",
               }}
                title={t(tab.kind === "terminal" ? "terminal.close" : "i18n.close")}
                aria-label={`${t(tab.kind === "terminal" ? "terminal.close" : "i18n.close")} ${tab.label}`}

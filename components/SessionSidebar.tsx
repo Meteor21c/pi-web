@@ -237,7 +237,7 @@ function PathLabel({ text, style }: { text: string; style?: CSSProperties }) {
 
 const DROPDOWN_ANIMATION_MS = 140;
 
-function AnimatedDropdown({ open, children, style }: { open: boolean; children: ReactNode; style: CSSProperties }) {
+function AnimatedDropdown({ open, children, style, className }: { open: boolean; children: ReactNode; style: CSSProperties; className?: string }) {
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(open);
 
@@ -266,6 +266,7 @@ function AnimatedDropdown({ open, children, style }: { open: boolean; children: 
 
   return (
     <div
+      className={className}
       style={{
         ...style,
         opacity: visible ? 1 : 0,
@@ -1052,7 +1053,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 height: 32,
                 paddingLeft: 10,
                 paddingRight: 12,
-                borderRadius: 7,
+                borderRadius: 10,
                 fontSize: 12,
                 fontWeight: 500,
                 letterSpacing: "-0.01em",
@@ -1088,7 +1089,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               aria-label={t("sidebar.toggleSessionSearch")}
               aria-expanded={sessionSearchOpen}
               aria-controls="session-search-input"
-              className={`flex h-[32px] w-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[7px] border border-border hover:bg-bg-selected focus-visible:outline-2 focus-visible:outline-accent ${sessionSearchOpen ? "bg-bg-selected text-accent" : "bg-bg-hover text-text-muted"}`}
+              className={`flex h-[32px] w-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[10px] border border-border hover:bg-bg-selected focus-visible:outline-2 focus-visible:outline-accent ${sessionSearchOpen ? "bg-bg-selected text-accent" : "bg-bg-hover text-text-muted"}`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" />
@@ -1100,10 +1101,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         {/* CWD picker */}
         <div ref={dropdownRef} style={{ position: "relative" }}>
           <div style={{ marginBottom: 5, paddingLeft: 2 }}>
-            <div style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, lineHeight: 1.35 }}>
+            <div style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 600, lineHeight: 1.35, letterSpacing: "0.01em" }}>
               {t("sidebar.projectAddress")}
             </div>
-            <div style={{ color: "var(--text-dim)", fontSize: 9, lineHeight: 1.4 }}>
+            <div style={{ color: "var(--text-dim)", fontSize: 10, lineHeight: 1.4 }}>
               {t("sidebar.projectAddressHint")}
             </div>
           </div>
@@ -1117,7 +1118,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               padding: "6px 10px",
               background: selectedCwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)",
               border: selectedCwd ? "1px solid var(--border)" : "1px solid rgba(37,99,235,0.4)",
-              borderRadius: 7,
+              borderRadius: 10,
               cursor: "pointer",
               fontSize: 12,
               color: "var(--text)",
@@ -1168,16 +1169,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
           <AnimatedDropdown
             open={dropdownOpen}
+            className="ui-glass"
             style={{
               position: "absolute",
-              top: "calc(100% + 4px)",
+              top: "calc(100% + 6px)",
               left: 0,
               right: 0,
               zIndex: 100,
-              background: "var(--bg)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
+              padding: 5,
               overflow: "hidden",
             }}
           >
@@ -1213,6 +1212,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 {visibleProjects.map((project) => (
                   <button
                     key={project.key}
+                    className="ui-menu-item"
                     onClick={() => {
                       setSelectedCwd(project.root);
                       setProjectFilter("");
@@ -1226,9 +1226,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                       gap: 7,
                       width: "100%",
                       padding: "8px 10px",
-                      background: "var(--bg)",
+                      background: "transparent",
                       border: "none",
-                      borderBottom: "1px solid var(--border)",
                       color: project.key === selectedProject?.key ? "var(--text)" : "var(--text-muted)",
                       cursor: "pointer",
                       textAlign: "left",
@@ -1359,7 +1358,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   padding: "0 10px",
                   background: "var(--bg-hover)",
                   border: "1px solid var(--border)",
-                  borderRadius: 7,
+                  borderRadius: 10,
                   cursor: "pointer",
                   fontSize: 11,
                   lineHeight: 1.35,
@@ -1392,16 +1391,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
               <AnimatedDropdown
                 open={wtDropdownOpen}
+                className="ui-glass"
                 style={{
                   position: "absolute",
-                  top: "calc(100% + 4px)",
+                  top: "calc(100% + 6px)",
                   left: 0,
                   right: 0,
                   zIndex: 100,
-                  background: "var(--bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
+                  padding: 5,
                   overflow: "hidden",
                 }}
               >
@@ -1462,7 +1459,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                         <div
                           key={wt.path}
                           className="wt-row"
-                          style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border)" }}
+                          style={{ display: "flex", alignItems: "center" }}
                         >
                           <button
                             onClick={() => {
@@ -1472,6 +1469,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                               setWtFilter("");
                             }}
                             title={wt.path}
+                            className="ui-menu-item"
                             style={{
                               flex: 1,
                               minWidth: 0,
@@ -1479,7 +1477,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                               alignItems: "center",
                               gap: 7,
                               padding: "8px 10px",
-                              background: "var(--bg)",
+                              background: "transparent",
                               border: "none",
                               color: isCurrent ? "var(--text)" : "var(--text-muted)",
                               cursor: "pointer",
@@ -1661,7 +1659,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               gap: 6,
               padding: "0 10px",
               border: "1px solid var(--border)",
-              borderRadius: 7,
+              borderRadius: 10,
               background: "var(--bg-hover)",
               color: "var(--text-dim)",
               fontSize: 11,
@@ -2134,16 +2132,15 @@ function SessionItem({
         height: SESSION_LIST_ITEM_HEIGHT,
         display: "flex",
         alignItems: "center",
-        paddingLeft: depth > 0 ? depth * 12 + 14 : 14,
+        margin: "0 8px",
+        paddingLeft: depth > 0 ? depth * 12 + 10 : 10,
         paddingRight: 8,
+        borderRadius: 10,
         cursor: confirmDelete || renaming ? "default" : "pointer",
         background: confirmDelete
           ? "rgba(239,68,68,0.06)"
           : isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
-        borderLeft: confirmDelete
-          ? "2px solid #ef4444"
-          : isSelected ? "2px solid var(--accent)" : "2px solid transparent",
-        transition: "background 0.1s",
+        transition: "background 0.15s ease",
         opacity: deleting ? 0.5 : 1,
         gap: 6,
         overflow: "hidden",

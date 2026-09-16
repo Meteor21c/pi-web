@@ -1825,6 +1825,33 @@ span.token.table {
   to   { background-position: -200% 0; }
 }
 
+/* 玻璃质感弹出菜单（Apple 风：半透明 + 背景模糊 + 柔边 + 入场） */
+@keyframes ui-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.ui-glass,
+.ui-glass-menu {
+  background: color-mix(in srgb, var(--assistant-bg) 78%, transparent) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.7);
+  backdrop-filter: blur(24px) saturate(1.7);
+  border: 0.5px solid color-mix(in srgb, var(--border) 75%, transparent) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.16), 0 2px 10px rgba(0, 0, 0, 0.06) !important;
+}
+.ui-glass-menu {
+  animation: ui-menu-in var(--motion-fast) var(--ease-out-soft) both;
+}
+
+/* 菜单项：圆角悬浮项，无分隔线 */
+.ui-menu-item {
+  border-radius: 9px;
+  transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.ui-menu-item:hover:not(:disabled) {
+  background: var(--bg-hover) !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ui-msg-enter { animation-duration: 0.001ms; }
   .ui-send-btn { transition: none; }
@@ -1832,4 +1859,6 @@ span.token.table {
   .ui-send-btn:not(:disabled):active { transform: none; }
   .ui-thinking-dots > span { animation: none; opacity: 0.7; transform: none; }
   .ui-shimmer { animation: none; }
+  .ui-glass-menu { animation: none; }
+  .ui-menu-item:hover:not(:disabled) { transition: none; }
 }

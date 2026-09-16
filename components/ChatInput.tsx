@@ -1840,16 +1840,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           {slashMenuOpen && slashQuery !== null && (
             <div
               ref={slashMenuRef}
+              className="ui-glass-menu"
               style={{
                 position: "absolute",
                 left: 0,
                 right: 0,
                 bottom: "calc(100% + 8px)",
                 zIndex: 120,
-                background: "var(--bg)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
                 overflow: "hidden",
                 boxSizing: "border-box",
                 display: "flex",
@@ -1861,8 +1858,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             >
               <div
                 style={{
-                  padding: "8px 10px",
-                  borderBottom: "1px solid var(--border)",
+                  padding: "8px 12px",
+                  borderBottom: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
@@ -1934,9 +1931,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 gap: 4,
                                 justifyContent: "center",
                                 padding: "9px 10px",
-                                border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
-                                borderRadius: 7,
-                                background: active ? "var(--bg-selected)" : "var(--bg-panel)",
+                                border: `0.5px solid ${active ? "var(--accent)" : "color-mix(in srgb, var(--border) 75%, transparent)"}`,
+                                borderRadius: 10,
+                                background: active ? "var(--bg-selected)" : "color-mix(in srgb, var(--bg-panel) 55%, transparent)",
                                 color: "var(--text)",
                                 cursor: "pointer",
                                 textAlign: "left",
@@ -1999,16 +1996,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             return (
               <div
                 ref={atMenuRef}
+                className="ui-glass-menu"
                 style={{
                   position: "absolute",
                   left: 0,
                   right: 0,
                   bottom: "calc(100% + 8px)",
                   zIndex: 120,
-                  background: "var(--bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  boxShadow: "0 -6px 20px rgba(0,0,0,0.12)",
                   overflow: "hidden",
                   boxSizing: "border-box",
                   display: "flex",
@@ -2020,8 +2014,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               >
                 <div
                   style={{
-                    padding: "8px 10px",
-                    borderBottom: "1px solid var(--border)",
+                    padding: "8px 12px",
+                    borderBottom: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
@@ -2419,11 +2413,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
                 </button>
                 {thinkingDropdownOpen && (
-                  <div style={{
+                  <div className="ui-glass-menu" style={{
                     position: "absolute", bottom: "calc(100% + 6px)",
                     ...(isMobile ? { left: 0 } : { right: 0 }),
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
+                    zIndex: 100,
+                    padding: 5,
                     overflow: "hidden", minWidth: 180,
                   }}>
                     {THINKING_LEVELS.filter((lvl) => {
@@ -2439,6 +2433,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       return (
                         <button
                           key={lvl}
+                          className="ui-menu-item"
                           onClick={() => { setThinkingDropdownOpen(false); if (!isActive) onThinkingLevelChange(lvl); }}
                           style={{
                             display: "flex", alignItems: "center", gap: 8,
@@ -2505,13 +2500,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{toolPresetLabel}</span>}
                 </button>
                 {toolDropdownOpen && (
-                  <div style={{
+                  <div className="ui-glass-menu" style={{
                     position: "absolute",
                     bottom: "calc(100% + 6px)",
                     right: isMobile ? undefined : 0,
                     left: isMobile ? 0 : undefined,
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
+                    zIndex: 100,
+                    padding: 5,
                     overflow: "hidden", minWidth: 120,
                   }}>
                     {TOOL_PRESETS.map((lvl) => {
@@ -2525,6 +2520,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       return (
                         <button
                           key={lvl}
+                          className="ui-menu-item"
                           onClick={() => { setToolDropdownOpen(false); if (!isActive) onToolPresetChange(preset); }}
                           style={{
                             display: "flex", alignItems: "center", gap: 8,

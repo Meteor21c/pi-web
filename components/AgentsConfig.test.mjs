@@ -116,7 +116,7 @@ test("shows disabled controls with a gray background", () => {
   assert.doesNotMatch(source, /agents-system-prompt[^\n]*fontFamily/);
   assert.match(disabledStyle, /background: "var\(--bg-panel\)"/);
   assert.match(disabledStyle, /color: "var\(--text-dim\)"/);
-  assert.match(modelSelectorSource, /background: locked \? "var\(--bg-panel\)" : "var\(--bg\)"/);
+  assert.match(modelSelectorSource, /background: locked \? "var\(--bg-panel\)" : "var\(--assistant-bg\)"/);
 });
 
 test("keeps a larger resize corner when system instructions need a scrollbar", () => {

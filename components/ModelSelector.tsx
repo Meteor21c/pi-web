@@ -136,8 +136,8 @@ export function ModelSelector({
         padding: "0 9px",
         overflow: "hidden",
         border: "1px solid var(--border)",
-        borderRadius: 5,
-        background: locked ? "var(--bg-panel)" : "var(--bg)",
+        borderRadius: 10,
+        background: locked ? "var(--bg-panel)" : "var(--assistant-bg)",
         color: locked ? "var(--text-dim)" : "var(--text)",
         cursor: locked ? "default" : "pointer",
         fontSize: 12,
@@ -257,6 +257,7 @@ export function ModelSelector({
             ref={panelRef}
             role="listbox"
             aria-label={ariaLabel}
+            className="ui-glass-menu"
             style={{
               position: "fixed",
               ...verticalPosition,
@@ -266,14 +267,10 @@ export function ModelSelector({
               flexDirection: "column",
               maxHeight,
               overflow: "hidden",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              background: "var(--bg)",
-              boxShadow: openAbove ? "0 -4px 16px rgba(0,0,0,0.10)" : "0 4px 16px rgba(0,0,0,0.10)",
             }}
           >
             {showFilter && (
-              <div style={{ flexShrink: 0, padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ flexShrink: 0, padding: "8px", borderBottom: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)" }}>
                 <input
                   value={filter}
                   onChange={(event) => setFilter(event.target.value)}
@@ -286,11 +283,11 @@ export function ModelSelector({
                     boxSizing: "border-box",
                     width: "100%",
                     minWidth: isMobile ? 0 : 220,
-                    padding: "5px 8px",
-                    border: "1px solid var(--border)",
-                    borderRadius: 5,
+                    padding: "6px 10px",
+                    border: "0.5px solid var(--border)",
+                    borderRadius: 8,
                     outline: "none",
-                    background: "var(--bg)",
+                    background: "color-mix(in srgb, var(--assistant-bg) 70%, transparent)",
                     color: "var(--text)",
                     fontFamily: "var(--font-mono)",
                     fontSize: 11,
@@ -306,7 +303,7 @@ export function ModelSelector({
               </div>
             ) : (
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(112px, 36%) minmax(0, 1fr)" : "clamp(132px, 34%, 178px) minmax(210px, 1fr)", minHeight: 0, overflow: "hidden" }}>
-                <div style={{ minWidth: 0, overflowY: "auto", borderRight: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+                <div style={{ minWidth: 0, overflowY: "auto", borderRight: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)", background: "color-mix(in srgb, var(--bg-panel) 50%, transparent)" }}>
                   <div style={{ padding: "7px 10px 5px", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>
                     {t("chat.modelGroups")}
                   </div>
@@ -333,7 +330,7 @@ export function ModelSelector({
                   ))}
                 </div>
                 <div style={{ minWidth: 0, overflowY: "auto" }}>
-                  <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "7px 12px 5px", borderBottom: "1px solid var(--border)", background: "var(--bg)", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>
+                  <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "7px 12px 5px", borderBottom: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)", background: "color-mix(in srgb, var(--assistant-bg) 60%, transparent)", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>
                     {visibleProvider?.displayName ?? t("chat.modelsInGroup")}
                   </div>
                   {visibleProvider?.options.map((option) => (
@@ -360,15 +357,16 @@ function ProviderGroupButton({ active, selected = false, label, count, onActivat
       type="button"
       onClick={onActivate}
       onFocus={onActivate}
+      className="ui-menu-item"
       style={{
         display: "flex",
         alignItems: "center",
         gap: 6,
-        width: "100%",
+        width: "calc(100% - 8px)",
         minWidth: 0,
-        padding: "8px 9px 8px 11px",
+        margin: "0 4px",
+        padding: "8px 9px",
         border: "none",
-        borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent",
         background: active ? "var(--bg-selected)" : "none",
         color: active ? "var(--text)" : "var(--text-muted)",
         cursor: "pointer",
@@ -378,7 +376,7 @@ function ProviderGroupButton({ active, selected = false, label, count, onActivat
       }}
     >
       <span title={label} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-      {count !== undefined && <span style={{ color: "var(--text-dim)", fontSize: 9 }}>{count}</span>}
+      {count !== undefined && <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{count}</span>}
       <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--text-dim)" }}>
         <polyline points="3 1.5 6.5 5 3 8.5" />
       </svg>
@@ -393,7 +391,7 @@ function ModelOptionButton({ active, label, onClick }: { active: boolean; label:
       role="option"
       aria-selected={active}
       onClick={onClick}
-      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", border: "none", background: active ? "var(--bg-selected)" : "none", color: active ? "var(--text)" : "var(--text-muted)", cursor: "pointer", fontSize: 12, fontWeight: active ? 600 : 400, textAlign: "left", whiteSpace: "nowrap" }}
+      style={{ display: "flex", alignItems: "center", gap: 8, width: "calc(100% - 8px)", margin: "0 4px", padding: "7px 12px", border: "none", borderRadius: 8, background: active ? "var(--bg-selected)" : "none", color: active ? "var(--text)" : "var(--text-muted)", cursor: "pointer", fontSize: 12, fontWeight: active ? 600 : 400, textAlign: "left", whiteSpace: "nowrap", transition: "background 0.15s ease" }}
       onMouseEnter={(event) => { if (!active) event.currentTarget.style.background = "var(--bg-hover)"; }}
       onMouseLeave={(event) => { if (!active) event.currentTarget.style.background = "none"; }}
     >
