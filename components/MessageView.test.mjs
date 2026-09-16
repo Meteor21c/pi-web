@@ -11,6 +11,7 @@ const { renderToStaticMarkup } = await jiti.import("react-dom/server");
 const {
   MessageView,
   ThinkingBlock,
+  formatUsage,
   getModelDisplayName,
   getTokenEstimateText,
   getToolCallInputText,
@@ -33,6 +34,30 @@ test("updates a reused message when its written files change", () => {
   const props = { message: { role: "assistant", content: [] } };
   assert.equal(MessageView.compare(props, props), true);
   assert.equal(MessageView.compare(props, { ...props, writtenFiles: [{ path: "/tmp/result.txt" }] }), false);
+  assert.equal(MessageView.compare(props, { ...props, actualCost: 0.0007514 }), false);
+});
+
+test("shows the authoritative relay charge with enough precision", () => {
+  const usage = {
+    input: 1021,
+    output: 896,
+    cacheRead: 192,
+    cacheWrite: 0,
+    cost: { total: 0.007514 },
+  };
+  assert.match(formatUsage(usage, 0.0007514), /\$0\.000751$/);
+  assert.doesNotMatch(formatUsage(usage, 0.0007514), /\$0\.007514/);
+
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k143",
+    model: "grok-4.6",
+    content: [{ type: "text", text: "hello" }],
+    usage,
+  }, { actualCost: 0.0007514 });
+  // v5: 统计行改为图标胶囊，含义说明挂在 data-tip（悬停 tooltip）上。
+  assert.match(html, /data-tip="Actual relay charge \(synced\)"/);
+  assert.match(html, /\$0\.000751/);
 });
 
 test("matches response model aliases and otherwise includes the provider", () => {

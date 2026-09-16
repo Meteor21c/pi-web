@@ -16,6 +16,8 @@ import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import type { SubagentToolDetails } from "@/lib/subagent-extension";
+import { formatUsdPrecise } from "@/lib/currency-format";
+import { isRelayProviderId } from "@/lib/relay-config";
 import type {
   AgentMessage,
   UserMessage,
@@ -196,6 +198,8 @@ interface Props {
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
+  /** Authoritative charge returned by the relay usage ledger for this response. */
+  actualCost?: number;
   /**
    * Files this turn wrote, derived by the caller from the whole turn's
    * successful write/edit tool calls. ChatWindow computes this because the
@@ -270,12 +274,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, writtenFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} actualCost={actualCost} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -307,6 +311,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.onEditContent === next.onEditContent
     && prev.showTimestamp === next.showTimestamp
     && prev.prevTimestamp === next.prevTimestamp
+    && prev.actualCost === next.actualCost
     && prev.writtenFiles === next.writtenFiles
     && prev.sessionId === next.sessionId;
 });
@@ -607,6 +612,7 @@ function AssistantMessageView({
   sessionId,
   entryId,
   searchBlock,
+  actualCost,
   writtenFiles,
 }: {
   message: AssistantMessage;
@@ -621,6 +627,7 @@ function AssistantMessageView({
   sessionId?: string;
   entryId?: string;
   searchBlock?: AssistantContentBlock;
+  actualCost?: number;
   writtenFiles?: WrittenFile[];
 }) {
   const { t } = useI18n();
@@ -834,11 +841,49 @@ function AssistantMessageView({
       <div style={{
         display: "flex", alignItems: "center", gap: 8, marginTop: 4,
       }}>
-        {message.usage && !isStreaming && (
-          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
-            {formatUsage(message.usage)}
-          </div>
-        )}
+        {message.usage && !isStreaming && (() => {
+          const costTip = actualCost !== undefined
+            ? t("relay.usage.actualCharge")
+            : isRelayProviderId(message.provider) ? t("relay.usage.estimatedCharge") : t("session.cost");
+          const cost = actualCost !== undefined
+            ? formatUsdPrecise(actualCost)
+            : message.usage.cost?.total ? formatUsdPrecise(message.usage.cost.total) : null;
+          const arrow = "M12 19V5m-7 7 7-7 7 7";
+          return (
+            <div className="ui-stat-row">
+              {message.usage.input > 0 && (
+                <span className="ui-stat-chip" data-tip={t("session.input")}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={arrow} /></svg>
+                  {message.usage.input.toLocaleString()}
+                </span>
+              )}
+              {message.usage.output > 0 && (
+                <span className="ui-stat-chip" data-tip={t("session.output")}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></svg>
+                  {message.usage.output.toLocaleString()}
+                </span>
+              )}
+              {message.usage.cacheRead > 0 && (
+                <span className="ui-stat-chip" data-tip={t("session.cacheRead")}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" /></svg>
+                  {message.usage.cacheRead.toLocaleString()}
+                </span>
+              )}
+              {message.usage.cacheWrite > 0 && (
+                <span className="ui-stat-chip" data-tip={t("session.cacheWrite")}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 14 9 5 9-5" /></svg>
+                  {message.usage.cacheWrite.toLocaleString()}
+                </span>
+              )}
+              {cost && (
+                <span className="ui-stat-chip" data-tip={costTip}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M14.8 9.7c-.4-1-1.5-1.7-2.8-1.7-1.6 0-2.9.9-2.9 2.1 0 1.2 1.1 1.8 2.9 2.1 1.8.3 2.9 1 2.9 2.2 0 1.2-1.3 2.1-2.9 2.1-1.4 0-2.5-.7-2.9-1.7" /><path d="M12 6.8v10.4" /></svg>
+                  {cost}
+                </span>
+              )}
+            </div>
+          );
+        })()}
         {textContent && !isStreaming && (
           <button
             onClick={copyContent}
@@ -1747,19 +1792,20 @@ function getToolPreview(block: ToolCallContent): string {
   return String(first).slice(0, 120);
 }
 
-function formatUsage(usage: {
+export function formatUsage(usage: {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
   cost: { total: number };
-}): string {
+}, actualCost?: number): string {
   const parts = [];
   if (usage.input) parts.push(`${usage.input.toLocaleString()} in`);
   if (usage.output) parts.push(`${usage.output.toLocaleString()} out`);
   if (usage.cacheRead) parts.push(`${usage.cacheRead.toLocaleString()} cache R`);
   if (usage.cacheWrite) parts.push(`${usage.cacheWrite.toLocaleString()} cache W`);
-  if (usage.cost?.total) parts.push(`$${usage.cost.total.toFixed(4)}`);
+  if (actualCost !== undefined) parts.push(formatUsdPrecise(actualCost));
+  else if (usage.cost?.total) parts.push(formatUsdPrecise(usage.cost.total));
   return parts.join(" · ");
 }
 
