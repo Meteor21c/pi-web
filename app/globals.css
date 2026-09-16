@@ -1855,6 +1855,36 @@ span.token.table {
   background: var(--bg-hover) !important;
 }
 
+/* 空会话欢迎区：错相入场 / logo 浮动 / 光晕呼吸 / 建议轮换 */
+@keyframes ui-welcome-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes ui-welcome-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+@keyframes ui-welcome-glow {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%      { opacity: 0.9; transform: scale(1.05); }
+}
+@keyframes ui-tip-swap {
+  0%   { opacity: 0; transform: translateY(6px); }
+  8%, 92% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-6px); }
+}
+.ui-welcome-brand  { animation: ui-welcome-up 0.45s var(--ease-out-soft) both; }
+.ui-welcome-greet  { animation: ui-welcome-up 0.45s var(--ease-out-soft) 0.08s both; }
+.ui-welcome-tip    { animation: ui-welcome-up 0.45s var(--ease-out-soft) 0.16s both; }
+.ui-welcome-logo   { animation: ui-welcome-bob 5s ease-in-out infinite; }
+.ui-welcome-glow   { animation: ui-welcome-glow 7s ease-in-out infinite; }
+.ui-tip-swap-text  { animation: ui-tip-swap 4.5s ease-in-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-welcome-brand, .ui-welcome-greet, .ui-welcome-tip { animation-duration: 0.001ms; animation-delay: 0s; }
+  .ui-welcome-logo, .ui-welcome-glow, .ui-tip-swap-text { animation: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ui-msg-enter { animation-duration: 0.001ms; }
   .ui-send-btn { transition: none; }

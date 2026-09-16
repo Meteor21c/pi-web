@@ -1268,11 +1268,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       )}
 
       <div className="relative shrink-0">
-        {isEmptyNew && <NewSessionWelcome isMobile={isMobile} />}
+        {isEmptyNew && <NewSessionWelcome isMobile={isMobile} chatInputRef={chatInputRef} />}
         {chatInputElement}
         <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />
       </div>
-      {isEmptyNew && <div style={{ minHeight: 0, flex: "1 1 0", maxHeight: "14vh" }} />}
+      {isEmptyNew && <div className="min-h-0 flex-1" />}
     </div>
   );
 }

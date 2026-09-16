@@ -31,6 +31,14 @@ import { AgentsConfig } from "./AgentsConfig";
 import { PluginsConfig } from "./PluginsConfig";
 import { ConfigButton, ConfigSwitch } from "./SettingsUi";
 import { RelayAccountSettings } from "./RelayAccountSettings";
+import { useUiScale, type UiScaleOption } from "@/hooks/useUiScale";
+
+const UI_SCALE_CHOICES: Array<{ id: UiScaleOption }> = [
+  { id: "auto" },
+  { id: "100" },
+  { id: "110" },
+  { id: "125" },
+];
 
 interface Props {
   cwd: string | null;
@@ -66,6 +74,7 @@ export function SettingsSectionIcon({ section, size = 16, strokeWidth = 1.8 }: {
 function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Pick<Props, "sessionId" | "onSessionReloaded" | "quoteSelectionEnabled" | "onQuoteSelectionChange">) {
   const { locale, setLocale, supportedLocales, t } = useI18n();
   const { preference, setThemePreference } = useTheme();
+  const { preference: uiScalePreference, scale: uiScaleValue, setPreference: setUiScale } = useUiScale();
   const { width: chatContentWidth, setWidth: setChatContentWidth, fontSize, setFontSize } = useChatAppearance();
   const [shellSettings, setShellSettings] = useState<ShellToolSettingsResponse | null>(null);
   const [shellSaving, setShellSaving] = useState(false);
@@ -183,6 +192,36 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
                 />
                 <ThemeIcon preference={option.id} />
                 <span className="settings-theme-option-label">{t(option.label)}</span>
+              </label>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="settings-general-section">
+        <h3 className="settings-general-heading">{t("settings.uiScale")}</h3>
+        <p className="settings-general-description">{t("settings.uiScaleDescription")}</p>
+        <div role="radiogroup" aria-label={t("settings.uiScale")} className="settings-scale-options">
+          {UI_SCALE_CHOICES.map((option) => {
+            const selected = uiScalePreference === option.id;
+            const label = option.id === "auto" ? t("settings.uiScaleAuto") : option.id === "100" ? "100%" : option.id === "110" ? "110%" : "125%";
+            return (
+              <label
+                key={option.id}
+                className={`settings-scale-option${selected ? " selected" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="ui-scale"
+                  value={option.id}
+                  checked={selected}
+                  onChange={() => setUiScale(option.id as UiScaleOption)}
+                  className="sr-only"
+                />
+                <span className="settings-scale-option-label">{label}</span>
+                {option.id === "auto" && (
+                  <span className="settings-scale-option-hint">{Math.round(uiScaleValue * 100)}%</span>
+                )}
               </label>
             );
           })}
