@@ -6,6 +6,7 @@ const panelSource = await readFile(new URL("./SettingsPanel.tsx", import.meta.ur
 const cssSource = await readFile(new URL("../app/settings.css", import.meta.url), "utf8");
 const globalCssSource = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 const shellSource = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
+const accountMenuSource = await readFile(new URL("./SidebarAccountMenu.tsx", import.meta.url), "utf8");
 const sidebarSource = await readFile(new URL("./SessionSidebar.tsx", import.meta.url), "utf8");
 const themeSource = await readFile(new URL("../hooks/useTheme.ts", import.meta.url), "utf8");
 const themeOptionsSource = await readFile(new URL("../lib/theme.ts", import.meta.url), "utf8");
@@ -13,14 +14,19 @@ const enSource = await readFile(new URL("../lib/i18n/messages/en.ts", import.met
 const zhSource = await readFile(new URL("../lib/i18n/messages/zh-CN.ts", import.meta.url), "utf8");
 const loginSource = await readFile(new URL("../app/login/page.tsx", import.meta.url), "utf8");
 
-test("opens one settings panel from direct sidebar shortcuts", () => {
+test("opens one settings panel from the sidebar account menu", () => {
   assert.match(shellSource, /<SettingsPanel/);
-  assert.match(shellSource, /setSettingsSection\(section\)/);
+  assert.match(shellSource, /<SidebarAccountMenu/);
+  assert.match(shellSource, /onSelectSection=\{\(section\) => setSettingsSection\(section\)\}/);
   assert.match(shellSource, /initialSection=\{settingsSection\}/);
-  assert.match(shellSource, /translate\("common\.settings"\)/);
-  assert.match(shellSource, /<SettingsSectionIcon section=\{section\} size=\{14\} strokeWidth=\{2\} \/>\s*<span>\{label\}<\/span>/);
-  assert.match(shellSource, /<SettingsSectionIcon section="general" size=\{14\} strokeWidth=\{2\} \/>/);
-  assert.doesNotMatch(shellSource, /\["plugins", translate\("common\.plugins"\)\]/);
+  assert.match(accountMenuSource, /useRelaySession\(\)/);
+  assert.match(accountMenuSource, /user\?\.username/);
+  assert.match(accountMenuSource, /user\?\.email/);
+  for (const section of ["general", "models", "skills", "agents", "plugins"]) {
+    assert.match(accountMenuSource, new RegExp(`id: "${section}"`));
+  }
+  assert.doesNotMatch(shellSource, /translate\("common\.models"\)/);
+  assert.doesNotMatch(shellSource, /translate\("common\.skills"\)/);
   assert.doesNotMatch(shellSource, /setModelsConfigOpen|setSkillsConfigOpen|setAgentsConfigOpen|setPluginsConfigOpen/);
 });
 
@@ -34,7 +40,6 @@ test("keeps every requested configuration surface inside the settings panel", ()
 });
 
 test("restores the settings section and each list detail selection", async () => {
-  assert.match(shellSource, /getLastSettingsSection\(projectTrustCwd\)/);
   assert.match(panelSource, /setLastSettingsSection\(initialSection\)/);
   assert.match(panelSource, /setLastSettingsSection\(nextSection\)/);
   for (const name of ["ModelsConfig", "SkillsConfig", "AgentsConfig", "PluginsConfig"]) {
