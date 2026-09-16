@@ -29,6 +29,12 @@ interface ModelSelectorProps {
 const MODEL_FILTER_THRESHOLD = 8;
 const MODEL_OPTION_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
+interface ModelProviderGroup {
+  provider: string;
+  displayName: string;
+  options: ModelSelectorOption[];
+}
+
 function compareModelOptions(a: ModelSelectorOption, b: ModelSelectorOption): number {
   return MODEL_OPTION_COLLATOR.compare(a.name || a.modelId, b.name || b.modelId)
     || MODEL_OPTION_COLLATOR.compare(a.provider, b.provider)
@@ -67,17 +73,27 @@ export function ModelSelector({
   const [open, setOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<{ top: number; right: number; bottom: number; left: number; width: number } | null>(null);
   const [filter, setFilter] = useState("");
+  const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const locked = disabled || busy;
   const sortedOptions = useMemo(() => [...options].sort(compareModelOptions), [options]);
-  const filteredOptions = filterModelOptions(sortedOptions, filter);
+  const filteredOptions = useMemo(() => filterModelOptions(sortedOptions, filter), [filter, sortedOptions]);
   const showFilter = sortedOptions.length > MODEL_FILTER_THRESHOLD;
-  const modelsByProvider: { provider: string; options: ModelSelectorOption[] }[] = [];
-
-  for (const option of filteredOptions) {
-    const group = modelsByProvider.find((item) => item.provider === option.provider);
-    if (group) group.options.push(option);
-    else modelsByProvider.push({ provider: option.provider, options: [option] });
-  }
+  const modelsByProvider = useMemo(() => {
+    const grouped = new Map<string, ModelProviderGroup>();
+    for (const option of filteredOptions) {
+      const group = grouped.get(option.provider);
+      if (group) group.options.push(option);
+      else grouped.set(option.provider, {
+        provider: option.provider,
+        displayName: option.providerDisplayName || option.provider,
+        options: [option],
+      });
+    }
+    return [...grouped.values()].sort((a, b) => MODEL_OPTION_COLLATOR.compare(a.displayName, b.displayName));
+  }, [filteredOptions]);
+  const visibleProvider = modelsByProvider.find((group) => group.provider === activeProvider)
+    ?? modelsByProvider.find((group) => group.provider === value?.provider)
+    ?? modelsByProvider[0];
 
   const currentName = selectedLabel ?? (value
     ? sortedOptions.find((option) => option.modelId === value.modelId && option.provider === value.provider)?.name ?? value.modelId
@@ -102,6 +118,12 @@ export function ModelSelector({
     setOpen(false);
     setFilter("");
   }, [locked]);
+
+  useEffect(() => {
+    if (!open || modelsByProvider.length === 0) return;
+    if (activeProvider && modelsByProvider.some((group) => group.provider === activeProvider)) return;
+    setActiveProvider(modelsByProvider.find((group) => group.provider === value?.provider)?.provider ?? modelsByProvider[0].provider);
+  }, [activeProvider, modelsByProvider, open, value?.provider]);
 
   const buttonStyle: CSSProperties = variant === "field"
     ? {
@@ -175,6 +197,7 @@ export function ModelSelector({
           setAnchorRect({ top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width });
           setOpen((current) => {
             if (current) setFilter("");
+            else setActiveProvider(modelsByProvider.find((group) => group.provider === value?.provider)?.provider ?? modelsByProvider[0]?.provider ?? null);
             return !current;
           });
         }}
@@ -275,26 +298,45 @@ export function ModelSelector({
                 />
               </div>
             )}
-            <div style={{ minHeight: 0, overflowY: "auto" }}>
-              {onClear && !filter.trim() && (
-                <ModelOptionButton active={!value} label={emptyLabel ?? "Default"} onClick={() => {
-                  setOpen(false);
-                  setFilter("");
-                  onClear();
-                }} />
-              )}
-              {modelsByProvider.length === 0 ? (
+            {modelsByProvider.length === 0 ? (
+              <div style={{ minHeight: 0, overflowY: "auto" }}>
                 <div style={{ padding: "8px 12px", color: "var(--text-dim)", fontSize: 12, whiteSpace: "nowrap" }}>
                   {filter.trim() ? t("chat.noMatchingModels") : "No available models"}
                 </div>
-              ) : modelsByProvider.map((group, index) => (
-                <div key={group.provider}>
-                  {modelsByProvider.length > 1 && (
-                    <div style={{ padding: "6px 12px 4px", borderTop: index > 0 || onClear ? "1px solid var(--border)" : "none", color: "var(--text-dim)", fontSize: 10, fontWeight: 600, letterSpacing: 0, textTransform: "uppercase" }}>
-                      {group.options[0]?.providerDisplayName || group.provider}
-                    </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(112px, 36%) minmax(0, 1fr)" : "clamp(132px, 34%, 178px) minmax(210px, 1fr)", minHeight: 0, overflow: "hidden" }}>
+                <div style={{ minWidth: 0, overflowY: "auto", borderRight: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+                  <div style={{ padding: "7px 10px 5px", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>
+                    {t("chat.modelGroups")}
+                  </div>
+                  {onClear && !filter.trim() && (
+                    <ProviderGroupButton
+                      active={!value}
+                      label={emptyLabel ?? "Default"}
+                      onActivate={() => {
+                        setOpen(false);
+                        setFilter("");
+                        onClear();
+                      }}
+                    />
                   )}
-                  {group.options.map((option) => (
+                  {modelsByProvider.map((group) => (
+                    <ProviderGroupButton
+                      key={group.provider}
+                      active={group.provider === visibleProvider?.provider}
+                      selected={group.provider === value?.provider}
+                      label={group.displayName}
+                      count={group.options.length}
+                      onActivate={() => setActiveProvider(group.provider)}
+                    />
+                  ))}
+                </div>
+                <div style={{ minWidth: 0, overflowY: "auto" }}>
+                  <div style={{ position: "sticky", top: 0, zIndex: 1, padding: "7px 12px 5px", borderBottom: "1px solid var(--border)", background: "var(--bg)", color: "var(--text-dim)", fontSize: 10, fontWeight: 600 }}>
+                    {visibleProvider?.displayName ?? t("chat.modelsInGroup")}
+                  </div>
+                  {visibleProvider?.options.map((option) => (
                     <ModelOptionButton
                       key={`${option.provider}:${option.modelId}`}
                       active={option.modelId === value?.modelId && option.provider === value?.provider}
@@ -303,12 +345,44 @@ export function ModelSelector({
                     />
                   ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
           </div>
         );
       })()}
     </div>
+  );
+}
+
+function ProviderGroupButton({ active, selected = false, label, count, onActivate }: { active: boolean; selected?: boolean; label: string; count?: number; onActivate: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onActivate}
+      onFocus={onActivate}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        width: "100%",
+        minWidth: 0,
+        padding: "8px 9px 8px 11px",
+        border: "none",
+        borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent",
+        background: active ? "var(--bg-selected)" : "none",
+        color: active ? "var(--text)" : "var(--text-muted)",
+        cursor: "pointer",
+        fontSize: 11,
+        fontWeight: active || selected ? 600 : 400,
+        textAlign: "left",
+      }}
+    >
+      <span title={label} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      {count !== undefined && <span style={{ color: "var(--text-dim)", fontSize: 9 }}>{count}</span>}
+      <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--text-dim)" }}>
+        <polyline points="3 1.5 6.5 5 3 8.5" />
+      </svg>
+    </button>
   );
 }
 

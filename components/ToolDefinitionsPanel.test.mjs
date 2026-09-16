@@ -6,12 +6,14 @@ const panelSource = await readFile(new URL("./ToolDefinitionsPanel.tsx", import.
 const systemSource = await readFile(new URL("./SystemPromptPanel.tsx", import.meta.url), "utf8");
 const appShellSource = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
 
-test("keeps System and Tools in separate adjacent toolbar actions", () => {
+test("keeps Assistant Rules and Tools in separate adjacent toolbar actions", () => {
   assert.match(appShellSource, /handleSystemInfoToggle\("system", mobile\)[\s\S]*?handleSystemInfoToggle\("tools", mobile\)/);
   assert.match(appShellSource, /activeTopPanel === "system"[\s\S]*?<SystemPromptPanel/);
   assert.match(appShellSource, /activeTopPanel === "tools"[\s\S]*?<ToolDefinitionsPanel/);
   assert.doesNotMatch(systemSource, /ToolEntry|tools/);
-  assert.doesNotMatch(systemSource, /system-prompt-heading/);
+  assert.match(systemSource, /className="system-prompt-heading"/);
+  assert.match(systemSource, /system\.description/);
+  assert.match(systemSource, /system\.readOnly/);
   assert.doesNotMatch(panelSource, /tool-definitions-heading/);
 });
 

@@ -686,6 +686,13 @@ export class AgentSessionWrapper {
       case "get_state": {
         const model = this.inner.model;
         const contextUsage = this.inner.getContextUsage();
+        const currentSystemPrompt = this.inner.agent.state?.systemPrompt ?? "";
+        const visibleSystemPrompt = this.chatOnly
+          ? currentSystemPrompt
+          : rebrandMeteorAgentSystemPrompt(currentSystemPrompt);
+        if (this.inner.agent.state && visibleSystemPrompt !== currentSystemPrompt) {
+          this.inner.agent.state.systemPrompt = visibleSystemPrompt;
+        }
         return {
           sessionId: this.inner.sessionId,
           sessionFile: this.inner.sessionFile ?? "",
@@ -705,7 +712,7 @@ export class AgentSessionWrapper {
           contextUsage: contextUsage
             ? { percent: contextUsage.percent, contextWindow: contextUsage.contextWindow, tokens: contextUsage.tokens }
             : null,
-          systemPrompt: this.inner.agent.state?.systemPrompt ?? "",
+          systemPrompt: visibleSystemPrompt,
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),

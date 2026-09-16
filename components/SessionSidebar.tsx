@@ -1099,6 +1099,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
         {/* CWD picker */}
         <div ref={dropdownRef} style={{ position: "relative" }}>
+          <div style={{ marginBottom: 5, paddingLeft: 2 }}>
+            <div style={{ color: "var(--text-muted)", fontSize: 10, fontWeight: 600, lineHeight: 1.35 }}>
+              {t("sidebar.projectAddress")}
+            </div>
+            <div style={{ color: "var(--text-dim)", fontSize: 9, lineHeight: 1.4 }}>
+              {t("sidebar.projectAddressHint")}
+            </div>
+          </div>
           <button
             onClick={() => setDropdownOpen((v) => !v)}
             title={selectedProject?.root ?? selectedCwd ?? ""}

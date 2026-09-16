@@ -9,6 +9,13 @@ interface Props {
 export function SystemPromptPanel({ loading, prompt, translate }: Props) {
   return (
     <section className="system-prompt-panel" aria-label={translate("system.prompt")}>
+      <header className="system-prompt-heading">
+        <div className="system-prompt-heading-copy">
+          <strong>{translate("system.label")}</strong>
+          <span>{translate("system.description")}</span>
+        </div>
+        <span className="system-prompt-readonly">{translate("system.readOnly")}</span>
+      </header>
       <div className="system-prompt-scroll">
         {prompt ? (
           <div className="system-prompt-text">{prompt}</div>
@@ -31,6 +38,39 @@ export function SystemPromptPanel({ loading, prompt, translate }: Props) {
           flex-direction: column;
           background: var(--bg-panel);
           border-bottom: 1px solid var(--border);
+        }
+        .system-prompt-heading {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 14px;
+          padding: 12px 16px;
+          border-bottom: 1px solid var(--border);
+          background: var(--bg);
+        }
+        .system-prompt-heading-copy {
+          display: flex;
+          min-width: 0;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .system-prompt-heading-copy strong {
+          color: var(--text);
+          font-size: 12px;
+        }
+        .system-prompt-heading-copy span {
+          color: var(--text-dim);
+          font-size: 10px;
+          line-height: 1.45;
+        }
+        .system-prompt-readonly {
+          flex-shrink: 0;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          padding: 2px 7px;
+          color: var(--text-dim);
+          font-size: 9px;
+          line-height: 1.4;
         }
         .system-prompt-scroll {
           min-height: 0;
