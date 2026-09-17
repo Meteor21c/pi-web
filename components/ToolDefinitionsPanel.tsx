@@ -114,6 +114,17 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
 
   return (
     <div className="tool-definitions-panel ui-glass-menu">
+      <header className="tool-definitions-panel-heading top-panel-heading">
+        <span className="top-panel-heading-icon" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z" />
+          </svg>
+        </span>
+        <div className="top-panel-heading-copy">
+          <strong>{translate("tools.title")}</strong>
+          <small>{translate("tools.details")}</small>
+        </div>
+      </header>
       <nav className="tool-definitions-sidebar" aria-label={translate("tools.title")}>
         <div className="tool-definitions-list">
           {activeTools && activeTools.length > 0 ? activeTools.map((tool) => {
@@ -210,10 +221,14 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
         .tool-definitions-panel {
           display: grid;
           grid-template-columns: clamp(112px, 26%, 220px) minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
           width: calc(680px * var(--ui-scale, 1));
           height: min(calc(600px * var(--ui-scale, 1)), 72dvh);
           min-height: 240px;
           overflow: hidden;
+        }
+        .tool-definitions-panel-heading {
+          grid-column: 1 / -1;
         }
         .tool-definitions-sidebar,
         .tool-definition-detail {

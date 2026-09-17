@@ -76,6 +76,13 @@ type AutoNameStatus =
 
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
 const AGENT_PANEL_WIDTH = 420;
+const TOP_PANEL_WIDTHS = {
+  agents: AGENT_PANEL_WIDTH,
+  system: 560,
+  tools: 680,
+  plugins: 640,
+  session: 520,
+} as const;
 const BUILTIN_SETUP_NOTICE_KEY = "meteoragent-builtins-notice-v1";
 
 /**
@@ -425,7 +432,7 @@ export function AppShell() {
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "plugins" | "session" | null>(null);
-  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; maxWidth: number; maxHeight: number } | null>(null);
+  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number; maxWidth: number; maxHeight: number } | null>(null);
 
   useEffect(() => {
     if (!sessionHasBranches) {
@@ -527,49 +534,31 @@ export function AppShell() {
 
   useEffect(() => {
     if (!activeTopPanel || !topBarRef.current) return;
+    // BranchNavigator owns its own fixed popover and positioning.
+    if (activeTopPanel === "branches") return;
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
       // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，需先换算。
       const panelTop0 = divideByUiScale(topBarRect.bottom);
       const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop0 - 8;
-      // 面板挂各自触发按钮正下、左对齐按钮（分支浮层同款）；不遮挡侧栏。
-      const sideRect = document.querySelector('.sidebar-container')?.getBoundingClientRect();
-      const sideRight = sideRect && sideRect.width > 0 ? divideByUiScale(sideRect.right) : 0;
-      const panelLeftBase = sideRight + 8;
+      // 所有顶部面板与分支浮层一样，挂在顶栏下方并在聊天区域居中。
+      // 面板内部仍使用各自的既有宽度（含 ui-scale），这里同步使用同一
+      // CSS 宽度，避免弹层的外框和内容出现错位或被裁切。
+      const areaLeft = divideByUiScale(topBarRect.left);
+      const areaWidth = divideByUiScale(topBarRect.width);
       const viewportCss = divideByUiScale(window.innerWidth);
-      const anchors: Record<string, React.RefObject<HTMLButtonElement | null>> = {
-        system: systemBtnRef,
-        tools: toolsBtnRef,
-        plugins: pluginsBtnRef,
-      };
-      if (activeTopPanel === "agents") {
-        setTopPanelPos({
-          top: panelTop0 + 8,
-          left: panelLeftBase,
-          maxWidth: Math.min(AGENT_PANEL_WIDTH, viewportCss - panelLeftBase - 8),
-          maxHeight: panelMaxHeight,
-        });
-        return;
-      }
-      const anchor = anchors[activeTopPanel]?.current;
-      if (anchor) {
-        const rect = anchor.getBoundingClientRect();
-        if (rect.width > 0) {
-          const aLeft = divideByUiScale(rect.left);
-          const aRight = divideByUiScale(rect.right);
-          const aBottom = divideByUiScale(rect.bottom);
-          const availToRight = viewportCss - aLeft - 8;
-          // 插件按钮靠最右：面板先左对齐按钮，放不下则右缘贴按钮右缘向左展开。
-          let left = aLeft;
-          const width = activeTopPanel === "plugins"
-            ? Math.min(720 * currentUiScale(), Math.max(280, availToRight))
-            : availToRight;
-          if (left + width > viewportCss - 8) left = Math.max(panelLeftBase, aRight - width);
-          setTopPanelPos({ top: aBottom + 8, left, maxWidth: width, maxHeight: panelMaxHeight });
-          return;
-        }
-      }
-      setTopPanelPos({ top: panelTop0 + 8, left: panelLeftBase, maxWidth: viewportCss - panelLeftBase - 8, maxHeight: panelMaxHeight });
+      const preferredWidth = TOP_PANEL_WIDTHS[activeTopPanel] * currentUiScale();
+      const availableWidth = Math.max(280, Math.min(areaWidth - 16, viewportCss - 16));
+      const width = Math.min(preferredWidth, availableWidth);
+      const centeredLeft = areaLeft + (areaWidth - width) / 2;
+      const left = Math.max(8, Math.min(centeredLeft, viewportCss - width - 8));
+      setTopPanelPos({
+        top: panelTop0 + 8,
+        left,
+        width,
+        maxWidth: width,
+        maxHeight: Math.max(220, panelMaxHeight),
+      });
     };
     update();
     const ro = new ResizeObserver(update);
@@ -1578,31 +1567,19 @@ export function AppShell() {
         <button
           ref={systemBtnRef}
           type="button"
+          className={`topbar-ios-button${activeTopPanel === "system" ? " is-active" : ""}`}
           onClick={() => handleSystemInfoToggle("system", mobile)}
           disabled={mobile && !showChat}
           title={translate("system.prompt")}
           aria-label={translate("system.prompt")}
           aria-pressed={activeTopPanel === "system"}
           style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
             height: mobile ? "100%" : 26,
             margin: mobile ? 0 : "5px 2px",
             padding: mobile ? 0 : "0 10px",
             borderRadius: mobile ? 0 : 999,
-            background: activeTopPanel === "system" ? "var(--bg-selected)" : "none",
-            border: "none",
-            cursor: mobile && !showChat ? "not-allowed" : "pointer",
-            color: activeTopPanel === "system" ? "var(--text)" : "var(--text-muted)",
             opacity: mobile && !showChat ? 0.45 : 1,
-            fontSize: 11, whiteSpace: "nowrap", transition: "color 0.15s ease, background 0.15s ease",
-          }}
-          onMouseEnter={(event) => {
-            if (mobile && !showChat) return;
-            event.currentTarget.style.color = "var(--text)";
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.color = activeTopPanel === "system" ? "var(--text)" : "var(--text-muted)";
           }}
           data-mobile-toolbar-action={mobile ? "system" : undefined}
         >
@@ -1617,31 +1594,19 @@ export function AppShell() {
         <button
           type="button"
           ref={toolsBtnRef}
+          className={`topbar-ios-button${activeTopPanel === "tools" ? " is-active" : ""}`}
           onClick={() => handleSystemInfoToggle("tools", mobile)}
           disabled={mobile && !showChat}
           title={translate("tools.title")}
           aria-label={translate("tools.title")}
           aria-pressed={activeTopPanel === "tools"}
           style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
             height: mobile ? "100%" : 26,
             margin: mobile ? 0 : "5px 2px",
             padding: mobile ? 0 : "0 10px",
             borderRadius: mobile ? 0 : 999,
-            background: activeTopPanel === "tools" ? "var(--bg-selected)" : "none",
-            border: "none",
-            cursor: mobile && !showChat ? "not-allowed" : "pointer",
-            color: activeTopPanel === "tools" ? "var(--text)" : "var(--text-muted)",
             opacity: mobile && !showChat ? 0.45 : 1,
-            fontSize: 11, whiteSpace: "nowrap", transition: "color 0.15s ease, background 0.15s ease",
-          }}
-          onMouseEnter={(event) => {
-            if (mobile && !showChat) return;
-            event.currentTarget.style.color = "var(--text)";
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.color = activeTopPanel === "tools" ? "var(--text)" : "var(--text-muted)";
           }}
           data-mobile-toolbar-action={mobile ? "tools" : undefined}
         >
@@ -1653,31 +1618,19 @@ export function AppShell() {
         <button
           type="button"
           ref={pluginsBtnRef}
+          className={`topbar-ios-button${activeTopPanel === "plugins" ? " is-active" : ""}`}
           onClick={() => toggleTopPanel("plugins", mobile)}
           disabled={!projectTrustCwd}
           title={translate("common.plugins")}
           aria-label={translate("common.plugins")}
           aria-pressed={activeTopPanel === "plugins"}
           style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
             height: mobile ? "100%" : 26,
             margin: mobile ? 0 : "5px 2px",
             padding: mobile ? 0 : "0 10px",
             borderRadius: mobile ? 0 : 999,
-            background: activeTopPanel === "plugins" ? "var(--bg-selected)" : "none",
-            border: "none",
-            cursor: projectTrustCwd ? "pointer" : "not-allowed",
-            color: activeTopPanel === "plugins" ? "var(--text)" : "var(--text-muted)",
             opacity: projectTrustCwd ? 1 : 0.45,
-            fontSize: 11, whiteSpace: "nowrap", transition: "color 0.15s ease, background 0.15s ease",
-          }}
-          onMouseEnter={(event) => {
-            if (!projectTrustCwd) return;
-            event.currentTarget.style.color = "var(--text)";
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.color = activeTopPanel === "plugins" ? "var(--text)" : "var(--text-muted)";
           }}
           data-mobile-toolbar-action={mobile ? "plugins" : undefined}
         >
@@ -2153,21 +2106,24 @@ export function AppShell() {
             />
           )}
           {/* Top panel dropdown — shared, only one active at a time.
-              宽度交给面板内容决定（分支浮层同款 fit-content），wrapper 只限上限。 */}
-          {activeTopPanel && topPanelPos && (
-            <div className="ui-msg-enter" style={{
+              与分支浮层使用同一套居中玻璃容器；面板内容继续负责自己的滚动。 */}
+          {activeTopPanel && activeTopPanel !== "branches" && topPanelPos && (
+            <div
+              className="top-panel-popover ui-glass-menu ui-msg-enter"
+              data-top-panel={activeTopPanel}
+              style={{
               position: "fixed",
               top: topPanelPos.top,
               left: topPanelPos.left,
+              width: topPanelPos.width,
               maxWidth: topPanelPos.maxWidth,
               maxHeight: topPanelPos.maxHeight,
-              overflowY: "auto",
+              overflow: "hidden",
               zIndex: 500,
-              // 与页面同色的底：遮住根 zoom 圆角裁切的泄漏白边
-              background: "var(--bg)",
-            }}>
+              }}
+            >
               {activeTopPanel === "agents" && activeSessionFamily && selectedSession && (
-                <div style={{ width: "calc(420px * var(--ui-scale, 1))" }}>
+                <div className="top-panel-agent-shell" style={{ width: "calc(420px * var(--ui-scale, 1))" }}>
                   <AgentSessionPanel
                     rootSession={activeSessionFamily.root}
                     subagents={activeSessionFamily.subagents}

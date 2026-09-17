@@ -34,11 +34,12 @@ test("keeps the Agents panel open while switching sessions and anchors it in the
   assert.match(source, /const AGENT_PANEL_WIDTH = 420/);
   assert.match(
     source,
-    /if \(activeTopPanel === "agents"\)[\s\S]*?left: panelLeftBase,[\s\S]*?maxWidth: Math\.min\(AGENT_PANEL_WIDTH, viewportCss - panelLeftBase - 8\)/,
+    /const TOP_PANEL_WIDTHS = \{[\s\S]*?agents: AGENT_PANEL_WIDTH,[\s\S]*?system: 560,[\s\S]*?tools: 680,[\s\S]*?plugins: 640,[\s\S]*?session: 520/,
   );
-  // v5: 面板挂在聊天区左侧（侧栏右缘 +8），不遮挡侧栏。
-  assert.match(source, /const panelLeftBase = sideRight \+ 8;/);
-  assert.match(source, /<div style=\{\{ width: "calc\(420px \* var\(--ui-scale, 1\)\)" \}\}>[\s\S]*?<AgentSessionPanel[\s\S]*?onSelectSession=\{handleSelectSession\}/);
+  // Top panels share the branch-style centered placement and remain inside the viewport.
+  assert.match(source, /const centeredLeft = areaLeft \+ \(areaWidth - width\) \/ 2;/);
+  assert.match(source, /const left = Math\.max\(8, Math\.min\(centeredLeft, viewportCss - width - 8\)\)/);
+  assert.match(source, /<div className="top-panel-agent-shell" style=\{\{ width: "calc\(420px \* var\(--ui-scale, 1\)\)" \}\}>[\s\S]*?<AgentSessionPanel[\s\S]*?onSelectSession=\{handleSelectSession\}/);
 });
 
 test("only renders branch toolbar controls for sessions with branches", () => {

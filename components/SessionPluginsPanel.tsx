@@ -119,14 +119,14 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
 
   return (
     <section className="session-plugins-panel ui-glass-menu" aria-label={zh ? "当前会话插件" : "Session plugins"}>
-      <header className="session-plugins-heading">
+      <header className="session-plugins-heading top-panel-heading">
         <div className="session-plugins-title-block">
-          <span className="session-plugins-icon" aria-hidden="true">
+          <span className="session-plugins-icon top-panel-heading-icon" aria-hidden="true">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 2v6" /><path d="M8 8h8v4a4 4 0 0 1-8 0V8Z" /><path d="M9 17v5" /><path d="M15 17v5" />
             </svg>
           </span>
-          <div>
+          <div className="top-panel-heading-copy">
             <strong>{zh ? "当前会话插件" : "Session plugins"}</strong>
             <p>{zh ? "按会话选择的插件可在这里开启，重载后生效。" : "Choose per-session plugins here. Changes apply after reload."}</p>
           </div>
@@ -213,11 +213,11 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
 
       <style>{`
         .session-plugins-panel { width: calc(640px * var(--ui-scale, 1)); overflow: hidden; color: var(--text); }
-        .session-plugins-heading { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; border-bottom: .5px solid color-mix(in srgb, var(--border) 62%, transparent); background: color-mix(in srgb, var(--assistant-bg) 44%, transparent); }
+        .session-plugins-heading { justify-content: space-between; gap: 16px; }
         .session-plugins-title-block { min-width: 0; display: flex; align-items: center; gap: 10px; }
-        .session-plugins-icon { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 10px; color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, var(--assistant-bg)); }
-        .session-plugins-heading strong { display: block; font-size: 13px; font-weight: 650; }
-        .session-plugins-heading p { margin: 3px 0 0; color: var(--text-dim); font-size: 10.5px; line-height: 1.35; }
+        .session-plugins-icon { color: var(--accent); }
+        .session-plugins-heading strong { display: block; }
+        .session-plugins-heading p { margin: 3px 0 0; }
         .session-plugins-reload { min-height: 30px; padding: 0 11px; border: .5px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--bg-hover) 64%, transparent); color: var(--text-muted); cursor: pointer; white-space: nowrap; font-size: 11px; transition: background .15s ease, color .15s ease, transform .15s ease; }
         .session-plugins-reload:hover:not(:disabled) { background: var(--bg-selected); color: var(--text); }
         .session-plugins-reload:active:not(:disabled) { transform: scale(.96); }

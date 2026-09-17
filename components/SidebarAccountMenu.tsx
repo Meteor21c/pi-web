@@ -241,6 +241,8 @@ export function SidebarAccountMenu({
               </button>
             );
           })}
+          <div className={styles.menuDivider} role="separator" />
+          <RestartLocalServiceButton />
         </div>
       )}
 
@@ -261,7 +263,6 @@ export function SidebarAccountMenu({
           <path d="m7 10 5 5 5-5" />
         </svg>
       </button>
-      <RestartLocalServiceButton />
     </div>
   );
 }

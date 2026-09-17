@@ -11,6 +11,12 @@ test("places a real local-service restart action below the account trigger", () 
   assert.match(source, /window\.confirm\(t\("restart\.confirm"\)\)/);
 });
 
+test("keeps restart inside the expanded account menu", () => {
+  assert.match(source, /\{open && \([\s\S]*?className=\{styles\.popover\}[\s\S]*?RestartLocalServiceButton \/>[\s\S]*?\)\}/);
+  const triggerTail = source.slice(source.indexOf("aria-haspopup=\"menu\""));
+  assert.doesNotMatch(triggerTail.split("    </div>", 1)[0], /RestartLocalServiceButton/);
+});
+
 test("does not offer restart while the launcher is unavailable or a task is running", () => {
   assert.match(source, /phase === "unsupported"/);
   assert.match(source, /runningCount > 0/);
