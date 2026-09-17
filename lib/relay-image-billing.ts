@@ -166,7 +166,11 @@ function assistantHasFinalContent(entry: SessionEntry): boolean {
   // older persisted sessions can still contain a flat string. Keep the
   // compatibility branch without asking TypeScript to narrow an impossible
   // union member.
-  const content: unknown = entry.message.content;
+  // Read through a structural compatibility view: the current SDK declares
+  // assistant content as blocks, while older persisted sessions may contain a
+  // flat string. Keeping this cast local preserves the runtime fallback
+  // without making TypeScript narrow the string branch to `never`.
+  const content: unknown = (entry.message as { content?: unknown }).content;
   if (typeof content === "string") return content.trim().length > 0;
   if (!Array.isArray(content)) return false;
   return content.some((block: unknown) => {
