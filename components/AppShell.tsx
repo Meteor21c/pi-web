@@ -21,7 +21,7 @@ import { TerminalPanel } from "./TerminalPanel";
 import { newTerminalTab, restoreTerminalTabs, TERMINAL_TABS_KEY, type TerminalTab } from "./terminal-tab-state";
 import { useTheme } from "@/hooks/useTheme";
 import { useUiScale } from "@/hooks/useUiScale";
-import { divideByUiScale, currentUiScale } from "@/lib/ui-scale";
+import { divideByUiScale } from "@/lib/ui-scale";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile, useIsNarrowMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
@@ -542,12 +542,12 @@ export function AppShell() {
       const panelTop0 = divideByUiScale(topBarRect.bottom);
       const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop0 - 8;
       // 所有顶部面板与分支浮层一样，挂在顶栏下方并在聊天区域居中。
-      // 面板内部仍使用各自的既有宽度（含 ui-scale），这里同步使用同一
-      // CSS 宽度，避免弹层的外框和内容出现错位或被裁切。
+      // 面板外框使用基础 CSS 宽度，根 zoom 会像分支浮层一样统一放大；
+      // 直接子面板再由 CSS 收窄到外框，避免重复缩放或窄屏横向溢出。
       const areaLeft = divideByUiScale(topBarRect.left);
       const areaWidth = divideByUiScale(topBarRect.width);
       const viewportCss = divideByUiScale(window.innerWidth);
-      const preferredWidth = TOP_PANEL_WIDTHS[activeTopPanel] * currentUiScale();
+      const preferredWidth = TOP_PANEL_WIDTHS[activeTopPanel];
       const availableWidth = Math.max(280, Math.min(areaWidth - 16, viewportCss - 16));
       const width = Math.min(preferredWidth, availableWidth);
       const centeredLeft = areaLeft + (areaWidth - width) / 2;
