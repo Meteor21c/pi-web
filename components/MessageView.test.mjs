@@ -392,6 +392,35 @@ test("renders assistant images instead of dropping the image content block", () 
   assert.match(html, /max-height:320px/);
 });
 
+test("renders pi-image-gen detail images inline and expands the result", () => {
+  const block = {
+    type: "toolCall",
+    toolCallId: "image-call-1",
+    toolName: "image_generate",
+    input: { prompt: "a golden hamster" },
+  };
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-image",
+    model: "image-model",
+    content: [block],
+  }, {
+    cwd: "/tmp/project",
+    sessionId: "session-1",
+    toolResults: new Map([[block.toolCallId, {
+      role: "toolResult",
+      toolCallId: block.toolCallId,
+      toolName: "image_generate",
+      content: [{ type: "text", text: "Generated 1 image(s): /tmp/project/.pi/images/hamster.png" }],
+      details: { images: [{ path: "/tmp/project/.pi/images/hamster.png", mimeType: "image/png" }] },
+    }]]),
+  });
+
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /aria-label="Preview image"/);
+  assert.match(html, /src="\/api\/files\/tmp\/project\/\.pi\/images\/hamster\.png\?type=read&amp;sessionId=session-1"/);
+});
+
 test("renders custom-message images as buttons that open a larger preview", () => {
   const html = renderMessage({
     role: "custom",
