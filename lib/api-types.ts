@@ -79,6 +79,27 @@ export interface AppUpdateResponse {
   latestVersion: string;
   updateAvailable: boolean;
   releaseUrl: string;
+  releaseNotes: string[];
+  downloadBytes?: number;
+  publishedAt?: string;
+  automaticUpdateSupported: boolean;
+}
+
+export type AppUpdateInstallPhase =
+  | "idle"
+  | "downloading"
+  | "verifying"
+  | "preparing-restart"
+  | "error";
+
+export interface AppUpdateInstallStatus {
+  phase: AppUpdateInstallPhase;
+  targetVersion?: string;
+  downloadedBytes: number;
+  totalBytes?: number;
+  message?: string;
+  automaticUpdateSupported: boolean;
+  runningSessionIds: string[];
 }
 
 export interface PushConfigResponse {

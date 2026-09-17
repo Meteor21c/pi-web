@@ -91,7 +91,15 @@ nextArgs.push("-H", hostname);
 const child = spawn(process.execPath, [nextBin, ...nextArgs], {
   cwd: pkgDir,
   stdio: ["inherit", "pipe", "inherit"],
-  env: { ...process.env, PI_WEB_HOSTNAME: hostname },
+  env: {
+    ...process.env,
+    PI_WEB_HOSTNAME: hostname,
+    METEORAGENT_AUTO_UPDATE: "1",
+    METEORAGENT_LAUNCHER_PID: String(process.pid),
+    METEORAGENT_PACKAGE_ROOT: pkgDir,
+    METEORAGENT_LAUNCH_HOSTNAME: hostname,
+    METEORAGENT_LAUNCH_PORT: String(port),
+  },
 });
 wireChildProcessLifecycle(child);
 

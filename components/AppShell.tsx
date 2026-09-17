@@ -65,6 +65,7 @@ import type { ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { formatUsdPrecise } from "@/lib/currency-format";
+import { AppUpdatePrompt } from "./AppUpdatePrompt";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
@@ -2487,6 +2488,7 @@ export function AppShell() {
         onConfirm={() => void handleTrustProject()}
       />
     )}
+    <AppUpdatePrompt />
     </>
   );
 }

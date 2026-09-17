@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import type { AppUpdateResponse } from "@/lib/api-types";
-import { getPiWebReleaseUrl, isNewerStableVersion } from "@/lib/app-update";
+import { getPiWebReleaseUrl, isNewerStableVersion, parseAppUpdateManifest } from "@/lib/app-update";
+import { automaticAppUpdateSupported } from "@/lib/app-update-manager";
+import packageJson from "@/package.json";
 
 export const dynamic = "force-dynamic";
 
-const CURRENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0";
+const CURRENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? packageJson.version;
 const NPM_LATEST_URL = "https://dl.meteor21c.fun/webagent/latest.json";
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5_000;
@@ -32,8 +34,9 @@ async function fetchLatestVersion(): Promise<AppUpdateResponse> {
   });
   if (!response.ok) throw new Error(`npm registry returned HTTP ${response.status}`);
 
-  const body = await response.json() as { version?: unknown };
-  const latestVersion = typeof body.version === "string" ? body.version : "";
+  const manifest = parseAppUpdateManifest(await response.json());
+  if (!manifest) throw new Error("Update server returned an invalid manifest");
+  const latestVersion = manifest.version;
   const releaseUrl = getPiWebReleaseUrl(latestVersion);
   if (!releaseUrl) throw new Error("npm registry returned an invalid version");
 
@@ -42,6 +45,10 @@ async function fetchLatestVersion(): Promise<AppUpdateResponse> {
     latestVersion,
     updateAvailable: isNewerStableVersion(latestVersion, CURRENT_VERSION),
     releaseUrl,
+    releaseNotes: manifest.releaseNotes,
+    downloadBytes: manifest.bytes,
+    publishedAt: manifest.publishedAt,
+    automaticUpdateSupported: automaticAppUpdateSupported(),
   };
 }
 
@@ -73,6 +80,8 @@ export async function GET() {
       latestVersion: CURRENT_VERSION,
       updateAvailable: false,
       releaseUrl: "",
+      releaseNotes: [],
+      automaticUpdateSupported: false,
     } satisfies AppUpdateResponse);
   }
   try {

@@ -49,6 +49,10 @@ The final `customer-release.<version>.*` directory must contain only:
 
 The `.tgz` is portable. The launchers are separated because Windows uses BAT/PowerShell/VBS/ICO while macOS uses an app bundle/ICNS and has different unsigned-app instructions. Both support x64 and ARM64 through the customer's installed Node.js runtime.
 
+Starting with v0.1.6, a launcher/global-CLI installation also enables the in-app updater. MeteorAgent reads release notes and integrity metadata from `latest.json`, downloads the exact versioned tarball, verifies its declared size and SHA-256, creates a local rollback package, then replaces and restarts the service. Account credentials, sessions, plugin settings, project files, and browser drafts live outside the application package and are not replaced.
+
+Versions older than v0.1.6 do not contain the independent updater and therefore require one final launcher/manual upgrade. Once v0.1.6 or newer is running, later releases can be accepted from the update dialog. Development servers and unsupported launch modes continue to offer the normal download link instead of attempting a privileged install.
+
 ## 3. Smoke test
 
 Install the generated tarball into a fresh temporary npm prefix, run `webagent --help`, start it on a free loopback port, and verify `/api/relay-health` reports `MeteorAgent` and `ok`. Also verify both ZIP files with `unzip -t`.
@@ -84,3 +88,5 @@ curl -fI https://dl.meteor21c.fun/launcher/MeteorAgent-launcher-macOS.zip
 ```
 
 The manifest SHA-256 must match both the download-server tarball and the GitHub Release asset. Keep the GitHub Release links as the fallback if the regional download path is unavailable.
+
+After publishing, use an installed previous release to accept the update in the browser. Confirm that the page reconnects on its own, `/api/relay-health` reports the new version, and the account/session/plugin/project state remains present. Test with no active agent tasks: the updater deliberately refuses to restart while a task is running.
