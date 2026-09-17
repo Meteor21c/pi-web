@@ -373,6 +373,8 @@ export function AppShell() {
   const systemInfoLoaderRef = useRef<(() => Promise<void>) | null>(null);
   const systemInfoLoadIdRef = useRef(0);
   const systemBtnRef = useRef<HTMLButtonElement>(null);
+  const toolsBtnRef = useRef<HTMLButtonElement>(null);
+  const pluginsBtnRef = useRef<HTMLButtonElement>(null);
 
   const handleSystemPromptChange = useCallback((prompt: string | null) => {
     setSystemPrompt(prompt);
@@ -528,30 +530,46 @@ export function AppShell() {
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
       // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，需先换算。
-      const panelTop = divideByUiScale(topBarRect.bottom) + 8;
-      // maxHeight 也要换算：100dvh 在根 zoom 下会放大（见 lib/ui-scale.ts）。
-      const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop;
-      // 所有面板统一挂载在顶栏正下方、与顶栏左缘对齐（分支浮层同款位置）。
+      const panelTop0 = divideByUiScale(topBarRect.bottom);
+      const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop0 - 8;
+      // 面板挂各自触发按钮正下、左对齐按钮（分支浮层同款）；不遮挡侧栏。
+      const sideRect = document.querySelector('.sidebar-container')?.getBoundingClientRect();
+      const sideRight = sideRect && sideRect.width > 0 ? divideByUiScale(sideRect.right) : 0;
+      const panelLeftBase = sideRight + 8;
+      const viewportCss = divideByUiScale(window.innerWidth);
+      const anchors: Record<string, React.RefObject<HTMLButtonElement | null>> = {
+        system: systemBtnRef,
+        tools: toolsBtnRef,
+        plugins: pluginsBtnRef,
+      };
       if (activeTopPanel === "agents") {
         setTopPanelPos({
-          top: panelTop,
-          left: divideByUiScale(topBarRect.left),
-          maxWidth: Math.min(AGENT_PANEL_WIDTH, divideByUiScale(topBarRect.width)),
+          top: panelTop0 + 8,
+          left: panelLeftBase,
+          maxWidth: Math.min(AGENT_PANEL_WIDTH, viewportCss - panelLeftBase - 8),
           maxHeight: panelMaxHeight,
         });
         return;
       }
-      if (activeTopPanel === "plugins") {
-        const availableWidth = divideByUiScale(topBarRect.width);
-        setTopPanelPos({
-          top: panelTop,
-          left: divideByUiScale(topBarRect.left),
-          maxWidth: Math.max(280, Math.min(720 * currentUiScale(), availableWidth - 16)),
-          maxHeight: panelMaxHeight,
-        });
-        return;
+      const anchor = anchors[activeTopPanel]?.current;
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect();
+        if (rect.width > 0) {
+          const aLeft = divideByUiScale(rect.left);
+          const aRight = divideByUiScale(rect.right);
+          const aBottom = divideByUiScale(rect.bottom);
+          const availToRight = viewportCss - aLeft - 8;
+          // 插件按钮靠最右：面板先左对齐按钮，放不下则右缘贴按钮右缘向左展开。
+          let left = aLeft;
+          const width = activeTopPanel === "plugins"
+            ? Math.min(720 * currentUiScale(), Math.max(280, availToRight))
+            : availToRight;
+          if (left + width > viewportCss - 8) left = Math.max(panelLeftBase, aRight - width);
+          setTopPanelPos({ top: aBottom + 8, left, maxWidth: width, maxHeight: panelMaxHeight });
+          return;
+        }
       }
-      setTopPanelPos({ top: panelTop, left: divideByUiScale(topBarRect.left), maxWidth: divideByUiScale(topBarRect.width), maxHeight: panelMaxHeight });
+      setTopPanelPos({ top: panelTop0 + 8, left: panelLeftBase, maxWidth: viewportCss - panelLeftBase - 8, maxHeight: panelMaxHeight });
     };
     update();
     const ro = new ResizeObserver(update);
@@ -1598,6 +1616,7 @@ export function AppShell() {
         </button>
         <button
           type="button"
+          ref={toolsBtnRef}
           onClick={() => handleSystemInfoToggle("tools", mobile)}
           disabled={mobile && !showChat}
           title={translate("tools.title")}
@@ -1633,6 +1652,7 @@ export function AppShell() {
         </button>
         <button
           type="button"
+          ref={pluginsBtnRef}
           onClick={() => toggleTopPanel("plugins", mobile)}
           disabled={!projectTrustCwd}
           title={translate("common.plugins")}
@@ -2143,6 +2163,8 @@ export function AppShell() {
               maxHeight: topPanelPos.maxHeight,
               overflowY: "auto",
               zIndex: 500,
+              // 与页面同色的底：遮住根 zoom 圆角裁切的泄漏白边
+              background: "var(--bg)",
             }}>
               {activeTopPanel === "agents" && activeSessionFamily && selectedSession && (
                 <div style={{ width: "calc(420px * var(--ui-scale, 1))" }}>

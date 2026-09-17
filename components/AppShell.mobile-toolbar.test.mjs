@@ -30,12 +30,14 @@ test("only renders the Agents switcher when the active session family has subage
   assert.match(source, /activeTopPanel === "agents" && activeSessionFamily && selectedSession/);
 });
 
-test("keeps the Agents panel open while switching sessions and positions it at the left", () => {
+test("keeps the Agents panel open while switching sessions and anchors it in the chat area", () => {
   assert.match(source, /const AGENT_PANEL_WIDTH = 420/);
   assert.match(
     source,
-    /if \(activeTopPanel === "agents"\)[\s\S]*?left: divideByUiScale\(topBarRect\.left\)[\s\S]*?maxWidth: Math\.min\(AGENT_PANEL_WIDTH, divideByUiScale\(topBarRect\.width\)\)/,
+    /if \(activeTopPanel === "agents"\)[\s\S]*?left: panelLeftBase,[\s\S]*?maxWidth: Math\.min\(AGENT_PANEL_WIDTH, viewportCss - panelLeftBase - 8\)/,
   );
+  // v5: 面板挂在聊天区左侧（侧栏右缘 +8），不遮挡侧栏。
+  assert.match(source, /const panelLeftBase = sideRight \+ 8;/);
   assert.match(source, /<div style=\{\{ width: "calc\(420px \* var\(--ui-scale, 1\)\)" \}\}>[\s\S]*?<AgentSessionPanel[\s\S]*?onSelectSession=\{handleSelectSession\}/);
 });
 
