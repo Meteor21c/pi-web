@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { AppUpdateResponse } from "@/lib/api-types";
-import { getPiWebReleaseUrl, isNewerStableVersion, parseAppUpdateManifest } from "@/lib/app-update";
+import { getMeteorAgentReleaseUrl, isNewerStableVersion, parseAppUpdateManifest } from "@/lib/app-update";
 import { automaticAppUpdateSupported } from "@/lib/app-update-manager";
 import packageJson from "@/package.json";
 
@@ -19,11 +19,11 @@ interface AppUpdateCache {
 }
 
 declare global {
-  var __piWebAppUpdateCache: AppUpdateCache | undefined;
+  var __meteorAgentAppUpdateCache: AppUpdateCache | undefined;
 }
 
 function getCache(): AppUpdateCache {
-  return globalThis.__piWebAppUpdateCache ??= { expiresAt: 0 };
+  return globalThis.__meteorAgentAppUpdateCache ??= { expiresAt: 0 };
 }
 
 async function fetchLatestVersion(): Promise<AppUpdateResponse> {
@@ -32,13 +32,13 @@ async function fetchLatestVersion(): Promise<AppUpdateResponse> {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
-  if (!response.ok) throw new Error(`npm registry returned HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`Update server returned HTTP ${response.status}`);
 
   const manifest = parseAppUpdateManifest(await response.json());
   if (!manifest) throw new Error("Update server returned an invalid manifest");
   const latestVersion = manifest.version;
-  const releaseUrl = getPiWebReleaseUrl(latestVersion);
-  if (!releaseUrl) throw new Error("npm registry returned an invalid version");
+  const releaseUrl = getMeteorAgentReleaseUrl(latestVersion);
+  if (!releaseUrl) throw new Error("Update server returned an invalid version");
 
   return {
     currentVersion: CURRENT_VERSION,

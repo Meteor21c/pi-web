@@ -37,7 +37,7 @@ export function isNewerStableVersion(candidate: string, current: string): boolea
   return false;
 }
 
-export function getPiWebReleaseUrl(version: string): string | null {
+export function getMeteorAgentReleaseUrl(version: string): string | null {
   if (!parseStableVersion(version)) return null;
   return "https://dl.meteor21c.fun/";
 }
