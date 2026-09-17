@@ -1212,6 +1212,8 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
       {/* ── Tool call header ── */}
       <div style={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
         <button
+          type="button"
+          aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
           style={{
             display: "flex",
