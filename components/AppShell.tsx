@@ -425,7 +425,7 @@ export function AppShell() {
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "plugins" | "session" | null>(null);
-  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; maxWidth: number; maxHeight: number } | null>(null);
+  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left?: number; right?: number; maxWidth: number; maxHeight: number } | null>(null);
 
   useEffect(() => {
     if (!sessionHasBranches) {
@@ -558,7 +558,7 @@ export function AppShell() {
           : divideByUiScale(topBarRect.right);
         setTopPanelPos({
           top: panelTop + 8,
-          left: Math.max(8, btnRight - panelWidth),
+          right: divideByUiScale(window.innerWidth - btnRight),
           maxWidth: panelWidth,
           maxHeight: Math.max(220, panelMaxHeight - 16),
         });
@@ -2168,6 +2168,7 @@ export function AppShell() {
               position: "fixed",
               top: topPanelPos.top,
               left: topPanelPos.left,
+              right: topPanelPos.right,
               maxWidth: topPanelPos.maxWidth,
               maxHeight: topPanelPos.maxHeight,
               overflowY: "auto",
