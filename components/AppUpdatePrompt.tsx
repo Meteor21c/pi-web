@@ -6,6 +6,7 @@ import type { AppUpdateInstallStatus, AppUpdateResponse } from "@/lib/api-types"
 
 const SNOOZE_KEY = "magent-update-snooze";
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 
 function readSnooze(version: string): boolean {
   try {
@@ -31,20 +32,32 @@ export function AppUpdatePrompt() {
   const installing = Boolean(status && status.phase !== "idle" && status.phase !== "error");
 
   useEffect(() => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
+    let disposed = false;
+    let controller: AbortController | null = null;
+    const checkForUpdate = () => {
+      controller?.abort();
+      controller = new AbortController();
       void fetch("/api/app-update", { cache: "no-store", signal: controller.signal })
         .then(async (response) => response.ok ? response.json() as Promise<AppUpdateResponse> : null)
         .then((result) => {
-          if (!result?.updateAvailable) return;
+          if (disposed || !result?.updateAvailable) return;
           setUpdate(result);
           if (!readSnooze(result.latestVersion)) setOpen(true);
         })
         .catch(() => {});
-    }, 900);
+    };
+    const initialTimer = setTimeout(checkForUpdate, 900);
+    const interval = setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") checkForUpdate();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      clearTimeout(timer);
-      controller.abort();
+      disposed = true;
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      controller?.abort();
     };
   }, []);
 

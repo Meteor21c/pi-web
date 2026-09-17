@@ -10,6 +10,11 @@ test("the global update prompt uses the automatic install endpoint and health-ba
   assert.match(source, /window\.location\.reload\(\)/);
 });
 
+test("the update prompt checks again while a long-running app remains open", () => {
+  assert.match(source, /setInterval\(checkForUpdate, UPDATE_CHECK_INTERVAL_MS\)/);
+  assert.match(source, /visibilitychange/);
+});
+
 test("the update prompt describes preserved data and blocks active-task updates", () => {
   assert.match(source, /appUpdate\.dataSafe/);
   assert.match(source, /runningCount > 0/);
