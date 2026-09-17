@@ -1960,9 +1960,7 @@ span.token.table {
 }
 .ui-glass,
 .ui-glass-menu {
-  background: color-mix(in srgb, var(--assistant-bg) 72%, transparent) !important;
-  -webkit-backdrop-filter: blur(32px) saturate(1.8);
-  backdrop-filter: blur(32px) saturate(1.8);
+  background: color-mix(in srgb, var(--assistant-bg) 97%, transparent) !important;
   border: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent) !important;
   border-radius: var(--radius-md) !important;
   box-shadow:

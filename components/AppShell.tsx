@@ -373,8 +373,6 @@ export function AppShell() {
   const systemInfoLoaderRef = useRef<(() => Promise<void>) | null>(null);
   const systemInfoLoadIdRef = useRef(0);
   const systemBtnRef = useRef<HTMLButtonElement>(null);
-  const toolsBtnRef = useRef<HTMLButtonElement>(null);
-  const pluginsBtnRef = useRef<HTMLButtonElement>(null);
 
   const handleSystemPromptChange = useCallback((prompt: string | null) => {
     setSystemPrompt(prompt);
@@ -425,7 +423,7 @@ export function AppShell() {
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "plugins" | "session" | null>(null);
-  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left?: number; right?: number; maxWidth: number; maxHeight: number } | null>(null);
+  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; maxWidth: number; maxHeight: number } | null>(null);
 
   useEffect(() => {
     if (!sessionHasBranches) {
@@ -530,15 +528,10 @@ export function AppShell() {
     const update = () => {
       const topBarRect = topBarRef.current!.getBoundingClientRect();
       // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，需先换算。
-      const panelTop = divideByUiScale(topBarRect.bottom);
+      const panelTop = divideByUiScale(topBarRect.bottom) + 8;
       // maxHeight 也要换算：100dvh 在根 zoom 下会放大（见 lib/ui-scale.ts）。
-      const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop - 8;
-      // 面板统一挂在触发按钮正下方，宽度由面板内容决定（分支浮层同款交互）。
-      const anchors: Record<string, React.RefObject<HTMLButtonElement | null>> = {
-        system: systemBtnRef,
-        tools: toolsBtnRef,
-        plugins: pluginsBtnRef,
-      };
+      const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop;
+      // 所有面板统一挂载在顶栏正下方、与顶栏左缘对齐（分支浮层同款位置）。
       if (activeTopPanel === "agents") {
         setTopPanelPos({
           top: panelTop,
@@ -550,34 +543,13 @@ export function AppShell() {
       }
       if (activeTopPanel === "plugins") {
         const availableWidth = divideByUiScale(topBarRect.width);
-        // 上限同样乘缩放：面板自身宽度（640px×scale）不能被未缩放的 wrapper 裁掉。
-        const panelWidth = Math.max(280, Math.min(720 * currentUiScale(), availableWidth - 16));
-        // 按钮靠顶栏最右：面板右缘对齐按钮右缘，向左展开。
-        const pluginsBtn = pluginsBtnRef.current;
-        const btnRight = pluginsBtn && pluginsBtn.getBoundingClientRect().width > 0
-          ? divideByUiScale(pluginsBtn.getBoundingClientRect().right)
-          : divideByUiScale(topBarRect.right);
         setTopPanelPos({
-          top: panelTop + 8,
-          right: divideByUiScale(window.innerWidth - btnRight),
-          maxWidth: panelWidth,
-          maxHeight: Math.max(220, panelMaxHeight - 16),
+          top: panelTop,
+          left: divideByUiScale(topBarRect.left),
+          maxWidth: Math.max(280, Math.min(720 * currentUiScale(), availableWidth - 16)),
+          maxHeight: panelMaxHeight,
         });
         return;
-      }
-      const anchor = anchors[activeTopPanel]?.current;
-      if (anchor) {
-        const rect = anchor.getBoundingClientRect();
-        if (rect.width > 0) {
-          const left = divideByUiScale(rect.left);
-          setTopPanelPos({
-            top: divideByUiScale(rect.bottom) + 8,
-            left,
-            maxWidth: Math.max(280, divideByUiScale(window.innerWidth) - left - 12),
-            maxHeight: panelMaxHeight,
-          });
-          return;
-        }
       }
       setTopPanelPos({ top: panelTop, left: divideByUiScale(topBarRect.left), maxWidth: divideByUiScale(topBarRect.width), maxHeight: panelMaxHeight });
     };
@@ -1626,7 +1598,6 @@ export function AppShell() {
         </button>
         <button
           type="button"
-          ref={toolsBtnRef}
           onClick={() => handleSystemInfoToggle("tools", mobile)}
           disabled={mobile && !showChat}
           title={translate("tools.title")}
@@ -1662,7 +1633,6 @@ export function AppShell() {
         </button>
         <button
           type="button"
-          ref={pluginsBtnRef}
           onClick={() => toggleTopPanel("plugins", mobile)}
           disabled={!projectTrustCwd}
           title={translate("common.plugins")}
@@ -2169,7 +2139,6 @@ export function AppShell() {
               position: "fixed",
               top: topPanelPos.top,
               left: topPanelPos.left,
-              right: topPanelPos.right,
               maxWidth: topPanelPos.maxWidth,
               maxHeight: topPanelPos.maxHeight,
               overflowY: "auto",
