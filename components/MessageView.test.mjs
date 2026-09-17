@@ -419,6 +419,7 @@ test("renders pi-image-gen detail images inline and expands the result", () => {
   assert.match(html, /aria-expanded="true"/);
   assert.match(html, /aria-label="Preview image"/);
   assert.match(html, /src="\/api\/files\/tmp\/project\/\.pi\/images\/hamster\.png\?type=read&amp;sessionId=session-1"/);
+  assert.doesNotMatch(html, /Generated 1 image\(s\): \/tmp\/project\/\.pi\/images\/hamster\.png/);
 });
 
 test("renders custom-message images as buttons that open a larger preview", () => {

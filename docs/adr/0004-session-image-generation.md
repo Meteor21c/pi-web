@@ -43,6 +43,24 @@ used.
   later launches until the user explicitly retries preparation.
 - A real paid relay request is still required as a release acceptance test.
 
+## Result and file links
+
+Assistant images, image-tool results, and Markdown images use a compact
+thumbnail in the transcript (420 × 320 CSS pixels at most). Clicking a
+thumbnail opens the original in the accessible modal preview, so high-
+resolution output does not take over the conversation. Local image URLs are
+served through the existing file allow-list and can be opened in Magent's file
+panel; remote HTTP(S) images and links continue to open in a new browser tab.
+
+Inline paths such as `/Users/me/output.png`, `C:\\Users\\me\\output.pdf`,
+`file:///...`, and source-location suffixes such as `report.pdf:12` are
+recognized when they are presented as inline code. They become safe file
+actions and are resolved against the active project for relative names. Shell
+commands and external URL schemes are deliberately left as code. The file
+panel dispatches recognized image, audio, video, PDF, DOCX, Markdown, HTML, and
+text formats to their corresponding preview; unsupported or binary formats
+remain downloadable rather than being sent to an arbitrary external program.
+
 ## Billing display
 
 Successful `image_generate` results are recorded in a private
