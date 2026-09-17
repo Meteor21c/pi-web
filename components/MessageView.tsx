@@ -934,6 +934,9 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
   if (block.type === "text") {
     return <div data-message-text data-search-target={searchTarget || undefined}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} /></div>;
   }
+  if (block.type === "image") {
+    return <AssistantImageBlock block={block as ImageContent} />;
+  }
   if (block.type === "thinking") {
     return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
   }
@@ -948,6 +951,33 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
 
 function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean; cwd?: string; onOpenFile?: (filePath: string) => void }) {
   return <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>;
+}
+
+function AssistantImageBlock({ block }: { block: ImageContent }) {
+  const src = imageSource(block);
+  if (!src) return null;
+
+  return (
+    <div data-message-image style={{ display: "flex", maxWidth: "100%" }}>
+      <ImagePreview src={src} style={{ maxWidth: "100%" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          style={{
+            display: "block",
+            maxWidth: "min(100%, 720px)",
+            maxHeight: 520,
+            borderRadius: 8,
+            objectFit: "contain",
+            border: "1px solid var(--border)",
+            background: "var(--bg-subtle)",
+          }}
+        />
+      </ImagePreview>
+    </div>
+  );
 }
 
 export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {

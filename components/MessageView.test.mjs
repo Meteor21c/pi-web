@@ -308,6 +308,25 @@ test("renders user-message images as buttons that open a larger preview", () => 
   assert.match(html, /<img[^>]+src="data:image\/png;base64,YWJj"/);
 });
 
+test("renders assistant images instead of dropping the image content block", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-image",
+    model: "image-model",
+    content: [
+      { type: "text", text: "Generated image" },
+      { type: "image", data: "YWJj", mimeType: "image/png" },
+      { type: "image", source: { type: "url", url: "https://example.test/generated.webp" } },
+    ],
+    timestamp: Date.now(),
+  });
+
+  assert.equal((html.match(/data-message-image=/g) ?? []).length, 2);
+  assert.equal((html.match(/aria-label="Preview image"/g) ?? []).length, 2);
+  assert.match(html, /<img[^>]+src="data:image\/png;base64,YWJj"/);
+  assert.match(html, /<img[^>]+src="https:\/\/example\.test\/generated\.webp"/);
+});
+
 test("renders custom-message images as buttons that open a larger preview", () => {
   const html = renderMessage({
     role: "custom",
