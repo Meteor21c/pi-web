@@ -210,18 +210,19 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
         .tool-definitions-panel {
           display: grid;
           grid-template-columns: clamp(112px, 26%, 220px) minmax(0, 1fr);
-          height: min(600px, 75dvh);
+          width: calc(680px * var(--ui-scale, 1));
+          height: min(calc(600px * var(--ui-scale, 1)), 72dvh);
           min-height: 240px;
           overflow: hidden;
-          background: color-mix(in srgb, var(--assistant-bg) 80%, transparent);
-          -webkit-backdrop-filter: blur(32px) saturate(1.8);
-          backdrop-filter: blur(32px) saturate(1.8);
-          border-bottom: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
-          border-radius: 0 0 var(--radius-md) var(--radius-md);
+          background: color-mix(in srgb, var(--assistant-bg) 76%, transparent);
+          -webkit-backdrop-filter: blur(32px) saturate(1.7);
+          backdrop-filter: blur(32px) saturate(1.7);
+          border: 0.5px solid color-mix(in srgb, var(--border) 72%, transparent);
+          border-radius: 18px;
           box-shadow:
-            inset 0 1px 0 0 color-mix(in srgb, var(--assistant-bg) 85%, transparent),
-            0 20px 56px rgba(0, 0, 0, 0.20),
-            0 3px 12px rgba(0, 0, 0, 0.08);
+            inset 0 1px 0 0 color-mix(in srgb, var(--assistant-bg) 88%, transparent),
+            0 24px 64px rgba(0, 0, 0, 0.20),
+            0 4px 14px rgba(0, 0, 0, 0.08);
         }
         .tool-definitions-sidebar,
         .tool-definition-detail {

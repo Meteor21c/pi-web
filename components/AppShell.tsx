@@ -57,7 +57,7 @@ import {
   SIDEBAR_MIN_WIDTH,
 } from "@/lib/panel-layout";
 import type { BlockingExtensionUiRequest, SessionInfo, SessionTreeNode } from "@/lib/types";
-import type { ProjectTrustStatus } from "@/lib/api-types";
+import type { BuiltinPluginsResponse, ProjectTrustStatus } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { FileViewerState } from "@/lib/file-viewer-state";
@@ -76,6 +76,104 @@ type AutoNameStatus =
 
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
 const AGENT_PANEL_WIDTH = 420;
+const BUILTIN_SETUP_NOTICE_KEY = "meteoragent-builtins-notice-v1";
+
+/**
+ * A non-blocking disclosure for the first-run starter packages.
+ *
+ * The package install starts as soon as a workspace is known, so this notice
+ * is deliberately informational rather than an approval gate. It gives a
+ * non-technical user a chance to understand what is happening and where to
+ * manage the packages, while a temporary network failure does not hide the
+ * disclosure.
+ */
+function BuiltinSetupNotice({
+  cwd,
+  onOpenPlugins,
+}: {
+  cwd: string;
+  onOpenPlugins: () => void;
+}) {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<BuiltinPluginsResponse | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  const dismiss = useCallback(() => {
+    setDismissed(true);
+    try {
+      window.localStorage.setItem(BUILTIN_SETUP_NOTICE_KEY, "1");
+    } catch {
+      // Browser storage is optional; this dismissal still lasts for the page.
+    }
+  }, []);
+
+  useEffect(() => {
+    let acknowledged = false;
+    try {
+      acknowledged = window.localStorage.getItem(BUILTIN_SETUP_NOTICE_KEY) === "1";
+    } catch {
+      // Continue with the one-time in-memory disclosure.
+    }
+    if (acknowledged) {
+      setDismissed(true);
+      return;
+    }
+
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/plugins/builtins?cwd=${encodeURIComponent(cwd)}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const next = await response.json() as BuiltinPluginsResponse & { error?: string };
+        if (!response.ok || next.error) throw new Error(next.error ?? `HTTP ${response.status}`);
+        setStatus(next);
+        setVisible(next.state !== "ready");
+        if (next.running && !controller.signal.aborted) {
+          timer = window.setTimeout(() => void load(), 1200);
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+        // The bootstrap is intentionally fire-and-forget. If its status route
+        // is temporarily unavailable, still disclose the work that may be in
+        // progress instead of silently executing third-party code.
+        setVisible(true);
+      }
+    };
+    void load();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [cwd]);
+
+  if (dismissed || !visible) return null;
+  const progress = status && status.totalCount > 0
+    ? `${status.completedCount}/${status.totalCount}`
+    : null;
+
+  return (
+    <aside className="builtin-setup-notice" role="status" aria-live="polite">
+      <div className="builtin-setup-notice-icon" aria-hidden="true">i</div>
+      <div className="builtin-setup-notice-copy">
+        <strong>{t("i18n.builtinNoticeTitle")}</strong>
+        <span>{t("i18n.builtinNoticeBody")}</span>
+        {progress && <small>{t("i18n.builtinNoticeProgress", { progress })}</small>}
+      </div>
+      <div className="builtin-setup-notice-actions">
+        <button type="button" className="builtin-setup-notice-link" onClick={onOpenPlugins}>
+          {t("i18n.builtinNoticeManage")}
+        </button>
+        <button type="button" className="builtin-setup-notice-dismiss" onClick={dismiss}>
+          {t("i18n.builtinNoticeDismiss")}
+        </button>
+      </div>
+    </aside>
+  );
+}
 
 function parkedNewSessionDraftKey(cwd: string): string {
   return `parked-new:${cwd}`;
@@ -275,6 +373,8 @@ export function AppShell() {
   const systemInfoLoaderRef = useRef<(() => Promise<void>) | null>(null);
   const systemInfoLoadIdRef = useRef(0);
   const systemBtnRef = useRef<HTMLButtonElement>(null);
+  const toolsBtnRef = useRef<HTMLButtonElement>(null);
+  const pluginsBtnRef = useRef<HTMLButtonElement>(null);
 
   const handleSystemPromptChange = useCallback((prompt: string | null) => {
     setSystemPrompt(prompt);
@@ -325,7 +425,7 @@ export function AppShell() {
 
   // Single active panel — only one dropdown open at a time
   const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "plugins" | "session" | null>(null);
-  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
+  const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; maxWidth: number; maxHeight: number } | null>(null);
 
   useEffect(() => {
     if (!sessionHasBranches) {
@@ -432,12 +532,18 @@ export function AppShell() {
       // rect 是视觉像素；fixed 定位的 CSS px 会被根 zoom 再放大，需先换算。
       const panelTop = divideByUiScale(topBarRect.bottom);
       // maxHeight 也要换算：100dvh 在根 zoom 下会放大（见 lib/ui-scale.ts）。
-      const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop;
+      const panelMaxHeight = divideByUiScale(window.innerHeight) - panelTop - 8;
+      // 面板统一挂在触发按钮正下方，宽度由面板内容决定（分支浮层同款交互）。
+      const anchors: Record<string, React.RefObject<HTMLButtonElement | null>> = {
+        system: systemBtnRef,
+        tools: toolsBtnRef,
+        plugins: pluginsBtnRef,
+      };
       if (activeTopPanel === "agents") {
         setTopPanelPos({
           top: panelTop,
           left: divideByUiScale(topBarRect.left),
-          width: Math.min(AGENT_PANEL_WIDTH, divideByUiScale(topBarRect.width)),
+          maxWidth: Math.min(AGENT_PANEL_WIDTH, divideByUiScale(topBarRect.width)),
           maxHeight: panelMaxHeight,
         });
         return;
@@ -445,15 +551,34 @@ export function AppShell() {
       if (activeTopPanel === "plugins") {
         const availableWidth = divideByUiScale(topBarRect.width);
         const panelWidth = Math.max(280, Math.min(720, availableWidth - 16));
+        // 按钮靠顶栏最右：面板右缘对齐按钮右缘，向左展开。
+        const pluginsBtn = pluginsBtnRef.current;
+        const btnRight = pluginsBtn && pluginsBtn.getBoundingClientRect().width > 0
+          ? divideByUiScale(pluginsBtn.getBoundingClientRect().right)
+          : divideByUiScale(topBarRect.right);
         setTopPanelPos({
           top: panelTop + 8,
-          left: divideByUiScale(topBarRect.left) + Math.max(8, (availableWidth - panelWidth) / 2),
-          width: panelWidth,
+          left: Math.max(8, btnRight - panelWidth),
+          maxWidth: panelWidth,
           maxHeight: Math.max(220, panelMaxHeight - 16),
         });
         return;
       }
-      setTopPanelPos({ top: panelTop, left: divideByUiScale(topBarRect.left), width: divideByUiScale(topBarRect.width), maxHeight: panelMaxHeight });
+      const anchor = anchors[activeTopPanel]?.current;
+      if (anchor) {
+        const rect = anchor.getBoundingClientRect();
+        if (rect.width > 0) {
+          const left = divideByUiScale(rect.left);
+          setTopPanelPos({
+            top: divideByUiScale(rect.bottom) + 8,
+            left,
+            maxWidth: Math.max(280, divideByUiScale(window.innerWidth) - left - 12),
+            maxHeight: panelMaxHeight,
+          });
+          return;
+        }
+      }
+      setTopPanelPos({ top: panelTop, left: divideByUiScale(topBarRect.left), maxWidth: divideByUiScale(topBarRect.width), maxHeight: panelMaxHeight });
     };
     update();
     const ro = new ResizeObserver(update);
@@ -1500,6 +1625,7 @@ export function AppShell() {
         </button>
         <button
           type="button"
+          ref={toolsBtnRef}
           onClick={() => handleSystemInfoToggle("tools", mobile)}
           disabled={mobile && !showChat}
           title={translate("tools.title")}
@@ -1535,6 +1661,7 @@ export function AppShell() {
         </button>
         <button
           type="button"
+          ref={pluginsBtnRef}
           onClick={() => toggleTopPanel("plugins", mobile)}
           disabled={!projectTrustCwd}
           title={translate("common.plugins")}
@@ -2034,25 +2161,28 @@ export function AppShell() {
               hideInlineButton
             />
           )}
-          {/* Top panel dropdown — shared, only one active at a time */}
+          {/* Top panel dropdown — shared, only one active at a time.
+              宽度交给面板内容决定（分支浮层同款 fit-content），wrapper 只限上限。 */}
           {activeTopPanel && topPanelPos && (
             <div className="ui-msg-enter" style={{
               position: "fixed",
               top: topPanelPos.top,
               left: topPanelPos.left,
-              width: topPanelPos.width,
+              maxWidth: topPanelPos.maxWidth,
               maxHeight: topPanelPos.maxHeight,
               overflowY: "auto",
               zIndex: 500,
             }}>
               {activeTopPanel === "agents" && activeSessionFamily && selectedSession && (
-                <AgentSessionPanel
-                  rootSession={activeSessionFamily.root}
-                  subagents={activeSessionFamily.subagents}
-                  selectedSessionId={selectedSession.id}
-                  runningSessionIds={runningSessionIds}
-                  onSelectSession={handleSelectSession}
-                />
+                <div style={{ width: "calc(420px * var(--ui-scale, 1))" }}>
+                  <AgentSessionPanel
+                    rootSession={activeSessionFamily.root}
+                    subagents={activeSessionFamily.subagents}
+                    selectedSessionId={selectedSession.id}
+                    runningSessionIds={runningSessionIds}
+                    onSelectSession={handleSelectSession}
+                  />
+                </div>
               )}
               {activeTopPanel === "system" && (
                 <SystemPromptPanel
@@ -2078,9 +2208,11 @@ export function AppShell() {
               )}
               {activeTopPanel === "session" && (
                 <div className="session-info-popover" style={{
-                  background: "var(--bg-panel)",
-                  borderBottom: "1px solid var(--border)",
-                  boxShadow: "0 10px 28px rgba(0,0,0,0.10)",
+                  width: "calc(520px * var(--ui-scale, 1))",
+                  background: "var(--assistant-bg)",
+                  borderRadius: "var(--radius-md)",
+                  border: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)",
+                  boxShadow: "0 16px 48px rgba(0, 0, 0, 0.16), 0 2px 10px rgba(0, 0, 0, 0.06)",
                   padding: "12px 16px",
                 }}>
                   {sessionStats ? (() => {
@@ -2288,6 +2420,15 @@ export function AppShell() {
         </div>
         {isMobile && renderProjectTrustWarning(true)}
         </div>
+        {activeCwd && (
+          <BuiltinSetupNotice
+            cwd={activeCwd}
+            onOpenPlugins={() => {
+              setActiveTopPanel(null);
+              setSettingsSection("plugins");
+            }}
+          />
+        )}
 
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>

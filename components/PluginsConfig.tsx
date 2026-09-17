@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sendAgentCommand } from "@/lib/agent-client";
 import type {
+  BuiltinPluginInfo,
+  BuiltinPluginsResponse,
   PluginActivationMode,
   PluginPackageInfo,
   PluginStandaloneExtensionInfo,
@@ -17,6 +19,7 @@ import {
   type CommunityPluginCatalogResponse,
   type CommunityPluginEntry,
 } from "@/lib/plugin-catalog";
+import { BUILTIN_PLUGIN_DEFINITIONS } from "@/lib/builtin-plugin-definitions";
 import { useI18n } from "@/hooks/useI18n";
 import {
   getLastSettingsSelection,
@@ -182,6 +185,135 @@ function PluginViewTabs({
         );
       })}
     </div>
+  );
+}
+
+function builtinStateLabel(
+  state: BuiltinPluginInfo["state"],
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (state === "ready") return t("i18n.builtinPluginReady");
+  if (state === "installing") return t("i18n.builtinPluginInstalling");
+  if (state === "error") return t("i18n.builtinPluginFailed");
+  if (state === "missing") return t("i18n.builtinPluginMissing");
+  if (state === "conflict") return t("i18n.builtinPluginConflict");
+  return t("i18n.builtinPluginPending");
+}
+
+function BuiltinPluginsPanel({ cwd, sessionId }: { cwd: string; sessionId: string | null }) {
+  const { locale, t } = useI18n();
+  const [data, setData] = useState<BuiltinPluginsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/plugins/builtins?cwd=${encodeURIComponent(cwd)}`, { cache: "no-store" });
+      const next = await response.json() as BuiltinPluginsResponse & { error?: string };
+      if (!response.ok || next.error) throw new Error(next.error ?? `HTTP ${response.status}`);
+      setData(next);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [cwd]);
+
+  const start = useCallback(async (force = false) => {
+    setRetrying(true);
+    try {
+      const response = await fetch("/api/plugins/builtins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd, ...(force ? { force: true } : {}) }),
+      });
+      const next = await response.json() as BuiltinPluginsResponse & { error?: string };
+      if (!response.ok && response.status !== 202) throw new Error(next.error ?? `HTTP ${response.status}`);
+      setData(next);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRetrying(false);
+    }
+  }, [cwd]);
+
+  useEffect(() => {
+    void start();
+  }, [start]);
+
+  useEffect(() => {
+    if (!data?.running) return;
+    const timer = window.setInterval(() => void load(), 1200);
+    return () => window.clearInterval(timer);
+  }, [data?.running, load]);
+
+  const progress = data && data.totalCount > 0
+    ? Math.round((data.completedCount / data.totalCount) * 100)
+    : 0;
+  const failed = data?.plugins.some((plugin) => plugin.state === "error" || plugin.state === "missing") ?? false;
+  const ready = data?.state === "ready";
+  const visiblePlugins: BuiltinPluginInfo[] = data?.plugins ?? BUILTIN_PLUGIN_DEFINITIONS.map((definition) => ({
+    ...definition,
+    state: "pending" as const,
+  }));
+
+  return (
+    <section className="builtin-plugins-panel" aria-label={t("i18n.builtinPluginsTitle")}>
+      <div className="builtin-plugins-heading">
+        <div>
+          <strong>{t("i18n.builtinPluginsTitle")}</strong>
+          <p>{t("i18n.builtinPluginsDescription")}</p>
+        </div>
+        {(failed || (!ready && !data?.running)) && (
+          <ConfigButton size="small" onClick={() => void start(true)} disabled={retrying}>
+            {retrying ? t("i18n.builtinPluginRetrying") : t("i18n.builtinPluginRetry")}
+          </ConfigButton>
+        )}
+      </div>
+
+      {data?.running && (
+        <div className="builtin-plugins-progress" role="status" aria-live="polite">
+          <div className="builtin-plugins-progress-label">
+            <span>{t("i18n.builtinPluginProgress", {
+              done: data.completedCount,
+              total: data.totalCount,
+            })}</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="builtin-plugins-progress-track" aria-hidden="true">
+            <span style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      )}
+
+      {error && <p className="builtin-plugins-error" role="alert">{error}</p>}
+      {!data && !error && <p className="builtin-plugins-loading">{t("i18n.builtinPluginLoading")}</p>}
+      <div className="builtin-plugins-list">
+        {visiblePlugins.map((plugin) => {
+          const purpose = locale === "en" ? plugin.purposeEn : plugin.purpose;
+          return (
+            <div className="builtin-plugin-row" key={plugin.id}>
+              <span className={`builtin-plugin-dot is-${plugin.state}`} aria-hidden="true" />
+              <div className="builtin-plugin-copy">
+                <strong>{plugin.name}</strong>
+                <span>{purpose}</span>
+                <code>{plugin.source}</code>
+                {plugin.error && <small className="builtin-plugin-error-detail" title={plugin.error}>{plugin.error}</small>}
+              </div>
+              <span className={`builtin-plugin-state is-${plugin.state}`}>
+                {builtinStateLabel(plugin.state, t)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="builtin-plugins-footnote">
+        {t("i18n.builtinPluginsDisclaimer", { registry: data?.registry ?? "registry.npmmirror.com" })}
+      </p>
+      {data?.state === "ready" && sessionId && (
+        <p className="builtin-plugins-footnote">{t("i18n.builtinPluginsReloadHint")}</p>
+      )}
+    </section>
   );
 }
 
@@ -923,6 +1055,11 @@ function PackageDetail({
       <ConfigDetailHeader className="is-top-aligned">
         <ConfigDetailHeaderInfo>
           <ScopeTag scope={pkg.scope} />
+          {pkg.builtin && (
+            <span className="builtin-plugin-badge" title={t("i18n.builtinPluginsTitle")}>
+              {t("i18n.builtinPluginBadge")}
+            </span>
+          )}
           {pkg.disabled ? (
             <span
               style={{
@@ -1519,6 +1656,8 @@ export function PluginsConfig({
   return (
     <ConfigPanelShell embedded={embedded} title={t("common.plugins")} subtitle={shortenPath(cwd)} closeLabel={t("i18n.close")} onClose={onClose}>
 
+        <BuiltinPluginsPanel cwd={cwd} sessionId={sessionId} />
+
         {!projectResourcesLoaded && (
           <div role="status" className="config-trust-notice">
             {t("trust.pluginsNotLoaded")}
@@ -1619,6 +1758,11 @@ export function PluginsConfig({
                             <ConfigSidebarText className={`is-grow${pkg.disabled ? " is-muted" : ""}`}>
                               {pkg.source}
                             </ConfigSidebarText>
+                            {pkg.builtin && (
+                              <span className="builtin-plugin-sidebar-badge" title={t("i18n.builtinPluginsTitle")}>
+                                {t("i18n.builtinPluginBadge")}
+                              </span>
+                            )}
                             {updateStatuses[packageKey(pkg)]?.state === "update-available" && (
                               <span title={t("i18n.updateAvailable")} className="skill-update-indicator">
                                 ↑

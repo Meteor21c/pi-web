@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { resolve } from "path";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
@@ -8,6 +9,7 @@ import {
   setPluginActivationMode,
   type PluginActivationMode,
 } from "@/lib/plugin-activation";
+import { withPluginOperationLock } from "@/lib/plugin-operation-lock";
 
 export const dynamic = "force-dynamic";
 
@@ -61,16 +63,18 @@ export async function PATCH(req: Request) {
         { status: 403 },
       );
     }
-    const settingsManager = SettingsManager.create(cwd, agentDir, {
-      projectTrusted: projectTrust.trusted,
+    const updated = await withPluginOperationLock(resolve(agentDir), async () => {
+      // Read settings only after acquiring the queue so a concurrent starter
+      // install cannot be overwritten by this request's stale snapshot.
+      const settingsManager = SettingsManager.create(cwd, agentDir, {
+        projectTrusted: projectTrust.trusted,
+      });
+      if (!findPluginPackageEntry(settingsManager, source, scope)) return false;
+      if (!setPluginActivationMode(settingsManager, source, scope, mode)) return false;
+      await settingsManager.flush();
+      return true;
     });
-    if (!findPluginPackageEntry(settingsManager, source, scope)) {
-      return NextResponse.json({ error: "Plugin package not found" }, { status: 404 });
-    }
-    if (!setPluginActivationMode(settingsManager, source, scope, mode)) {
-      return NextResponse.json({ error: "Plugin package not found" }, { status: 404 });
-    }
-    await settingsManager.flush();
+    if (!updated) return NextResponse.json({ error: "Plugin package not found" }, { status: 404 });
 
     return NextResponse.json({
       success: true,

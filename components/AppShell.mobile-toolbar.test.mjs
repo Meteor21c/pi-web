@@ -34,9 +34,9 @@ test("keeps the Agents panel open while switching sessions and positions it at t
   assert.match(source, /const AGENT_PANEL_WIDTH = 420/);
   assert.match(
     source,
-    /if \(activeTopPanel === "agents"\)[\s\S]*?left: divideByUiScale\(topBarRect\.left\)[\s\S]*?width: Math\.min\(AGENT_PANEL_WIDTH, divideByUiScale\(topBarRect\.width\)\)/,
+    /if \(activeTopPanel === "agents"\)[\s\S]*?left: divideByUiScale\(topBarRect\.left\)[\s\S]*?maxWidth: Math\.min\(AGENT_PANEL_WIDTH, divideByUiScale\(topBarRect\.width\)\)/,
   );
-  assert.match(source, /<AgentSessionPanel[\s\S]*?onSelectSession=\{handleSelectSession\}/);
+  assert.match(source, /<div style=\{\{ width: "calc\(420px \* var\(--ui-scale, 1\)\)" \}\}>[\s\S]*?<AgentSessionPanel[\s\S]*?onSelectSession=\{handleSelectSession\}/);
 });
 
 test("only renders branch toolbar controls for sessions with branches", () => {

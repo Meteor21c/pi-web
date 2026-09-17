@@ -289,7 +289,13 @@ export async function withRelayImageGenerationSession<T>(
   try {
     hydrateRelayImageGenerationEnvironment(groups, agentDir);
     globalAlias = process.env[ACTIVE_MODEL_ENV];
-    const local = readSessionImageModelSelection(sessionManager.getEntries() as unknown as SessionEntry[]);
+    // A live SDK SessionManager always exposes getEntries(), but a few headless
+    // integrations only provide the lifecycle methods needed by the wrapper.
+    // Treat those as having no session override instead of failing the entire
+    // extension-load window.
+    const getEntries = (sessionManager as { getEntries?: () => unknown }).getEntries;
+    const localEntries = typeof getEntries === "function" ? getEntries.call(sessionManager) : [];
+    const local = readSessionImageModelSelection(localEntries as SessionEntry[]);
     const availableAliases = new Set(imageModels(groups).map((model) => model.alias));
     const effectiveAlias = local && availableAliases.has(local.alias) ? local.alias : globalAlias;
     if (effectiveAlias) process.env[ACTIVE_MODEL_ENV] = effectiveAlias;

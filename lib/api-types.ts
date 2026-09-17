@@ -155,6 +155,8 @@ export interface PluginUpdateResult {
 export interface PluginPackageInfo {
   source: string;
   scope: PluginScope;
+  /** Official starter capability represented by this package, when present. */
+  builtin?: { id: string; name: string };
   /** Whether this package is active for every session or selected sessions only. */
   activationMode: PluginActivationMode;
   /** Persisted package availability (the settings-level enable/disable state). */
@@ -175,10 +177,54 @@ export interface PluginPackageInfo {
   status: "loaded" | "installed" | "missing" | "disabled";
 }
 
+export type BuiltinPluginInstallState =
+  | "pending"
+  | "installing"
+  | "ready"
+  | "missing"
+  | "error"
+  | "conflict";
+
+export interface BuiltinPluginInfo {
+  id: string;
+  name: string;
+  source: string;
+  purpose: string;
+  purposeEn: string;
+  recommendedVersion: string;
+  downloadsMonthly: number;
+  officialUrl: string;
+  repositoryUrl?: string;
+  requiresNetwork: boolean;
+  state: BuiltinPluginInstallState;
+  /** The source already configured by the user, including any version range. */
+  configuredSource?: string;
+  configuredScope?: PluginScope;
+  installedPath?: string;
+  installedVersion?: string;
+  error?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface BuiltinPluginsResponse {
+  version: 1;
+  running: boolean;
+  state: "idle" | "running" | "ready" | "partial";
+  startedAt?: string;
+  finishedAt?: string;
+  registry: string;
+  currentPluginId?: string;
+  completedCount: number;
+  totalCount: number;
+  plugins: BuiltinPluginInfo[];
+}
+
 export interface PluginsResponse {
   packages: PluginPackageInfo[];
   standaloneExtensions: PluginStandaloneExtensionInfo[];
   totals: PluginResourceCounts;
   diagnostics: PluginDiagnostic[];
   projectResourcesLoaded: boolean;
+  builtins?: BuiltinPluginsResponse;
 }

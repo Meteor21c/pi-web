@@ -212,7 +212,7 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
       )}
 
       <style>{`
-        .session-plugins-panel { background: color-mix(in srgb, var(--assistant-bg) 76%, transparent); -webkit-backdrop-filter: blur(32px) saturate(1.7); backdrop-filter: blur(32px) saturate(1.7); border: .5px solid color-mix(in srgb, var(--border) 72%, transparent); border-radius: 18px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 88%, transparent), 0 24px 64px rgba(0,0,0,.20), 0 4px 14px rgba(0,0,0,.08); overflow: hidden; color: var(--text); }
+        .session-plugins-panel { width: calc(640px * var(--ui-scale, 1)); background: color-mix(in srgb, var(--assistant-bg) 72%, transparent); -webkit-backdrop-filter: blur(32px) saturate(1.8); backdrop-filter: blur(32px) saturate(1.8); border: .5px solid color-mix(in srgb, var(--border) 72%, transparent); border-radius: 18px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 88%, transparent), 0 24px 64px rgba(0,0,0,.20), 0 4px 14px rgba(0,0,0,.08); overflow: hidden; color: var(--text); }
         .session-plugins-heading { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; border-bottom: .5px solid color-mix(in srgb, var(--border) 62%, transparent); background: color-mix(in srgb, var(--assistant-bg) 44%, transparent); }
         .session-plugins-title-block { min-width: 0; display: flex; align-items: center; gap: 10px; }
         .session-plugins-icon { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 10px; color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, var(--assistant-bg)); }
@@ -225,7 +225,7 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
         .session-plugins-warning { margin: 11px 12px 0; padding: 9px 11px; border: .5px solid color-mix(in srgb, #f59e0b 24%, transparent); border-radius: 11px; background: color-mix(in srgb, #f59e0b 8%, var(--assistant-bg)); color: var(--text-muted); font-size: 10.5px; line-height: 1.5; }
         .session-plugins-warning.is-running { border-color: color-mix(in srgb, #ef4444 22%, transparent); background: color-mix(in srgb, #ef4444 8%, var(--assistant-bg)); }
         .session-plugins-error { margin: 8px 12px 0; color: #ef4444; font-size: 11px; }
-        .session-plugins-scroll { max-height: min(58dvh, 480px); overflow: auto; padding: 10px 12px 13px; }
+        .session-plugins-scroll { max-height: min(480px, calc(58dvh / var(--ui-scale, 1))); overflow: auto; padding: 10px 12px 13px; }
         .session-plugins-group { padding: 6px; border: .5px solid color-mix(in srgb, var(--border) 58%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--assistant-bg) 54%, transparent); }
         .session-plugins-group + .session-plugins-group { margin-top: 10px; }
         .session-plugins-group-title { margin: 2px 5px 6px; color: var(--text-dim); font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }

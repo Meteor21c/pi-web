@@ -36,7 +36,9 @@ used.
   and executes the conversation.
 - New image families can be synchronized without an OpenAI-specific UI, as long
   as the relay exposes them through the compatible Images endpoint.
-- The community package remains an explicit user installation with the existing
-  source warning and progress UI; Magent does not silently execute third-party
-  code.
+- The community package is one of Magent's optional starter capabilities: first
+  launch prepares it in the background from its official npm source, while the
+  existing source warning, progress UI, and local-permission disclaimer remain.
+  Users can update, disable, or remove it from Settings; removal is respected on
+  later launches until the user explicitly retries preparation.
 - A real paid relay request is still required as a release acceptance test.

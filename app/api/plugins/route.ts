@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { existsSync, readFileSync, statSync } from "fs";
-import { basename, dirname, extname, join, relative } from "path";
+import { basename, dirname, extname, join, relative, resolve } from "path";
 import {
   DefaultPackageManager,
   getAgentDir,
@@ -13,7 +13,9 @@ import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security"
 import { getProjectTrustStatus } from "@/lib/project-trust";
 import { samePath } from "@/lib/paths";
 import { isPluginSourceCheckable } from "@/lib/plugin-updates";
+import { BUILTIN_PLUGIN_DEFINITIONS, sameNpmPackageSource } from "@/lib/builtin-plugin-definitions";
 import { getPluginSessionManager } from "@/lib/plugin-session-manager";
+import { withPluginOperationLock } from "@/lib/plugin-operation-lock";
 import {
   readSessionPluginSelection,
 } from "@/lib/session-plugin-selection";
@@ -253,9 +255,15 @@ async function readPlugins(cwd: string, sessionId?: string): Promise<PluginsResp
         message: "Configured package path was not found.",
       });
     }
+    const builtinDefinition = BUILTIN_PLUGIN_DEFINITIONS.find((definition) => (
+      sameNpmPackageSource(pkg.source, definition.source)
+    ));
     return {
       source: pkg.source,
       scope,
+      ...(builtinDefinition
+        ? { builtin: { id: builtinDefinition.id, name: builtinDefinition.name } }
+        : {}),
       canCheckForUpdates: isPluginSourceCheckable(pkg.source),
       filtered: pkg.filtered,
       disabled,
@@ -339,9 +347,6 @@ export async function POST(req: Request) {
 
     const agentDir = getAgentDir();
     const projectTrust = getProjectTrustStatus(body.cwd, agentDir);
-    const settingsManager = SettingsManager.create(body.cwd, agentDir, {
-      projectTrusted: projectTrust.trusted,
-    });
     const scope = readScope(body.scope);
     if (scope === "project" && !projectTrust.trusted) {
       return NextResponse.json(
@@ -349,38 +354,52 @@ export async function POST(req: Request) {
         { status: 403 },
       );
     }
-    const packageManager = new DefaultPackageManager({
-      cwd: body.cwd,
-      agentDir,
-      settingsManager,
-    });
     const source = body.source?.trim();
     const local = scope === "project";
-
-    if (body.action === "install") {
-      if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      await packageManager.installAndPersist(source, { local });
-    } else if (body.action === "remove") {
-      if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      await packageManager.removeAndPersist(source, { local });
-    } else if (body.action === "update") {
-      if (!source && !projectTrust.trusted && packageManager.listConfiguredPackages().some((pkg) => pkg.scope === "project")) {
-        return NextResponse.json(
-          { error: "Project resources must be trusted before updating project plugins" },
-          { status: 403 },
-        );
-      }
-      await packageManager.update(source);
-    } else if (body.action === "disable") {
-      if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      setPluginPackageDisabled(settingsManager, source, scope, true);
-      await settingsManager.flush();
-    } else if (body.action === "enable") {
-      if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      setPluginPackageDisabled(settingsManager, source, scope, false);
-      await settingsManager.flush();
-    } else {
+    if (["install", "remove", "disable", "enable"].includes(body.action) && !source) {
+      return NextResponse.json({ error: "source required" }, { status: 400 });
+    }
+    if (!["install", "remove", "update", "disable", "enable"].includes(body.action)) {
       return NextResponse.json({ error: `Unsupported action: ${body.action}` }, { status: 400 });
+    }
+
+    const projectUpdateBlocked = await withPluginOperationLock(resolve(agentDir), async () => {
+      // Construct the managers after the queue is acquired. If an automatic
+      // bootstrap just wrote settings.json, a pre-created manager could carry
+      // a stale snapshot and overwrite that update on flush.
+      const settingsManager = SettingsManager.create(body.cwd!, agentDir, {
+        projectTrusted: projectTrust.trusted,
+      });
+      const packageManager = new DefaultPackageManager({
+        cwd: body.cwd!,
+        agentDir,
+        settingsManager,
+      });
+      if (body.action === "update" && !source && !projectTrust.trusted && packageManager.listConfiguredPackages().some((pkg) => pkg.scope === "project")) {
+        return true;
+      }
+      if (body.action === "install") {
+        await packageManager.installAndPersist(source!, { local });
+      } else if (body.action === "remove") {
+        await packageManager.removeAndPersist(source!, { local });
+      } else if (body.action === "update") {
+        await packageManager.update(source);
+      } else if (body.action === "disable") {
+        setPluginPackageDisabled(settingsManager, source!, scope, true);
+        await settingsManager.flush();
+      } else if (body.action === "enable") {
+        setPluginPackageDisabled(settingsManager, source!, scope, false);
+        await settingsManager.flush();
+      } else {
+        throw new Error(`Unsupported action: ${body.action}`);
+      }
+      return false;
+    });
+    if (projectUpdateBlocked) {
+      return NextResponse.json(
+        { error: "Project resources must be trusted before updating project plugins" },
+        { status: 403 },
+      );
     }
 
     return NextResponse.json(await readPlugins(body.cwd));

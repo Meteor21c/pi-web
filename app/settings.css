@@ -623,6 +623,273 @@
   font-size: 12px;
 }
 
+.builtin-setup-notice {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-panel));
+}
+
+.builtin-setup-notice-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.builtin-setup-notice-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.builtin-setup-notice-copy strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.builtin-setup-notice-copy span,
+.builtin-setup-notice-copy small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+}
+
+.builtin-setup-notice-copy small {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.builtin-setup-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.builtin-setup-notice-actions button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.builtin-setup-notice-actions button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.builtin-setup-notice-link {
+  color: var(--accent) !important;
+}
+
+.builtin-setup-notice-dismiss {
+  color: var(--text-dim);
+}
+
+.builtin-setup-notice-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.builtin-plugins-panel {
+  flex-shrink: 0;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-panel));
+}
+
+.builtin-plugins-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.builtin-plugins-heading strong {
+  display: block;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.builtin-plugins-heading p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.builtin-plugins-progress {
+  margin-top: 10px;
+}
+
+.builtin-plugins-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.builtin-plugins-progress-track {
+  height: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.builtin-plugins-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width .25s ease;
+}
+
+.builtin-plugins-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.builtin-plugin-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg) 42%, transparent);
+}
+
+.builtin-plugin-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.builtin-plugin-dot.is-ready { background: var(--accent); }
+.builtin-plugin-dot.is-installing { background: #f59e0b; animation: builtin-plugin-pulse 1.2s ease-in-out infinite; }
+.builtin-plugin-dot.is-error,
+.builtin-plugin-dot.is-missing { background: #ef4444; }
+.builtin-plugin-dot.is-conflict { background: #f59e0b; }
+
+.builtin-plugin-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.builtin-plugin-copy strong,
+.builtin-plugin-copy span,
+.builtin-plugin-copy code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.builtin-plugin-copy strong {
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.builtin-plugin-copy span {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 9.5px;
+}
+
+.builtin-plugin-copy code {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+}
+
+.builtin-plugin-error-detail {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: #ef4444;
+  font-size: 8.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.builtin-plugin-state {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.builtin-plugin-state.is-ready { color: var(--accent); }
+.builtin-plugin-state.is-installing { color: #f59e0b; }
+.builtin-plugin-state.is-error,
+.builtin-plugin-state.is-missing { color: #ef4444; }
+.builtin-plugin-state.is-conflict { color: #f59e0b; }
+
+.builtin-plugin-badge,
+.builtin-plugin-sidebar-badge {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.builtin-plugin-sidebar-badge {
+  padding: 1px 4px;
+  border: 0;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  font-size: 8px;
+}
+
+.builtin-plugins-loading,
+.builtin-plugins-error,
+.builtin-plugins-footnote {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.builtin-plugins-error { color: #ef4444; }
+
+@keyframes builtin-plugin-pulse {
+  0%, 100% { opacity: .45; }
+  50% { opacity: 1; }
+}
+
 .plugins-view-tabs {
   display: flex;
   flex-shrink: 0;
@@ -1997,6 +2264,25 @@
   .plugins-view-tabs {
     padding-right: 14px;
     padding-left: 14px;
+  }
+
+  .builtin-plugins-panel {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .builtin-setup-notice {
+    grid-template-columns: 24px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .builtin-setup-notice-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .builtin-plugins-list {
+    grid-template-columns: 1fr;
   }
 
   .plugin-install-progress {
