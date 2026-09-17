@@ -18,7 +18,7 @@ import { skillExpansionToCommand } from "@/lib/slash-display";
 import type { SubagentToolDetails } from "@/lib/subagent-extension";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { isRelayProviderId } from "@/lib/relay-config";
-import { resolveLocalFilePath } from "@/lib/file-links";
+import { resolveLocalFileHref, resolveLocalFilePath } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import type {
   AgentMessage,
@@ -1878,15 +1878,36 @@ function getToolResultImages(
   const detailImages = Array.isArray(result.details.images) ? result.details.images : [];
   const generated = detailImages.flatMap((value): ImageContent[] => {
     const detail = typeof value === "string" ? { path: value } : isRecord(value) ? value : null;
-    if (!detail || typeof detail.path !== "string") return [];
-    const rawPath = detail.path.trim();
-    // pi-image-gen promises local output paths. Do not turn arbitrary remote or
-    // app URLs from an extension payload into an image request.
-    if (!rawPath || /^(?:https?|data|blob):/i.test(rawPath) || rawPath.startsWith("/api/")) return [];
-    const filePath = resolveLocalFilePath(rawPath, cwd);
-    if (!filePath) return [];
+    if (!detail) return [];
     const sessionQuery = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
     const mimeType = typeof detail.mimeType === "string" ? detail.mimeType : undefined;
+    const rawSource = typeof detail.path === "string"
+      ? detail.path.trim()
+      : typeof detail.url === "string"
+        ? detail.url.trim()
+        : "";
+    if (!rawSource || rawSource.startsWith("/api/")) return [];
+
+    // Accept remote image URLs when a provider returns a URL instead of a
+    // local output path. Restrict this to web URLs; arbitrary schemes from an
+    // extension payload must never become browser navigation or image loads.
+    if (/^https?:\/\//i.test(rawSource) || /^data:image\//i.test(rawSource)) {
+      return [{
+        type: "image",
+        source: {
+          type: "url",
+          ...(mimeType ? { media_type: mimeType } : {}),
+          url: rawSource,
+        },
+      } satisfies ImageContent];
+    }
+
+    // Local paths and file:// URLs go through the existing allow-list-backed
+    // file API so the browser never receives a direct filesystem URL.
+    const filePath = /^file:/i.test(rawSource)
+      ? resolveLocalFileHref(rawSource, cwd)
+      : resolveLocalFilePath(rawSource, cwd);
+    if (!filePath) return [];
     return [{
       type: "image",
       source: {

@@ -422,6 +422,38 @@ test("renders pi-image-gen detail images inline and expands the result", () => {
   assert.doesNotMatch(html, /Generated 1 image\(s\): \/tmp\/project\/\.pi\/images\/hamster\.png/);
 });
 
+test("renders image-tool URL details without accepting arbitrary schemes", () => {
+  const block = {
+    type: "toolCall",
+    toolCallId: "image-call-url",
+    toolName: "image_generate",
+    input: { prompt: "a cloud" },
+  };
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-image",
+    model: "image-model",
+    content: [block],
+  }, {
+    toolResults: new Map([[block.toolCallId, {
+      role: "toolResult",
+      toolCallId: block.toolCallId,
+      toolName: "image_generate",
+      content: [{ type: "text", text: "Generated image" }],
+      details: {
+        images: [
+          { url: "https://cdn.example.test/cloud.webp", mimeType: "image/webp" },
+          { url: "javascript:alert(1)", mimeType: "image/png" },
+        ],
+      },
+    }]]),
+  });
+
+  assert.equal((html.match(/aria-label="Preview image"/g) ?? []).length, 1);
+  assert.match(html, /src="https:\/\/cdn\.example\.test\/cloud\.webp"/);
+  assert.doesNotMatch(html, /javascript:alert/);
+});
+
 test("renders custom-message images as buttons that open a larger preview", () => {
   const html = renderMessage({
     role: "custom",
