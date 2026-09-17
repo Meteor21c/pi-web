@@ -320,6 +320,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [promptAnchorActive, setPromptAnchorActive] = useState(false);
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsLoading, setSlashCommandsLoading] = useState(false);
+  const [availableTools, setAvailableTools] = useState<ToolEntry[]>([]);
   const [noticeState, dispatchNotice] = useReducer(noticeReducer, { visible: [], pending: [] });
   const [sessionStatsOverride, setSessionStatsOverride] = useState<SessionStatsInfo | null>(null);
   const [extensionDialog, setExtensionDialog] = useState<ExtensionUiDialogRequest | null>(null);
@@ -581,6 +582,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const tools = await sendAgentCommand<ToolEntry[]>(sid, { type: "get_tools" });
       if (!tools || !sessionHookMountedRef.current || sessionIdRef.current !== sid) return null;
+      setAvailableTools(tools);
       const { getPresetFromTools } = await import("@/lib/tool-presets");
       setToolPresetState(getPresetFromTools(tools));
       onSystemToolsChange?.(tools);
@@ -694,7 +696,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     setSlashCommandsLoading(true);
     try {
-      const data = await sendAgentCommand<SlashCommandsResponse>(sid, { type: "get_commands" });
+      const [data] = await Promise.all([
+        sendAgentCommand<SlashCommandsResponse>(sid, { type: "get_commands" }),
+        loadTools(sid),
+      ]);
       const commands = data?.commands ?? [];
       setSlashCommands(commands);
       return commands;
@@ -705,7 +710,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       setSlashCommandsLoading(false);
     }
-  }, [ensureNewSession]);
+  }, [ensureNewSession, loadTools]);
 
   const cancelEventStreamGrace = useCallback(() => {
     eventStreamGraceGenerationRef.current += 1;
@@ -2014,6 +2019,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // Load session on mount
   useEffect(() => {
     sessionHookMountedRef.current = true;
+    setAvailableTools([]);
     if (session) {
       sessionIdRef.current = session.id;
       loadSession(session.id, true, true).then((agentState) => {
@@ -2201,7 +2207,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
-    slashCommands, slashCommandsLoading, queuedMessages,
+    slashCommands, slashCommandsLoading, availableTools, queuedMessages,
     notices: noticeState.visible, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection: isNew && newSessionModel === null,
     agentPhase,

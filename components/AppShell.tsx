@@ -438,6 +438,17 @@ export function AppShell() {
         });
         return;
       }
+      if (activeTopPanel === "plugins") {
+        const availableWidth = divideByUiScale(topBarRect.width);
+        const panelWidth = Math.max(280, Math.min(720, availableWidth - 16));
+        setTopPanelPos({
+          top: panelTop + 8,
+          left: divideByUiScale(topBarRect.left) + Math.max(8, (availableWidth - panelWidth) / 2),
+          width: panelWidth,
+          maxHeight: Math.max(220, panelMaxHeight - 16),
+        });
+        return;
+      }
       setTopPanelPos({ top: panelTop, left: divideByUiScale(topBarRect.left), width: divideByUiScale(topBarRect.width), maxHeight: panelMaxHeight });
     };
     update();

@@ -120,9 +120,16 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
   return (
     <section className="session-plugins-panel" aria-label={zh ? "当前会话插件" : "Session plugins"}>
       <header className="session-plugins-heading">
-        <div>
-          <strong>{zh ? "当前会话插件" : "Session plugins"}</strong>
-          <p>{zh ? "这里只能切换设为“按会话选择”的插件。" : "Only plugins configured for per-session use can be changed here."}</p>
+        <div className="session-plugins-title-block">
+          <span className="session-plugins-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2v6" /><path d="M8 8h8v4a4 4 0 0 1-8 0V8Z" /><path d="M9 17v5" /><path d="M15 17v5" />
+            </svg>
+          </span>
+          <div>
+            <strong>{zh ? "当前会话插件" : "Session plugins"}</strong>
+            <p>{zh ? "按会话选择的插件可在这里开启，重载后生效。" : "Choose per-session plugins here. Changes apply after reload."}</p>
+          </div>
         </div>
         <button
           type="button"
@@ -205,36 +212,46 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
       )}
 
       <style>{`
-        .session-plugins-panel { background: var(--bg-panel); border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; box-shadow: 0 12px 32px rgba(0,0,0,.12); overflow: hidden; color: var(--text); }
-        .session-plugins-heading { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
-        .session-plugins-heading strong { display: block; font-size: 13px; }
-        .session-plugins-heading p { margin: 3px 0 0; color: var(--text-dim); font-size: 11px; }
-        .session-plugins-reload { min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text-muted); cursor: pointer; white-space: nowrap; font-size: 11px; }
+        .session-plugins-panel { background: color-mix(in srgb, var(--assistant-bg) 76%, transparent); -webkit-backdrop-filter: blur(32px) saturate(1.7); backdrop-filter: blur(32px) saturate(1.7); border: .5px solid color-mix(in srgb, var(--border) 72%, transparent); border-radius: 18px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 88%, transparent), 0 24px 64px rgba(0,0,0,.20), 0 4px 14px rgba(0,0,0,.08); overflow: hidden; color: var(--text); }
+        .session-plugins-heading { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; border-bottom: .5px solid color-mix(in srgb, var(--border) 62%, transparent); background: color-mix(in srgb, var(--assistant-bg) 44%, transparent); }
+        .session-plugins-title-block { min-width: 0; display: flex; align-items: center; gap: 10px; }
+        .session-plugins-icon { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 10px; color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, var(--assistant-bg)); }
+        .session-plugins-heading strong { display: block; font-size: 13px; font-weight: 650; }
+        .session-plugins-heading p { margin: 3px 0 0; color: var(--text-dim); font-size: 10.5px; line-height: 1.35; }
+        .session-plugins-reload { min-height: 30px; padding: 0 11px; border: .5px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--bg-hover) 64%, transparent); color: var(--text-muted); cursor: pointer; white-space: nowrap; font-size: 11px; transition: background .15s ease, color .15s ease, transform .15s ease; }
+        .session-plugins-reload:hover:not(:disabled) { background: var(--bg-selected); color: var(--text); }
+        .session-plugins-reload:active:not(:disabled) { transform: scale(.96); }
         .session-plugins-reload:disabled { cursor: not-allowed; opacity: .45; }
-        .session-plugins-warning { margin: 10px 12px 0; padding: 8px 10px; border-radius: 7px; background: color-mix(in srgb, #f59e0b 9%, var(--bg)); color: var(--text-muted); font-size: 11px; line-height: 1.45; }
-        .session-plugins-warning.is-running { background: color-mix(in srgb, #ef4444 9%, var(--bg)); }
+        .session-plugins-warning { margin: 11px 12px 0; padding: 9px 11px; border: .5px solid color-mix(in srgb, #f59e0b 24%, transparent); border-radius: 11px; background: color-mix(in srgb, #f59e0b 8%, var(--assistant-bg)); color: var(--text-muted); font-size: 10.5px; line-height: 1.5; }
+        .session-plugins-warning.is-running { border-color: color-mix(in srgb, #ef4444 22%, transparent); background: color-mix(in srgb, #ef4444 8%, var(--assistant-bg)); }
         .session-plugins-error { margin: 8px 12px 0; color: #ef4444; font-size: 11px; }
-        .session-plugins-scroll { max-height: min(58dvh, 480px); overflow: auto; padding: 10px 12px 12px; }
-        .session-plugins-group + .session-plugins-group { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
-        .session-plugins-group-title { margin: 0 4px 5px; color: var(--text-dim); font-size: 10px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
-        .session-plugin-row { width: 100%; min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 9px; border: none; border-radius: 8px; background: transparent; color: var(--text); text-align: left; }
+        .session-plugins-scroll { max-height: min(58dvh, 480px); overflow: auto; padding: 10px 12px 13px; }
+        .session-plugins-group { padding: 6px; border: .5px solid color-mix(in srgb, var(--border) 58%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--assistant-bg) 54%, transparent); }
+        .session-plugins-group + .session-plugins-group { margin-top: 10px; }
+        .session-plugins-group-title { margin: 2px 5px 6px; color: var(--text-dim); font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+        .session-plugin-row { width: 100%; min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 9px; border: none; border-radius: 10px; background: transparent; color: var(--text); text-align: left; }
         button.session-plugin-row.is-editable { cursor: pointer; }
-        button.session-plugin-row.is-editable:hover:not(:disabled) { background: var(--bg-hover); }
+        button.session-plugin-row.is-editable:hover:not(:disabled) { background: color-mix(in srgb, var(--bg-hover) 82%, transparent); }
         button.session-plugin-row:disabled { cursor: not-allowed; opacity: .55; }
         .session-plugin-row.is-readonly { opacity: .62; }
         .session-plugin-copy { min-width: 0; display: block; }
         .session-plugin-copy strong, .session-plugin-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .session-plugin-copy strong { font-size: 12px; font-weight: 600; }
         .session-plugin-copy span { margin-top: 3px; color: var(--text-dim); font-size: 10px; }
-        .session-plugin-switch { width: 31px; height: 18px; padding: 2px; border-radius: 999px; background: var(--border); flex-shrink: 0; transition: background .15s ease; }
-        .session-plugin-switch > span { display: block; width: 14px; height: 14px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .15s ease; }
+        .session-plugin-switch { width: 34px; height: 20px; padding: 2px; border-radius: 999px; background: color-mix(in srgb, var(--text-dim) 30%, var(--border)); flex-shrink: 0; transition: background .18s ease; }
+        .session-plugin-switch > span { display: block; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.24); transition: transform .18s cubic-bezier(.2,.8,.2,1); }
         .session-plugin-switch.is-on { background: var(--accent); }
-        .session-plugin-switch.is-on > span { transform: translateX(13px); }
+        .session-plugin-switch.is-on > span { transform: translateX(14px); }
         .session-plugin-switch.is-busy { opacity: .55; }
-        .session-plugin-global-state { flex-shrink: 0; padding: 3px 7px; border-radius: 999px; background: var(--bg-selected); color: var(--text-dim); font-size: 10px; }
+        .session-plugin-global-state { flex-shrink: 0; padding: 3px 8px; border-radius: 999px; background: color-mix(in srgb, var(--bg-selected) 72%, transparent); color: var(--text-dim); font-size: 10px; }
         .session-plugin-global-state.is-on { color: var(--text-muted); }
         .session-plugins-empty { padding: 28px 12px; color: var(--text-dim); text-align: center; font-size: 12px; }
-        .session-plugins-new-note { padding: 9px 14px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 10px; }
+        .session-plugins-new-note { padding: 9px 14px; border-top: .5px solid color-mix(in srgb, var(--border) 62%, transparent); color: var(--text-dim); font-size: 10px; }
+        @media (max-width: 640px) {
+          .session-plugins-panel { border-radius: 15px; }
+          .session-plugins-heading { align-items: flex-start; }
+          .session-plugins-heading p { display: none; }
+        }
       `}</style>
     </section>
   );

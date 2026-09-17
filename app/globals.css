@@ -1974,6 +1974,217 @@ span.token.table {
   animation: ui-menu-in var(--motion-fast) var(--ease-out-soft) both;
 }
 
+/* Top-bar controls and floating panels use one quiet, iOS-style visual
+   language instead of mixing full-height tabs with detached pill buttons. */
+.topbar-ios-button {
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 26px;
+  margin: 5px 2px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 11px;
+  white-space: nowrap;
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+.topbar-ios-button:hover,
+.topbar-ios-button.is-active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-selected) 84%, transparent);
+}
+.topbar-ios-button:active { transform: scale(0.96); }
+.branch-navigator-inline {
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+.branch-popover {
+  box-sizing: border-box;
+  overflow: hidden;
+  color: var(--text);
+}
+.branch-popover-heading {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 0.5px solid color-mix(in srgb, var(--border) 62%, transparent);
+  background: color-mix(in srgb, var(--assistant-bg) 42%, transparent);
+}
+.branch-popover-heading > span:last-child {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.branch-popover-heading strong { font-size: 13px; font-weight: 650; }
+.branch-popover-heading small { color: var(--text-dim); font-size: 10.5px; line-height: 1.35; }
+.branch-popover-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--assistant-bg));
+}
+.branch-popover-icon svg { width: 15px; height: 15px; }
+.branch-tree-scroll {
+  max-height: min(46dvh, 360px);
+  overflow-y: auto;
+  padding: 7px;
+}
+.branch-tree-row {
+  --branch-indent: calc(var(--branch-depth, 0) * 15px);
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px 5px calc(8px + var(--branch-indent));
+  border: 0.5px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--motion-fast) ease, border-color var(--motion-fast) ease,
+    transform var(--motion-fast) ease;
+}
+.branch-tree-row:hover {
+  background: color-mix(in srgb, var(--bg-hover) 78%, transparent);
+}
+.branch-tree-row:active { transform: scale(0.99); }
+.branch-tree-row.is-on-path { color: var(--text); }
+.branch-tree-row.is-active {
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--assistant-bg));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 70%, transparent);
+}
+.branch-tree-rail {
+  width: 14px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  position: relative;
+}
+.branch-tree-rail::before {
+  content: "";
+  position: absolute;
+  top: -12px;
+  bottom: 12px;
+  left: 6.5px;
+  width: 1px;
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+}
+.branch-tree-rail > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--assistant-bg);
+  border: 1.5px solid var(--text-dim);
+  position: relative;
+  z-index: 1;
+}
+.branch-tree-row.is-on-path .branch-tree-rail > span { border-color: var(--accent); }
+.branch-tree-row.is-active .branch-tree-rail > span {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.branch-role-badge {
+  min-width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: var(--bg-subtle);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+}
+.branch-role-badge.is-user {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--assistant-bg));
+}
+.branch-skipped {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.branch-tree-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+.branch-tree-row.is-active .branch-tree-label { font-weight: 600; }
+.branch-row-chevron { flex-shrink: 0; color: var(--text-dim); opacity: 0; transition: opacity var(--motion-fast) ease; }
+.branch-tree-row:hover .branch-row-chevron,
+.branch-tree-row.is-active .branch-row-chevron { opacity: 1; }
+.branch-popover-empty { padding: 22px 16px; color: var(--text-dim); text-align: center; font-size: 12px; }
+.branch-navigator-block { position: relative; flex-shrink: 0; }
+.branch-navigator-block-trigger {
+  width: calc(100% - 12px);
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 6px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+.branch-navigator-block-trigger:hover { background: var(--bg-hover); }
+.branch-popover-block { position: absolute; top: calc(100% + 6px); left: 6px; right: 6px; z-index: 100; }
+
+.session-sidebar-shell {
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 94%, var(--assistant-bg)), var(--bg-panel));
+}
+.session-sidebar-header-card,
+.session-sidebar-explorer {
+  -webkit-backdrop-filter: blur(20px) saturate(1.25);
+  backdrop-filter: blur(20px) saturate(1.25);
+}
+.session-sidebar-list {
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 640px) {
+  .topbar-ios-button {
+    width: 36px;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+  }
+}
+
 /* 菜单项：圆角悬浮项，无分隔线 */
 .ui-menu-item {
   border-radius: 9px;

@@ -379,6 +379,38 @@ test("file mention menu applies the measured upward height cap", () => {
   assert.equal(block.includes("maxHeight: \"min(48vh, 400px)\""), false);
 });
 
+test("@ palette exposes skills, plugin commands, and active plugin tools", () => {
+  const source = readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8");
+  assert.match(source, /command\.source === "skill" \|\| command\.source === "extension"/);
+  assert.match(source, /const nextValue = `\/\$\{item\.command\.name\}/);
+  assert.match(source, /tool\.active && !BUILTIN_TOOL_NAMES\.has\(tool\.name\)/);
+  assert.match(source, /chat\.usePluginTool/);
+  assert.match(source, /chat\.pluginTool/);
+  assert.match(source, /chat\.capabilitiesAndFiles/);
+  assert.match(source, /chat\.findCapabilities/);
+});
+
+test("visually distinguishes steering from follow-up messages", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(I18nProvider, null, React.createElement(ChatInput, {
+      onSend() {},
+      onAbort() {},
+      onSteer() {},
+      onFollowUp() {},
+      isStreaming: true,
+      queuedMessages: {
+        steering: ["adjust the current answer"],
+        followUp: ["do this after completion"],
+      },
+    })),
+  );
+
+  assert.match(html, /Steering the current response/);
+  assert.match(html, /Injected after the current tool step/);
+  assert.match(html, /Follow-up queued/);
+  assert.match(html, /Sent as the next message after the current run finishes/);
+});
+
 test("file mention menu remeasures when its layout container shifts the anchor", () => {
   const source = readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8");
   const start = source.indexOf("function subscribeUpwardMenuMaxHeight");

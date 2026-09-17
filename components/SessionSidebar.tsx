@@ -1017,7 +1017,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+    <div className="session-sidebar-shell" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {customPathOpen && (
         <DirectoryPicker
           initialPath={customPathValue}
@@ -1032,9 +1032,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       )}
       {/* Header */}
       <div
+        className="session-sidebar-header-card"
         style={{
-          padding: "12px 10px 10px",
-          borderBottom: "1px solid var(--border)",
+          margin: "8px 8px 6px",
+          padding: "10px",
+          border: "0.5px solid color-mix(in srgb, var(--border) 72%, transparent)",
+          borderRadius: 16,
+          background: "color-mix(in srgb, var(--assistant-bg) 58%, transparent)",
+          boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 82%, transparent), 0 8px 24px -18px rgba(0,0,0,.28)",
           flexShrink: 0,
         }}
       >
@@ -1686,7 +1691,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       <div
         ref={listScrollRef}
         onScroll={handleListScroll}
-        style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "0", minHeight: 80 }}
+        className="session-sidebar-list"
+        style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "2px 0 6px", minHeight: 80 }}
       >
         {loading && (
           <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
@@ -1747,8 +1753,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       {/* File Explorer section */}
       {(selectedCwdProp || selectedCwd) && (
         <div
+          className="session-sidebar-explorer"
           style={{
-            borderTop: "1px solid var(--border)",
+            margin: "0 6px 6px",
+            border: "0.5px solid color-mix(in srgb, var(--border) 70%, transparent)",
+            borderRadius: 14,
+            background: "color-mix(in srgb, var(--assistant-bg) 46%, transparent)",
             display: "flex",
             flexDirection: "column",
             flex: explorerOpen ? "1 1 0" : "0 0 auto",
@@ -2136,11 +2146,17 @@ function SessionItem({
         paddingLeft: depth > 0 ? depth * 12 + 10 : 10,
         paddingRight: 8,
         borderRadius: 10,
+        border: isSelected
+          ? "0.5px solid color-mix(in srgb, var(--accent) 25%, transparent)"
+          : "0.5px solid transparent",
         cursor: confirmDelete || renaming ? "default" : "pointer",
         background: confirmDelete
           ? "rgba(239,68,68,0.06)"
           : isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent",
         transition: "background 0.15s ease",
+        boxShadow: isSelected
+          ? "inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 65%, transparent), 0 5px 16px -14px rgba(0,0,0,.45)"
+          : "none",
         opacity: deleting ? 0.5 : 1,
         gap: 6,
         overflow: "hidden",
