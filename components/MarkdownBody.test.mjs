@@ -61,11 +61,29 @@ test("does not turn shell commands or external URLs in code spans into file acti
   assert.match(html, /https:\/\/example\.com\/file\.pdf/);
 });
 
+test("opens HTTP URLs in inline code as safe external links", () => {
+  const html = renderMarkdown("查看 `https://example.com/docs` 或 `www.example.com/help`");
+
+  assert.match(html, /class="markdown-inline-link-code"/);
+  assert.match(html, /href="https:\/\/example\.com\/docs"/);
+  assert.match(html, /href="https:\/\/www\.example\.com\/help"/);
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /rel="noopener noreferrer"/);
+  assert.doesNotMatch(html, /markdown-file-reference"/);
+});
+
 test("wraps remote markdown images in the same click-to-preview affordance", () => {
   const html = renderMarkdown("![generated](https://example.com/generated.webp)");
   assert.match(html, /aria-label="Preview image"/);
   assert.match(html, /src="https:\/\/example\.com\/generated\.webp"/);
   assert.match(html, /max-width:min\(100%, 420px\)/);
+});
+
+test("resolves local Markdown image URLs through the in-app file API", () => {
+  const html = renderMarkdown("![local](file:///home/me/project/output.png)");
+
+  assert.match(html, /aria-label="Preview image"/);
+  assert.match(html, /src="\/api\/files\/home\/me\/project\/output\.png\?type=read"/);
 });
 
 test("keeps file URLs inert without an in-app file handler", () => {

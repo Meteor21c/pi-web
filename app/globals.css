@@ -901,7 +901,8 @@ pre, code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.markdown-file-reference-icon {
+.markdown-file-reference-icon,
+.markdown-external-reference-icon {
   flex: 0 0 auto;
   color: var(--accent);
   font-size: 0.9em;

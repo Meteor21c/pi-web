@@ -48,9 +48,11 @@ used.
 Assistant images, image-tool results, and Markdown images use a compact
 thumbnail in the transcript (420 × 320 CSS pixels at most). Clicking a
 thumbnail opens the original in the accessible modal preview, so high-
-resolution output does not take over the conversation. Local image URLs are
 served through the existing file allow-list and can be opened in Magent's file
-panel; remote HTTP(S) images and links continue to open in a new browser tab.
+panel; Markdown `file:///...` images are converted to the same scoped API
+before loading. Remote HTTP(S) images stay in the modal preview, while normal
+external links—and URL-looking inline code such as `https://...` or
+`www....`—open in a new browser tab.
 
 Inline paths such as `/Users/me/output.png`, `C:\\Users\\me\\output.pdf`,
 `file:///...`, and source-location suffixes such as `report.pdf:12` are

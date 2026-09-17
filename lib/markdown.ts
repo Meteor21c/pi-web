@@ -15,6 +15,11 @@ const markdownSanitizeSchema = {
   protocols: {
     ...defaultSchema.protocols,
     href: [...(defaultSchema.protocols?.href ?? []), "file"],
+    // Local Markdown images are resolved by MarkdownBody through the scoped
+    // file API before they reach the browser. Keep file: out of ordinary
+    // links unless the caller explicitly opts into that handler, but allow it
+    // here so a `![preview](file:///...)` image is not stripped by sanitize.
+    src: [...(defaultSchema.protocols?.src ?? []), "file"],
   },
   strip: [...(defaultSchema.strip || []), "iframe", "object", "style", "form"],
 };

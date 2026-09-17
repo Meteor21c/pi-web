@@ -39,6 +39,21 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         }
         return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={isStreaming} />;
       }
+      const externalUrl = resolveExternalHttpUrl(raw);
+      if (externalUrl) {
+        return (
+          <a
+            href={externalUrl}
+            className="markdown-inline-link-code"
+            target="_blank"
+            rel="noopener noreferrer"
+            title={externalUrl}
+          >
+            <code className="markdown-inline-code">{children}</code>
+            <span className="markdown-external-reference-icon" aria-hidden="true">↗</span>
+          </a>
+        );
+      }
       const filePath = onOpenFile && looksLikeLocalFileReference(raw)
         ? resolveLocalFileReference(raw, cwd)
         : null;
@@ -146,4 +161,11 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       </ReactMarkdown>
     </div>
   );
+}
+
+function resolveExternalHttpUrl(value: string): string | null {
+  const candidate = value.trim();
+  if (/^https?:\/\//i.test(candidate)) return candidate;
+  if (/^www\./i.test(candidate)) return `https://${candidate}`;
+  return null;
 }

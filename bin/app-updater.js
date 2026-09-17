@@ -130,11 +130,21 @@ async function waitForPortClosed() {
 }
 
 function install(packagePath) {
-  runNpm([
-    "install", "-g", packagePath,
+  const args = ["install", "-g"];
+  // Launchers install MeteorAgent into a user-writable prefix on macOS.
+  // Carry that prefix into the detached updater so an in-app update does not
+  // unexpectedly fall back to /usr/local and fail with EACCES.
+  const npmPrefix = typeof process.env.METEORAGENT_NPM_PREFIX === "string"
+    && process.env.METEORAGENT_NPM_PREFIX.trim()
+    ? process.env.METEORAGENT_NPM_PREFIX.trim()
+    : undefined;
+  if (npmPrefix) args.push("--prefix", npmPrefix);
+  args.push(
+    packagePath,
     `--registry=${registry}`,
     "--no-audit", "--no-fund", "--loglevel=error",
-  ]);
+  );
+  runNpm(args);
 }
 
 function installedVersion() {
