@@ -11,7 +11,6 @@ import {
 } from "./SettingsUi";
 import { RelayAdvancedSettings } from "./RelayAdvancedSettings";
 import { syncRelayConfig } from "@/lib/relay-client";
-import { MeteorAgentDownloadLink } from "./MeteorAgentDownloadLink";
 
 interface RelayOnboardingProps {
   /** Called as soon as synchronization succeeds. Defaults to a full page reload. */
@@ -266,7 +265,6 @@ export function RelayOnboarding({ onSuccess, onPhaseChange }: RelayOnboardingPro
             >
               {t("brand.auth.registerHint")}
             </a>
-            <MeteorAgentDownloadLink variant="inline" />
           </div>
         </div>
 
@@ -362,7 +360,6 @@ export function RelayOnboarding({ onSuccess, onPhaseChange }: RelayOnboardingPro
           >
             {t("relay.onboarding.getToken")}
           </a>
-          <MeteorAgentDownloadLink variant="inline" />
         </div>
       </ConfigField>
 

@@ -2,8 +2,6 @@ import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 
 export const METEORAGENT_NAME = "MeteorAgent";
 export const METEORAGENT_SHORT_NAME = "Magent";
-/** Public download page used by relay onboarding and in-product cross-promo links. */
-export const METEORAGENT_DOWNLOAD_URL = "https://dl.meteor21c.fun";
 
 const UPSTREAM_DOCS_BLOCK = /\n\n[A-Z][a-z] documentation \(read only[\s\S]*?- Always read [a-z]+ \.md files completely and follow links to related docs \(e\.g\., tui\.md for TUI API details\)/;
 const UPSTREAM_PROMPT_SIGNATURE = /^You are an expert coding assistant operating inside [a-z]+, a coding agent harness\./;

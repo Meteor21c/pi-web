@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import type { RelayUsageReport } from "@/lib/relay-usage";
-import { MeteorAgentDownloadLink } from "./MeteorAgentDownloadLink";
 
 /**
  * meteor21c relay 用量面板。账户视图可显示余额；分组视图只显示
@@ -125,7 +124,6 @@ function RelayUsageContent({ providerId, showBalance }: { providerId: string; sh
     <section style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12, background: "var(--assistant-bg)", border: "1px solid var(--border)", borderRadius: 14 }}>
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 13, color: "var(--text)", fontWeight: 600, lineHeight: 1.35 }}>{t("relay.usage.title")}</span>
-        {showBalance && <MeteorAgentDownloadLink variant="inline" />}
         <button
           type="button"
           onClick={() => void query()}

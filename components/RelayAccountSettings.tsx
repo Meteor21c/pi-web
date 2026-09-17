@@ -4,7 +4,6 @@ import { useState } from "react";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
 import { ConfigButton } from "./SettingsUi";
-import { MeteorAgentDownloadLink } from "./MeteorAgentDownloadLink";
 
 /** Separate from MeteorAgent's optional local web-password session. */
 export function RelayAccountSettings() {
@@ -29,7 +28,6 @@ export function RelayAccountSettings() {
           {busy ? t("auth.loggingOut") : t("brand.account.switchLogout")}
         </ConfigButton>
         <a href="https://api.meteor21c.fun" target="_blank" rel="noreferrer">{t("brand.keys.consoleLink")}</a>
-        <MeteorAgentDownloadLink variant="inline" />
       </div>
       {error && <p role="alert">{t("auth.logoutFailed")}</p>}
     </section>

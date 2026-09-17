@@ -6,7 +6,6 @@ import { useI18n } from "@/hooks/useI18n";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import type { AppUpdateResponse } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
-import { MeteorAgentDownloadLink } from "./MeteorAgentDownloadLink";
 
 type WeatherInfo = { text: string; tempC: number };
 
@@ -238,7 +237,6 @@ export function NewSessionWelcome({ isMobile, chatInputRef }: { isMobile: boolea
             ))}
           </span>
         </div>
-        <MeteorAgentDownloadLink variant="banner" />
       </div>
     </div>
   );

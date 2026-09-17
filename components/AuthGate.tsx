@@ -17,7 +17,6 @@ import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
 import { RelayOnboarding, type RelayOnboardingPhase } from "./RelayOnboarding";
 import { BootSplash } from "./BootSplash";
-import { MeteorAgentDownloadLink } from "./MeteorAgentDownloadLink";
 
 const GATE_ENABLED = process.env.NEXT_PUBLIC_AUTH_GATE === "1";
 
@@ -235,8 +234,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
             >
               {REGISTER_URL}
             </a>
-            <span aria-hidden="true"> · </span>
-            <MeteorAgentDownloadLink variant="inline" />
           </div>
         </div>
       </div>
