@@ -55,6 +55,7 @@ const registry = "https://registry.npmmirror.com";
 const backupDirectory = dirname(payload.packagePath);
 let backupPath;
 let launchdWasUnloaded = false;
+let startedLauncherPid;
 
 function npmInvocation(args) {
   const candidates = [
@@ -87,7 +88,7 @@ function unloadLaunchAgent() {
   if (!existsSync(plist)) return;
   const domain = `gui/${process.getuid()}`;
   const result = spawnSync("launchctl", ["bootout", domain, plist], { encoding: "utf8" });
-  launchdWasUnloaded = result.status === 0;
+  if (result.status === 0) launchdWasUnloaded = true;
   log(`launchd bootout: ${result.status}`);
 }
 
@@ -162,9 +163,32 @@ function directStart() {
     stdio: ["ignore", out, out],
     env: childEnv,
   });
+  startedLauncherPid = child.pid;
   child.unref();
   closeSync(out);
   log(`started MeteorAgent pid ${child.pid}`);
+}
+
+async function stopReplacementService() {
+  if (process.platform === "darwin") unloadLaunchAgent();
+  if (startedLauncherPid) {
+    try {
+      if (process.platform === "win32") {
+        const result = spawnSync("taskkill.exe", ["/PID", String(startedLauncherPid), "/T", "/F"], {
+          encoding: "utf8",
+          windowsHide: true,
+        });
+        log(`taskkill replacement tree ${startedLauncherPid}: ${result.status}`);
+      } else {
+        process.kill(startedLauncherPid, "SIGTERM");
+        log(`sent SIGTERM to replacement launcher ${startedLauncherPid}`);
+      }
+    } catch (error) {
+      log(`replacement launcher ${startedLauncherPid} already stopped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  await waitForPortClosed();
+  startedLauncherPid = undefined;
 }
 
 function restartService() {
@@ -222,6 +246,8 @@ function unlinkIfPresent(path) {
 
 async function main() {
   log(`starting update to ${payload.targetVersion}`);
+  const previousVersion = installedVersion();
+  if (!previousVersion) throw new Error("Could not determine the installed MeteorAgent version");
   packBackup();
   stopOldService();
   await waitForPortClosed();
@@ -236,9 +262,13 @@ async function main() {
   } catch (error) {
     log(`update failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     try {
+      await stopReplacementService();
       if (backupPath) install(backupPath);
+      if (installedVersion() !== previousVersion) throw new Error("Rollback version does not match the previous installation");
       restartService();
+      if (!(await waitForHealthy(previousVersion))) throw new Error("Rolled-back service did not become healthy");
       log("rollback completed");
+      unlinkIfPresent(backupPath);
     } catch (rollbackError) {
       log(`rollback failed: ${rollbackError instanceof Error ? rollbackError.stack || rollbackError.message : String(rollbackError)}`);
     }

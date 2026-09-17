@@ -62,11 +62,15 @@ export function AppUpdatePrompt() {
   }, []);
 
   const loadInstallStatus = useCallback(async () => {
-    const response = await fetch("/api/app-update/install", { cache: "no-store" });
-    if (!response.ok) return;
-    const next = await response.json() as AppUpdateInstallStatus;
-    setStatus(next);
-    if (next.phase === "error" && next.message) setError(next.message);
+    try {
+      const response = await fetch("/api/app-update/install", { cache: "no-store" });
+      if (!response.ok) return;
+      const next = await response.json() as AppUpdateInstallStatus;
+      setStatus((current) => current?.phase === "preparing-restart" && next.phase === "idle" ? current : next);
+      if (next.phase === "error" && next.message) setError(next.message);
+    } catch {
+      // A short disconnect is expected while the independent updater restarts the service.
+    }
   }, []);
 
   useEffect(() => {

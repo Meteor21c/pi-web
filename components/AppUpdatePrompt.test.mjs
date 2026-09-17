@@ -8,6 +8,7 @@ test("the global update prompt uses the automatic install endpoint and health-ba
   assert.match(source, /\/api\/app-update\/install/);
   assert.match(source, /\/api\/relay-health/);
   assert.match(source, /window\.location\.reload\(\)/);
+  assert.match(source, /current\?\.phase === "preparing-restart" && next\.phase === "idle"/);
 });
 
 test("the update prompt checks again while a long-running app remains open", () => {
