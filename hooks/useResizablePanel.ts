@@ -10,6 +10,7 @@ import {
   type PointerEvent,
 } from "react";
 import { clampPanelWidth } from "@/lib/panel-layout";
+import { divideByUiScale } from "@/lib/ui-scale";
 
 interface DragState {
   pointerId: number;
@@ -18,6 +19,7 @@ interface DragState {
   target: HTMLDivElement;
   previousCursor: string;
   previousUserSelect: string;
+  collapseFired: boolean;
 }
 
 interface UseResizablePanelOptions {
@@ -31,6 +33,9 @@ interface UseResizablePanelOptions {
   minWidth: number;
   storageKey: string;
   widthRef: MutableRefObject<number>;
+  /** 拖拽的原始宽度低于该阈值时触发一次收起请求（拖过最小值→面板自动隐藏）。 */
+  collapseBelow?: number;
+  onCollapseRequest?: () => void;
 }
 
 interface CommitOptions {
@@ -61,12 +66,14 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
   const {
     ariaLabel,
     cssVariable,
+    collapseBelow,
     defaultWidth,
     getDefaultWidth,
     getMaxWidth,
     growthDirection,
     maxWidth,
     minWidth,
+    onCollapseRequest,
     storageKey,
     widthRef,
   } = options;
@@ -143,6 +150,7 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
       target,
       previousCursor: document.body.style.cursor,
       previousUserSelect: document.body.style.userSelect,
+      collapseFired: false,
     };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -158,12 +166,24 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     }
     event.preventDefault();
 
+    // clientX 差值是视觉像素；面板宽度是 CSS 像素——根 zoom 下需换算，
+    // 否则缩放后拖拽速度会被放大。
     const direction = growthDirection === "right" ? 1 : -1;
-    const nextWidth = clampWidth(drag.startWidth + ((event.clientX - drag.startX) * direction));
+    const rawWidth = drag.startWidth + divideByUiScale(event.clientX - drag.startX) * direction;
+
+    // 拖过收起阈值：触发一次收起请求并结束本次拖拽（父级隐藏面板）。
+    if (collapseBelow !== undefined && onCollapseRequest && !drag.collapseFired && rawWidth < collapseBelow) {
+      drag.collapseFired = true;
+      onCollapseRequest();
+      finishResize(event.pointerId);
+      return;
+    }
+
+    const nextWidth = clampWidth(rawWidth);
     applyLiveWidth(nextWidth);
     event.currentTarget.setAttribute("aria-valuenow", String(nextWidth));
     event.currentTarget.setAttribute("aria-valuetext", `${nextWidth} px`);
-  }, [applyLiveWidth, clampWidth, finishResize, growthDirection]);
+  }, [applyLiveWidth, clampWidth, collapseBelow, finishResize, growthDirection, onCollapseRequest]);
 
   const onPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     finishResize(event.pointerId);

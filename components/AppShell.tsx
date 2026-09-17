@@ -211,6 +211,9 @@ export function AppShell() {
   const sidebarResizer = useResizablePanel({
     ariaLabel: translate("layout.resizeSidebar"),
     cssVariable: "--sidebar-width",
+    // 拖到最小宽度以下 → 侧栏自动向左滑出隐藏（Codex 桌面端同款交互）。
+    collapseBelow: SIDEBAR_MIN_WIDTH,
+    onCollapseRequest: () => setSidebarOpen(false),
     defaultWidth: SIDEBAR_DEFAULT_WIDTH,
     getMaxWidth: getResponsiveSidebarMaxWidth,
     growthDirection: "right",
@@ -523,6 +526,22 @@ export function AppShell() {
   const initialSessionId = initialNavigation.sessionId;
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
   const activeProjectKeyRef = useRef<string | null>(null);
+
+  // First-run starter capabilities are installed into Pi's global package
+  // directory. Triggering this once a real project directory is known keeps
+  // the no-login development mode covered as well as the branded login flow;
+  // the server-side bootstrap is idempotent and never blocks the workspace.
+  useEffect(() => {
+    if (!activeCwd) return;
+    void fetch("/api/plugins/builtins", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cwd: activeCwd }),
+    }).catch(() => {
+      // Optional starter packages must not make the workspace unavailable.
+    });
+  }, [activeCwd]);
+
   // True once the initial ?session= URL param has been resolved (or confirmed absent)
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !initialSessionId);
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
