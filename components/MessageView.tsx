@@ -18,6 +18,8 @@ import { skillExpansionToCommand } from "@/lib/slash-display";
 import type { SubagentToolDetails } from "@/lib/subagent-extension";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { isRelayProviderId } from "@/lib/relay-config";
+import { resolveLocalFilePath } from "@/lib/file-links";
+import { encodeFilePathForApi } from "@/lib/file-paths";
 import type {
   AgentMessage,
   AgentUsage,
@@ -1016,7 +1018,7 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} onOpenSession={onOpenSession} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} onOpenSession={onOpenSession} cwd={cwd} sessionId={sessionId} />;
   }
   return null;
 }
@@ -1173,9 +1175,8 @@ function isSubagentToolDetails(value: unknown): value is SubagentToolDetails {
   return details.kind === "pi-web-subagent" && typeof details.sessionId === "string";
 }
 
-function ToolCallBlock({ block, result, duration, onOpenSession }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSession?: (sessionId: string) => void }) {
+function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSession?: (sessionId: string) => void; cwd?: string; sessionId?: string }) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
   const inputStr = getToolCallInputText(block);
   const isStreamingInput = block.rawInput !== undefined;
   const isEditTool = isEditToolName(block.toolName);
@@ -1185,10 +1186,18 @@ function ToolCallBlock({ block, result, duration, onOpenSession }: { block: Tool
   const resultText = result
     ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join("\n")
     : null;
-  const resultImages = getMessageImages(result?.content ?? []);
+  const resultImages = getToolResultImages(result, block.toolName, cwd, sessionId);
   const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
   const isError = result?.isError ?? false;
   const subagent = isSubagentToolDetails(result?.details) ? result.details : null;
+  const hasGeneratedImages = !isError && block.toolName === "image_generate" && resultImages.length > 0;
+  // Image generation is a user-facing result, not a diagnostic tool call. Open
+  // it as soon as the plugin returns its image details (including after the
+  // initial render, when the live tool result arrives asynchronously).
+  const [expanded, setExpanded] = useState(hasGeneratedImages);
+  useEffect(() => {
+    if (hasGeneratedImages) setExpanded(true);
+  }, [hasGeneratedImages]);
 
   return (
     <div
@@ -1847,6 +1856,48 @@ function getMessageText(content: CustomMessage["content"] | UserMessage["content
 function getMessageImages(content: CustomMessage["content"] | UserMessage["content"]): ImageContent[] {
   if (typeof content === "string") return [];
   return content.filter((b): b is ImageContent => b.type === "image");
+}
+
+function getToolResultImages(
+  result: ToolResultMessage | undefined,
+  toolName: string,
+  cwd?: string,
+  sessionId?: string,
+): ImageContent[] {
+  const contentImages = getMessageImages(result?.content ?? []);
+  if (!result || result.isError || toolName !== "image_generate" || !isRecord(result.details)) {
+    return contentImages;
+  }
+
+  const detailImages = Array.isArray(result.details.images) ? result.details.images : [];
+  const generated = detailImages.flatMap((value): ImageContent[] => {
+    const detail = typeof value === "string" ? { path: value } : isRecord(value) ? value : null;
+    if (!detail || typeof detail.path !== "string") return [];
+    const rawPath = detail.path.trim();
+    // pi-image-gen promises local output paths. Do not turn arbitrary remote or
+    // app URLs from an extension payload into an image request.
+    if (!rawPath || /^(?:https?|data|blob):/i.test(rawPath) || rawPath.startsWith("/api/")) return [];
+    const filePath = resolveLocalFilePath(rawPath, cwd);
+    if (!filePath) return [];
+    const sessionQuery = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
+    const mimeType = typeof detail.mimeType === "string" ? detail.mimeType : undefined;
+    return [{
+      type: "image",
+      source: {
+        type: "url",
+        ...(mimeType ? { media_type: mimeType } : {}),
+        url: `/api/files/${encodeFilePathForApi(filePath)}?type=read${sessionQuery}`,
+      },
+    } satisfies ImageContent];
+  });
+
+  const seen = new Set<string>();
+  return [...contentImages, ...generated].filter((image) => {
+    const source = imageSource(image);
+    if (!source || seen.has(source)) return false;
+    seen.add(source);
+    return true;
+  });
 }
 
 function imageSource(img: ImageContent): string {
