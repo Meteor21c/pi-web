@@ -2,13 +2,13 @@
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
+import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
-import { MessageView } from "./MessageView";
+import { getModelDisplayName, MessageView, type ImageBillingSummary } from "./MessageView";
 import { NewSessionWelcome } from "./NewSessionWelcome";
 import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
@@ -132,6 +132,43 @@ function withAssistantBlocks(
   return next;
 }
 
+function aggregateTurnUsage(messages: AgentMessage[], start: number, end: number): AgentUsage | undefined {
+  const usages = messages.slice(start, end + 1)
+    .filter((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.usage))
+    .map((message) => message.usage!);
+  if (usages.length === 0) return undefined;
+  return {
+    input: usages.reduce((sum, usage) => sum + usage.input, 0),
+    output: usages.reduce((sum, usage) => sum + usage.output, 0),
+    cacheRead: usages.reduce((sum, usage) => sum + usage.cacheRead, 0),
+    cacheWrite: usages.reduce((sum, usage) => sum + usage.cacheWrite, 0),
+    cost: {
+      input: usages.reduce((sum, usage) => sum + usage.cost.input, 0),
+      output: usages.reduce((sum, usage) => sum + usage.cost.output, 0),
+      cacheRead: usages.reduce((sum, usage) => sum + usage.cost.cacheRead, 0),
+      cacheWrite: usages.reduce((sum, usage) => sum + usage.cost.cacheWrite, 0),
+      total: usages.reduce((sum, usage) => sum + usage.cost.total, 0),
+    },
+  };
+}
+
+function aggregateTurnActualCost(
+  messages: AgentMessage[],
+  entryIds: string[],
+  start: number,
+  end: number,
+  costs: Record<string, { actualCost: number }>,
+): number | undefined {
+  const usageEntries = messages.slice(start, end + 1).flatMap((message, index) => {
+    if (message.role !== "assistant" || !message.usage) return [];
+    const entryId = entryIds[start + index];
+    const actualCost = entryId ? costs[entryId]?.actualCost : undefined;
+    return actualCost === undefined ? [undefined] : [actualCost];
+  });
+  if (usageEntries.length === 0 || usageEntries.some((value) => value === undefined)) return undefined;
+  return usageEntries.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+}
+
 function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   useLayoutEffect(() => {
@@ -174,6 +211,20 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
           {children}
         </div>
       )}
+    </div>
+  );
+}
+
+function TurnModelLabel({ message, modelNames }: { message: AssistantMessage; modelNames?: Record<string, string> }) {
+  if (!message.provider) return null;
+  return (
+    <div className="ui-turn-model-label" title={getModelDisplayName(message.provider, message.model, modelNames)}>
+      <span className="ui-stat-chip">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 3l1.9 5.4L19 10l-5.1 1.6L12 17l-1.9-5.4L5 10l5.1-1.6L12 3z" />
+        </svg>
+        {getModelDisplayName(message.provider, message.model, modelNames)}
+      </span>
     </div>
   );
 }
@@ -261,19 +312,44 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const hasRelayMessages = messages.some((message) => (
     message.role === "assistant" && isRelayProviderId((message as AssistantMessage).provider)
   ));
-  const relayCostRevision = `${entryIds.at(-1) ?? ""}:${entryIds.length}`;
+  const hasSuccessfulImageGeneration = messages.some((message) => {
+    if (message.role !== "toolResult" || message.toolName !== "image_generate" || message.isError) return false;
+    const details = message.details as { images?: unknown } | undefined;
+    return (Array.isArray(details?.images) && details.images.length > 0)
+      || (Array.isArray(message.content) && message.content.some((block) => block.type === "image"));
+  });
+  const relayCostRevision = `${entryIds.at(-1) ?? ""}:${entryIds.length}:${messages.length}:${hasSuccessfulImageGeneration ? "image" : ""}`;
   const relayActualCosts = useRelayActualCosts(
     persistedSessionId,
     relayCostRevision,
-    hasRelayMessages && !streamState.isStreaming,
+    (hasRelayMessages || hasSuccessfulImageGeneration) && !streamState.isStreaming,
   );
   const authoritativeSessionStats = useMemo(() => {
-    if (!sessionStats || !relayActualCosts.complete || relayActualCosts.relayTurnCount === 0) return sessionStats;
+    if (!sessionStats || !relayActualCosts.textChargesComplete || relayActualCosts.relayTurnCount === 0) return sessionStats;
     return {
       ...sessionStats,
       cost: Math.max(0, sessionStats.cost - relayActualCosts.estimatedRelayCost + relayActualCosts.actualRelayCost),
     };
   }, [sessionStats, relayActualCosts]);
+  const imageBillingByAnchor = useMemo(() => {
+    const byAnchor = new Map<string, ImageBillingSummary>();
+    for (const charge of relayActualCosts.imageCharges) {
+      const current = byAnchor.get(charge.anchorEntryId) ?? {
+        imageCount: 0,
+        chargeCount: 0,
+        matchedChargeCount: 0,
+        actualCost: 0,
+      };
+      current.imageCount += charge.imageCount;
+      current.chargeCount += 1;
+      if (charge.actualCost !== undefined) {
+        current.matchedChargeCount += 1;
+        current.actualCost += charge.actualCost;
+      }
+      byAnchor.set(charge.anchorEntryId, current);
+    }
+    return byAnchor;
+  }, [relayActualCosts.imageCharges]);
   const sessionBusy = agentRunning || bashRunning;
   const selectedImageModel = imageGeneration.models.find((model) => model.isDefault);
   const handleImageModelChange = useCallback(async (providerId: string, modelId: string) => {
@@ -1038,7 +1114,17 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 if (idx === lastUserIdx) { (lastUserMsgRef as { current: HTMLDivElement | null }).current = el; }
               };
 
-              const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; writtenFiles?: WrittenFile[] } = {}): ReactNode => {
+              const renderMessage = (idx: number, options: {
+                attachRef?: boolean;
+                keyPrefix?: string;
+                messageOverride?: AgentMessage;
+                showTimestamp?: boolean;
+                showModel?: boolean;
+                compactUsage?: boolean;
+                usageOverride?: AgentUsage;
+                actualCost?: number;
+                writtenFiles?: WrittenFile[];
+              } = {}): ReactNode => {
                 const msg = options.messageOverride ?? messages[idx];
                 const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
                 const currentRefIdx = visibleRefIndexByMessage.get(idx);
@@ -1076,7 +1162,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     showTimestamp={showTimestamp}
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
-                    actualCost={entryIds[idx] ? relayActualCosts.costs[entryIds[idx]]?.actualCost : undefined}
+                    actualCost={options.actualCost ?? (entryIds[idx] ? relayActualCosts.costs[entryIds[idx]]?.actualCost : undefined)}
+                    usageOverride={options.usageOverride}
+                    showModel={options.showModel}
+                    compactUsage={options.compactUsage}
+                    imageBilling={entryIds[idx] ? imageBillingByAnchor.get(entryIds[idx]) : undefined}
                     writtenFiles={options.writtenFiles}
                   />
                 );
@@ -1113,8 +1203,23 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
                 const isLiveTail = (sessionBusy || streamState.isStreaming) && endIdx === messages.length && userIdx === lastAnchorIdx;
                 if (isLiveTail) {
+                  const liveModelMessage = messages.slice(userIdx + 1, endIdx)
+                    .find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
+                  if (liveModelMessage) {
+                    rendered.push(
+                      <TurnModelLabel
+                        key={`turn-model-live-${entryIds[userIdx] ?? userIdx}`}
+                        message={liveModelMessage}
+                        modelNames={modelNames}
+                      />,
+                    );
+                  }
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-                    rendered.push(renderMessage(renderIdx));
+                    const liveMessage = messages[renderIdx];
+                    rendered.push(renderMessage(renderIdx, {
+                      showModel: liveMessage.role === "user" ? undefined : false,
+                      compactUsage: liveMessage.role === "assistant",
+                    }));
                   }
                   idx = endIdx;
                   continue;
@@ -1123,6 +1228,25 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 rendered.push(renderMessage(userIdx));
 
                 const finalAssistant = messages[finalAssistantIdx] as AssistantMessage;
+                const turnModelMessage = messages.slice(userIdx + 1, endIdx)
+                  .find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
+                const turnUsage = aggregateTurnUsage(messages, userIdx + 1, finalAssistantIdx);
+                const turnActualCost = aggregateTurnActualCost(
+                  messages,
+                  entryIds,
+                  userIdx + 1,
+                  finalAssistantIdx,
+                  relayActualCosts.costs,
+                );
+                if (turnModelMessage) {
+                  rendered.push(
+                    <TurnModelLabel
+                      key={`turn-model-${entryIds[userIdx] ?? userIdx}`}
+                      message={turnModelMessage}
+                      modelNames={modelNames}
+                    />,
+                  );
+                }
                 const finalSplit = splitFinalAssistantBlocks(finalAssistant);
                 const finalAnswerMessage = finalSplit.answerBlocks.length > 0 || getAssistantErrorMessage(finalAssistant)
                   ? withAssistantBlocks(finalAssistant, finalSplit.answerBlocks)
@@ -1158,6 +1282,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     keyPrefix: "process",
                     messageOverride: message,
                     showTimestamp: false,
+                    showModel: false,
+                    compactUsage: true,
                   }));
                 }
 
@@ -1188,9 +1314,12 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   }
                   const writtenFiles = extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd);
                   rendered.push(renderMessage(finalAssistantIdx, {
-                    messageOverride: finalAnswerMessage,
-                    writtenFiles,
-                  }));
+                  messageOverride: finalAnswerMessage,
+                  showModel: false,
+                  usageOverride: turnUsage,
+                  actualCost: turnActualCost,
+                  writtenFiles,
+                }));
                 }
                 for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
                   rendered.push(renderMessage(renderIdx));

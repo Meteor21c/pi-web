@@ -11,7 +11,7 @@ const jiti = createJiti(import.meta.url, {
 });
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
-const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile } = await jiti.import("./ChatInput.tsx");
+const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canClearBuiltinCommandInput, canRestoreUserMessage, canRunBuiltinSlashCommandWhileStreaming, compressImageFile, cycleListIndex, filterModelOptions, filterUserFacingSlashCommands, getSlashCommandInsertText, getSlashCommandPresentation, getSlashCommandSearchText, getUpwardMenuMaxHeight, getUserMessageText, getUserMessageDraftImages, isExactSlashCommand, isImageGenerationExtensionCommand, modelSupportsImageInput, replaceLinksWithMarkdown, shouldCompressImageFile } = await jiti.import("./ChatInput.tsx");
 const { ModelSelector } = await jiti.import("./ModelSelector.tsx");
 const { clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft, setDraft } = await jiti.import("@/lib/draft-store.ts");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
@@ -382,12 +382,39 @@ test("file mention menu applies the measured upward height cap", () => {
 test("@ palette exposes skills, plugin commands, and active plugin tools", () => {
   const source = readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8");
   assert.match(source, /command\.source === "skill" \|\| command\.source === "extension"/);
-  assert.match(source, /const nextValue = `\/\$\{item\.command\.name\}/);
+  assert.match(source, /const commandPrefix = getSlashCommandInsertText\(item\.command\)/);
   assert.match(source, /tool\.active && !BUILTIN_TOOL_NAMES\.has\(tool\.name\)/);
   assert.match(source, /chat\.usePluginTool/);
   assert.match(source, /chat\.pluginTool/);
   assert.match(source, /chat\.capabilitiesAndFiles/);
   assert.match(source, /chat\.findCapabilities/);
+});
+
+test("makes the image extension and image skill distinct", () => {
+  const extension = {
+    name: "image-gen",
+    source: "extension",
+    sourceInfo: { source: "npm:@amaster.ai/pi-image-gen", path: "/tmp/pi-image-gen/dist/index.js" },
+  };
+  const skill = { name: "skill:image-gen", source: "skill" };
+  const translate = (key) => ({
+    "chat.imageDirectCommandLabel": "image generation (legacy)",
+    "chat.imageSkillCommandLabel": "generate an image",
+    "chat.imageDirectCommandDescription": "direct image",
+    "chat.imageSkillCommandDescription": "assistant image",
+  }[key] ?? key);
+
+  assert.equal(isImageGenerationExtensionCommand(extension), true);
+  assert.equal(getSlashCommandInsertText(extension), "/image-gen generate ");
+  assert.equal(getSlashCommandPresentation(extension, translate).label, "image generation (legacy)");
+  assert.equal(getSlashCommandPresentation(extension, translate).mode, "direct");
+  assert.equal(getSlashCommandPresentation(skill, translate).label, "generate an image");
+  assert.equal(getSlashCommandPresentation(skill, translate).description, "assistant image");
+  assert.equal(getSlashCommandPresentation(skill, translate).mode, "assistant");
+  assert.match(getSlashCommandSearchText(skill, translate), /generate an image/);
+  assert.match(getSlashCommandSearchText(skill, translate), /assistant image/);
+  assert.deepEqual(filterUserFacingSlashCommands([extension, skill]), [skill]);
+  assert.deepEqual(filterUserFacingSlashCommands([extension]), [extension]);
 });
 
 test("visually distinguishes steering from follow-up messages", () => {

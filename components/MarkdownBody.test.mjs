@@ -46,6 +46,28 @@ test("keeps local file markdown links in the app", () => {
   assert.doesNotMatch(fileUrlHtml, /target=|rel=|\snode=/);
 });
 
+test("turns inline local paths into clickable in-app file references", () => {
+  const html = renderMarkdown("生成完成：`/home/me/project/output.png`");
+  assert.match(html, /class="markdown-file-reference"/);
+  assert.match(html, /aria-label="Open in Magent: \/home\/me\/project\/output\.png"/);
+  assert.match(html, /<code class="markdown-inline-code">\/home\/me\/project\/output\.png<\/code>/);
+  assert.doesNotMatch(html, /node="\[object Object\]"/);
+});
+
+test("does not turn shell commands or external URLs in code spans into file actions", () => {
+  const html = renderMarkdown("`rm database.db` and `https://example.com/file.pdf`");
+  assert.doesNotMatch(html, /markdown-file-reference/);
+  assert.match(html, /rm database\.db/);
+  assert.match(html, /https:\/\/example\.com\/file\.pdf/);
+});
+
+test("wraps remote markdown images in the same click-to-preview affordance", () => {
+  const html = renderMarkdown("![generated](https://example.com/generated.webp)");
+  assert.match(html, /aria-label="Preview image"/);
+  assert.match(html, /src="https:\/\/example\.com\/generated\.webp"/);
+  assert.match(html, /max-width:min\(100%, 420px\)/);
+});
+
 test("keeps file URLs inert without an in-app file handler", () => {
   const html = renderMarkdown("[report](file:///home/me/project/report.html)", { onOpenFile: undefined });
 

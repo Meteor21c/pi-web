@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { RelayActualCostMatch, RelayActualCostsResult } from "@/lib/relay-actual-cost";
+import type { RelayActualCostMatch, RelayActualCostsResult, RelayImageCharge } from "@/lib/relay-actual-cost";
 
 export interface RelayActualCostState extends RelayActualCostsResult {
   loading: boolean;
@@ -13,12 +13,24 @@ const EMPTY: RelayActualCostState = {
   matchedTurnCount: 0,
   estimatedRelayCost: 0,
   actualRelayCost: 0,
+  imageCharges: [],
+  imageChargeCount: 0,
+  matchedImageChargeCount: 0,
+  actualImageCost: 0,
+  textChargesComplete: false,
+  imageChargesComplete: true,
   complete: false,
   loading: false,
 };
 
 function isCostMap(value: unknown): value is Record<string, RelayActualCostMatch> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isImageCharges(value: unknown): value is RelayImageCharge[] {
+  return Array.isArray(value) && value.every((item) => (
+    Boolean(item && typeof item === "object" && typeof (item as RelayImageCharge).entryId === "string")
+  ));
 }
 
 export function useRelayActualCosts(
@@ -53,6 +65,12 @@ export function useRelayActualCosts(
           matchedTurnCount: finite(payload.matchedTurnCount),
           estimatedRelayCost: finite(payload.estimatedRelayCost),
           actualRelayCost: finite(payload.actualRelayCost),
+          imageCharges: isImageCharges(payload.imageCharges) ? payload.imageCharges : [],
+          imageChargeCount: finite(payload.imageChargeCount),
+          matchedImageChargeCount: finite(payload.matchedImageChargeCount),
+          actualImageCost: finite(payload.actualImageCost),
+          textChargesComplete: payload.textChargesComplete === true,
+          imageChargesComplete: payload.imageChargesComplete !== false,
           complete: payload.complete === true,
           loading: false,
         };

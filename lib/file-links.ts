@@ -35,6 +35,36 @@ function stripLineSuffix(filePath: string): string {
   return filePath.replace(/:\d+(?::\d+)?$/, "");
 }
 
+/**
+ * Keep inline-code path detection conservative. Markdown code spans are also
+ * commonly used for shell commands, package names, and short identifiers, so
+ * only absolute paths, explicit relative paths, file URLs, and filename-like
+ * values are eligible for an "open in Magent" affordance.
+ */
+export function looksLikeLocalFileReference(value: string): boolean {
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 2048 || /[\r\n]/.test(candidate)) return false;
+  if (/^file:/i.test(candidate)) return true;
+  // A filename such as `report.pdf:12` is a valid source-location reference;
+  // only reject URL schemes here. Windows drive paths are handled below.
+  if (/^(?:https?|ftp|mailto|data|javascript|blob):/i.test(candidate) || /^[a-z][a-z\d+.-]*:\/\//i.test(candidate)) return false;
+
+  const withoutLine = stripLineSuffix(candidate);
+  const isAbsolute = withoutLine.startsWith("/")
+    || /^[a-zA-Z]:[\\/]/.test(withoutLine)
+    || withoutLine.startsWith("\\\\");
+  if (isAbsolute) return withoutLine.length > 1;
+  if (/^\.{1,2}[\\/]/.test(withoutLine)) return true;
+  if (/\s/.test(withoutLine)) return false;
+
+  // A bare filename is useful for generated outputs such as report.pdf or
+  // golden-hamster.png. Extensionless conventional project files are included
+  // without making arbitrary words clickable.
+  const basename = withoutLine.replace(/[\\/]$/, "").split(/[\\/]/).pop() ?? withoutLine;
+  if (/^(?:Makefile|Dockerfile|Gemfile|Rakefile|Procfile|README(?:\.[A-Za-z0-9_-]+)?|\.env(?:\.[A-Za-z0-9_-]+)?)$/i.test(basename)) return true;
+  return /\.[A-Za-z0-9][A-Za-z0-9._-]{0,31}(?::\d+(?::\d+)?)?$/.test(basename);
+}
+
 function normalizeLocalPath(filePath: string): string {
   const normalized = normalizeFilePathSlashes(filePath);
   const isWindowsDrive = /^[a-zA-Z]:\//.test(normalized);
@@ -164,4 +194,26 @@ export function resolveLocalFilePath(filePath: string | undefined, baseDir?: str
   }
 
   return normalizeLocalPath(candidate);
+}
+
+/** Resolve a conservative inline-code file reference against the workspace. */
+export function resolveLocalFileReference(
+  value: string | undefined,
+  baseDir?: string,
+  relativeRoot = baseDir,
+): string | null {
+  if (!value || !looksLikeLocalFileReference(value)) return null;
+  // The href resolver intentionally recognizes line suffixes on absolute
+  // links; remove the suffix first for relative bare filenames so they pass
+  // the filename heuristic as well.
+  const normalized = value.trim().replace(/:\d+(?::\d+)?$/, "");
+  const resolved = resolveLocalFileHref(normalized, baseDir, relativeRoot);
+  if (resolved) return resolved;
+  if (
+    baseDir
+    && /^(?:Makefile|Dockerfile|Gemfile|Rakefile|Procfile|README|\.env)$/i.test(normalized)
+  ) {
+    return resolveLocalFilePath(normalized, baseDir);
+  }
+  return null;
 }

@@ -2,10 +2,12 @@
 
 import { useMemo, type MouseEvent } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import { resolveLocalFileHref, shouldOpenLocalFileInApp } from "@/lib/file-links";
+import { useI18n } from "@/hooks/useI18n";
+import { looksLikeLocalFileReference, resolveLocalFileHref, resolveLocalFileReference, shouldOpenLocalFileInApp } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins, markdownUrlTransform, normalizeDisplayMath } from "@/lib/markdown";
 import { MermaidBlock, CodeBlock } from "./MermaidBlock";
+import { ImagePreview } from "./ImagePreview";
 
 interface MarkdownBodyProps {
   children: string;
@@ -16,10 +18,12 @@ interface MarkdownBodyProps {
 }
 
 export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
+  const { t } = useI18n();
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
     code({ className, children, ...props }) {
+      delete props.node;
       const lang = className?.replace("language-", "").toLowerCase() ?? "";
       const raw = String(children);
       const isBlock = className?.includes("language-") || raw.includes("\n");
@@ -34,6 +38,23 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
           );
         }
         return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={isStreaming} />;
+      }
+      const filePath = onOpenFile && looksLikeLocalFileReference(raw)
+        ? resolveLocalFileReference(raw, cwd)
+        : null;
+      if (filePath && onOpenFile) {
+        return (
+          <button
+            type="button"
+            className="markdown-file-reference"
+            title={filePath}
+            aria-label={t("chat.openFile", { file: filePath })}
+            onClick={() => onOpenFile(filePath)}
+          >
+            <code className="markdown-inline-code">{children}</code>
+            <span className="markdown-file-reference-icon" aria-hidden="true">↗</span>
+          </button>
+        );
       }
       return (
         <code
@@ -80,9 +101,29 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       const imageSrc = filePath
         ? `/api/files/${encodeFilePathForApi(filePath)}?type=read`
         : src;
+      if (typeof imageSrc !== "string" || !imageSrc) return null;
       // Dynamic local paths are served directly by the file API.
-      // eslint-disable-next-line @next/next/no-img-element
-      return <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props} />;
+      return (
+        <ImagePreview src={imageSrc} alt={alt ?? ""}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            {...props}
+            src={imageSrc}
+            alt={alt ?? ""}
+            loading="lazy"
+            decoding="async"
+            style={{
+              display: "block",
+              maxWidth: "min(100%, 420px)",
+              maxHeight: 320,
+              objectFit: "contain",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              ...(props.style as React.CSSProperties | undefined),
+            }}
+          />
+        </ImagePreview>
+      );
     },
     table({ children }) {
       return (
@@ -91,7 +132,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         </div>
       );
     },
-  }), [cwd, isStreaming, onOpenFile]);
+  }), [cwd, isStreaming, onOpenFile, t]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>

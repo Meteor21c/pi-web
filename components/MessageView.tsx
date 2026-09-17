@@ -20,6 +20,7 @@ import { formatUsdPrecise } from "@/lib/currency-format";
 import { isRelayProviderId } from "@/lib/relay-config";
 import type {
   AgentMessage,
+  AgentUsage,
   UserMessage,
   AssistantMessage,
   CustomMessage,
@@ -151,6 +152,10 @@ function SafeMarkdownBody({ children, className, ...props }: React.ComponentProp
 // Cap the user "sent" bubble's height so an abnormally long message does not
 // push the conversation off screen; overflow scrolls inside the bubble.
 const USER_BUBBLE_MAX_HEIGHT = 300;
+// Generated images remain useful as a glanceable result without taking over
+// the conversation. ImagePreview opens the original at full size on click.
+const IMAGE_THUMBNAIL_MAX_WIDTH = 420;
+const IMAGE_THUMBNAIL_MAX_HEIGHT = 320;
 
 function loadThinkingContent(sessionId: string, entryId: string, blockIndex: number): Promise<string> {
   const key = `${sessionId}:${entryId}:${blockIndex}`;
@@ -200,6 +205,14 @@ interface Props {
   sessionId?: string;
   /** Authoritative charge returned by the relay usage ledger for this response. */
   actualCost?: number;
+  /** Aggregated usage for the whole user turn, shown on its final answer. */
+  usageOverride?: AgentUsage;
+  /** Hide the model label when the parent renders one shared turn header. */
+  showModel?: boolean;
+  /** Render an intermediate assistant step's usage as quiet inline text. */
+  compactUsage?: boolean;
+  /** Image-generation charges belonging to this user request's final answer. */
+  imageBilling?: ImageBillingSummary;
   /**
    * Files this turn wrote, derived by the caller from the whole turn's
    * successful write/edit tool calls. ChatWindow computes this because the
@@ -207,6 +220,13 @@ interface Props {
    * final answer text-only.
    */
   writtenFiles?: WrittenFile[];
+}
+
+export interface ImageBillingSummary {
+  imageCount: number;
+  chargeCount: number;
+  matchedChargeCount: number;
+  actualCost: number;
 }
 
 export function getModelDisplayName(
@@ -274,12 +294,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} actualCost={actualCost} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -312,6 +332,10 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.showTimestamp === next.showTimestamp
     && prev.prevTimestamp === next.prevTimestamp
     && prev.actualCost === next.actualCost
+    && prev.usageOverride === next.usageOverride
+    && prev.showModel === next.showModel
+    && prev.compactUsage === next.compactUsage
+    && prev.imageBilling === next.imageBilling
     && prev.writtenFiles === next.writtenFiles
     && prev.sessionId === next.sessionId;
 });
@@ -613,6 +637,10 @@ function AssistantMessageView({
   entryId,
   searchBlock,
   actualCost,
+  usageOverride,
+  showModel = true,
+  compactUsage = false,
+  imageBilling,
   writtenFiles,
 }: {
   message: AssistantMessage;
@@ -628,6 +656,10 @@ function AssistantMessageView({
   entryId?: string;
   searchBlock?: AssistantContentBlock;
   actualCost?: number;
+  usageOverride?: AgentUsage;
+  showModel?: boolean;
+  compactUsage?: boolean;
+  imageBilling?: ImageBillingSummary;
   writtenFiles?: WrittenFile[];
 }) {
   const { t } = useI18n();
@@ -766,7 +798,7 @@ function AssistantMessageView({
       onMouseLeave={() => setHovered(false)}
     >
       {/* Model label */}
-      <div
+      {(showModel && message.provider || isStreaming) && <div
         style={{
           fontSize: 11,
           color: "var(--text-dim)",
@@ -776,7 +808,7 @@ function AssistantMessageView({
           gap: 6,
         }}
       >
-        {message.provider && (
+        {showModel && message.provider && (
           <span className="ui-stat-chip" title={getModelDisplayName(message.provider, message.model, modelNames)}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 3l1.9 5.4L19 10l-5.1 1.6L12 17l-1.9-5.4L5 10l5.1-1.6L12 3z" />
@@ -810,7 +842,7 @@ function AssistantMessageView({
             </>
           );
         })()}
-      </div>
+      </div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blockItems.map(({ block, originalIndex }) => (
@@ -846,44 +878,84 @@ function AssistantMessageView({
       <div style={{
         display: "flex", alignItems: "center", gap: 8, marginTop: 4,
       }}>
-        {message.usage && !isStreaming && (() => {
+      {!isStreaming && (() => {
+          const usage = usageOverride ?? message.usage;
+          if (!usage && (!imageBilling || imageBilling.chargeCount === 0)) return null;
+          if (compactUsage) {
+            if (!usage) return null;
+            const compactParts = [
+              usage.input > 0 ? `${t("session.input")} ${usage.input.toLocaleString()}` : null,
+              usage.output > 0 ? `${t("session.output")} ${usage.output.toLocaleString()}` : null,
+              usage.cacheRead > 0 ? `${t("session.cacheRead")} ${usage.cacheRead.toLocaleString()}` : null,
+              usage.cacheWrite > 0 ? `${t("session.cacheWrite")} ${usage.cacheWrite.toLocaleString()}` : null,
+              (actualCost !== undefined || usage.cost?.total > 0)
+                ? `${t("relay.usage.estimatedChargeShort")} ${formatUsdPrecise(actualCost ?? usage.cost.total)}`
+                : null,
+            ].filter((part): part is string => Boolean(part));
+            if (compactParts.length === 0) return null;
+            return (
+              <div className="ui-usage-compact" title={t("relay.usage.intermediateStats")}>
+                {compactParts.join(" · ")}
+              </div>
+            );
+          }
           const costTip = actualCost !== undefined
             ? t("relay.usage.actualCharge")
             : isRelayProviderId(message.provider) ? t("relay.usage.estimatedCharge") : t("session.cost");
           const cost = actualCost !== undefined
             ? formatUsdPrecise(actualCost)
-            : message.usage.cost?.total ? formatUsdPrecise(message.usage.cost.total) : null;
+            : usage?.cost?.total ? formatUsdPrecise(usage.cost.total) : null;
+          const summaryTip = (label: string) => usageOverride
+            ? t("relay.usage.turnSummary", { label })
+            : label;
           const arrow = "M12 19V5m-7 7 7-7 7 7";
           return (
             <div className="ui-stat-row">
-              {message.usage.input > 0 && (
-                <span className="ui-stat-chip" data-tip={t("session.input")}>
+              {usage && usage.input > 0 && (
+                <span className="ui-stat-chip" data-tip={summaryTip(t("session.input"))}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={arrow} /></svg>
-                  {message.usage.input.toLocaleString()}
+                  {usage.input.toLocaleString()}
                 </span>
               )}
-              {message.usage.output > 0 && (
-                <span className="ui-stat-chip" data-tip={t("session.output")}>
+              {usage && usage.output > 0 && (
+                <span className="ui-stat-chip" data-tip={summaryTip(t("session.output"))}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v14" /><path d="m19 12-7 7-7-7" /></svg>
-                  {message.usage.output.toLocaleString()}
+                  {usage.output.toLocaleString()}
                 </span>
               )}
-              {message.usage.cacheRead > 0 && (
-                <span className="ui-stat-chip" data-tip={t("session.cacheRead")}>
+              {usage && usage.cacheRead > 0 && (
+                <span className="ui-stat-chip" data-tip={summaryTip(t("session.cacheRead"))}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" /></svg>
-                  {message.usage.cacheRead.toLocaleString()}
+                  {usage.cacheRead.toLocaleString()}
                 </span>
               )}
-              {message.usage.cacheWrite > 0 && (
-                <span className="ui-stat-chip" data-tip={t("session.cacheWrite")}>
+              {usage && usage.cacheWrite > 0 && (
+                <span className="ui-stat-chip" data-tip={summaryTip(t("session.cacheWrite"))}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 14 9 5 9-5" /></svg>
-                  {message.usage.cacheWrite.toLocaleString()}
+                  {usage.cacheWrite.toLocaleString()}
                 </span>
               )}
               {cost && (
-                <span className="ui-stat-chip" data-tip={costTip}>
+                <span className="ui-stat-chip" data-tip={summaryTip(costTip)}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M14.8 9.7c-.4-1-1.5-1.7-2.8-1.7-1.6 0-2.9.9-2.9 2.1 0 1.2 1.1 1.8 2.9 2.1 1.8.3 2.9 1 2.9 2.2 0 1.2-1.3 2.1-2.9 2.1-1.4 0-2.5-.7-2.9-1.7" /><path d="M12 6.8v10.4" /></svg>
                   {cost}
+                </span>
+              )}
+              {imageBilling && imageBilling.chargeCount > 0 && (
+                <span
+                  className={`ui-stat-chip ui-stat-chip-image ${imageBilling.matchedChargeCount === imageBilling.chargeCount ? "is-synced" : "is-pending"}`}
+                  data-tip={imageBilling.matchedChargeCount === imageBilling.chargeCount
+                    ? t("relay.usage.imageChargeSynced", { count: imageBilling.chargeCount })
+                    : t("relay.usage.imageChargePending", { count: imageBilling.chargeCount - imageBilling.matchedChargeCount })}
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="2" />
+                    <circle cx="8.5" cy="9" r="1.4" />
+                    <path d="m21 15-4.5-4.5L9 18l-2.5-2.5L3 19" />
+                  </svg>
+                  {imageBilling.matchedChargeCount === imageBilling.chargeCount
+                    ? t("relay.usage.imageCharge", { cost: formatUsdPrecise(imageBilling.actualCost) })
+                    : t("relay.usage.syncing")}
                 </span>
               )}
             </div>
@@ -967,8 +1039,8 @@ function AssistantImageBlock({ block }: { block: ImageContent }) {
           loading="lazy"
           style={{
             display: "block",
-            maxWidth: "min(100%, 720px)",
-            maxHeight: 520,
+            maxWidth: `min(100%, ${IMAGE_THUMBNAIL_MAX_WIDTH}px)`,
+            maxHeight: IMAGE_THUMBNAIL_MAX_HEIGHT,
             borderRadius: 8,
             objectFit: "contain",
             border: "1px solid var(--border)",
@@ -1481,8 +1553,8 @@ function PairedResult({ text, images, isEmpty, isError }: {
                   loading="lazy"
                   style={{
                     display: "block",
-                    maxWidth: "min(100%, 720px)",
-                    maxHeight: 520,
+                    maxWidth: `min(100%, ${IMAGE_THUMBNAIL_MAX_WIDTH}px)`,
+                    maxHeight: IMAGE_THUMBNAIL_MAX_HEIGHT,
                     borderRadius: 6,
                     objectFit: "contain",
                     border: "1px solid var(--border)",

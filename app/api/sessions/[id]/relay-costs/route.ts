@@ -3,6 +3,7 @@ import { getRpcSession } from "@/lib/rpc-manager";
 import { getSessionEntries, resolveSessionPath } from "@/lib/session-reader";
 import { isRelayProviderId } from "@/lib/relay-config";
 import { queryRelayActualCosts, type RelayTurnUsage } from "@/lib/relay-actual-cost";
+import { discoverRelayImageBillingEntries } from "@/lib/relay-image-billing";
 
 function finiteNonNegative(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
@@ -66,7 +67,12 @@ export async function GET(
       });
     }
 
-    const result = await queryRelayActualCosts(turns);
+    // Discover successful image calls from older sessions too.  Prior to the
+    // billing marker being introduced, the tool result is the only local
+    // record of the image request, so waiting for a new agent_end would leave
+    // the charge invisible forever.
+    const imageCharges = discoverRelayImageBillingEntries(entries as import("@/lib/types").SessionEntry[]);
+    const result = await queryRelayActualCosts(turns, {}, imageCharges);
     return NextResponse.json({ status: "ready", ...result }, {
       headers: { "Cache-Control": "private, no-store" },
     });

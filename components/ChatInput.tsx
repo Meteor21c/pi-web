@@ -219,8 +219,21 @@ type BuiltinSlashCommand = {
 
 type SlashCommandPaletteItem = SlashCommandInfo | BuiltinSlashCommand;
 
+type SlashCommandMode = "direct" | "assistant";
+
+export interface SlashCommandPresentation {
+  /** Text shown in the command card. */
+  label: string;
+  /** User-facing explanation of what happens after submission. */
+  description: string;
+  /** Text inserted into the composer when the card is selected. */
+  insertText: string;
+  /** Whether the command executes itself or is expanded for the assistant. */
+  mode: SlashCommandMode;
+}
+
 type AtPaletteItem =
-  | { kind: "command"; command: SlashCommandInfo }
+  | { kind: "command"; command: SlashCommandPaletteItem }
   | { kind: "tool"; tool: ToolEntry }
   | { kind: "file"; entry: FileIndexEntry };
 
@@ -258,10 +271,10 @@ export function canClearBuiltinCommandInput(message: string, imageCount: number,
 const SLASH_SOURCES: SlashCommandSource[] = ["builtin", "extension", "prompt", "skill"];
 
 const SLASH_SOURCE_GROUP_LABEL_KEYS: Record<SlashCommandSource, string> = {
-  builtin: "chat.builtIn",
-  extension: "chat.extensions",
-  prompt: "chat.prompts",
-  skill: "chat.skills",
+  builtin: "chat.builtInCommands",
+  extension: "chat.extensionCommands",
+  prompt: "chat.promptTemplates",
+  skill: "chat.assistantSkills",
 };
 
 const SLASH_SOURCE_ORDER: Record<SlashCommandSource, number> = {
@@ -271,18 +284,118 @@ const SLASH_SOURCE_ORDER: Record<SlashCommandSource, number> = {
   skill: 3,
 };
 
+/**
+ * The official image package exposes two different user-facing surfaces:
+ * `/image-gen` is an extension command whose bare form only reports status,
+ * while `skill:image-gen` is a prompt workflow for the assistant. Keep the
+ * distinction in one place so the slash palette and @ capability picker cannot
+ * accidentally imply that both entries directly generate an image.
+ */
+export function isImageGenerationExtensionCommand(command: SlashCommandPaletteItem): boolean {
+  if (command.source !== "extension" || command.name !== "image-gen") return false;
+  const source = [command.sourceInfo?.source, command.sourceInfo?.path]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLocaleLowerCase();
+  // The official package carries its npm source in sourceInfo.  Treat a
+  // source-less command with the reserved name as the same command too: an
+  // older runtime may omit sourceInfo, and exposing two identical image
+  // entries is worse than conservatively hiding the low-level one when the
+  // user-facing skill is present.
+  return !source || source.includes("@amaster.ai/pi-image-gen");
+}
+
+export function isImageGenerationSkillCommand(command: SlashCommandPaletteItem): boolean {
+  return command.source === "skill" && command.name.toLocaleLowerCase() === "skill:image-gen";
+}
+
+export function getSlashCommandInsertText(command: SlashCommandPaletteItem): string {
+  if (isImageGenerationExtensionCommand(command)) return "/image-gen generate ";
+  return `/${command.name} `;
+}
+
+export function getSlashCommandPresentation(
+  command: SlashCommandPaletteItem,
+  t: (key: string) => string,
+): SlashCommandPresentation {
+  if (isImageGenerationExtensionCommand(command)) {
+    return {
+      label: t("chat.imageDirectCommandLabel"),
+      description: t("chat.imageDirectCommandDescription"),
+      insertText: getSlashCommandInsertText(command),
+      mode: "direct",
+    };
+  }
+
+  if (isImageGenerationSkillCommand(command)) {
+    return {
+      label: t("chat.imageSkillCommandLabel"),
+      description: t("chat.imageSkillCommandDescription"),
+      insertText: getSlashCommandInsertText(command),
+      mode: "assistant",
+    };
+  }
+
+  const mode: SlashCommandMode = command.source === "builtin" || command.source === "extension"
+    ? "direct"
+    : "assistant";
+  const description = command.source === "builtin"
+    ? t(command.description)
+    : command.description ?? "";
+  return {
+    label: `/${command.name}`,
+    description,
+    insertText: getSlashCommandInsertText(command),
+    mode,
+  };
+}
+
+/**
+ * Build the text that users can search for in either capability palette.
+ * Include the friendly label as well as the underlying command name so a
+ * Chinese user can type “生成图片” without knowing the internal skill id.
+ */
+export function getSlashCommandSearchText(
+  command: SlashCommandPaletteItem,
+  t: (key: string) => string,
+): string {
+  const presentation = getSlashCommandPresentation(command, t);
+  return [command.name, presentation.label, presentation.description]
+    .filter(Boolean)
+    .join(" ")
+    .toLocaleLowerCase();
+}
+
+/**
+ * Hide the low-level image extension command whenever its bundled skill is
+ * available.  The extension's command is useful for list/reload diagnostics,
+ * but its generate subcommand only emits a transient path notification.  The
+ * skill invokes the same image tool through the assistant, so the result is
+ * rendered in the conversation and remains discoverable to a non-technical
+ * user.  Keep the extension as a compatibility fallback for older installs
+ * that shipped without the skill.
+ */
+export function filterUserFacingSlashCommands(
+  commands: SlashCommandPaletteItem[],
+): SlashCommandPaletteItem[] {
+  const hasImageSkill = commands.some(isImageGenerationSkillCommand);
+  if (!hasImageSkill) return commands;
+  return commands.filter((command) => !isImageGenerationExtensionCommand(command));
+}
+
 function slashMatchRank(command: SlashCommandPaletteItem, query: string, t: (key: string) => string): number {
   const name = command.name.toLowerCase();
+  const label = getSlashCommandPresentation(command, t).label.toLowerCase();
   const description = getSlashDescription(command, t).toLowerCase();
-  if (name === query) return 0;
-  if (name.startsWith(query)) return 1;
-  if (name.includes(query)) return 2;
+  if (name === query || label === query) return 0;
+  if (name.startsWith(query) || label.startsWith(query)) return 1;
+  if (name.includes(query) || label.includes(query)) return 2;
   if (description.includes(query)) return 3;
   return 4;
 }
 
 function getSlashDescription(command: SlashCommandPaletteItem, t: (key: string) => string): string {
-  return command.source === "builtin" ? t(command.description) : command.description ?? "";
+  return getSlashCommandPresentation(command, t).description;
 }
 
 // Skill slash commands are named "skill:<skillName>"; look the skill up in the
@@ -993,12 +1106,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const builtinCommands = isStreaming
       ? BUILTIN_SLASH_COMMANDS.filter((command) => command.availableWhileStreaming)
       : BUILTIN_SLASH_COMMANDS;
-    const commands = [...builtinCommands, ...(slashCommands ?? [])];
+    const commands = filterUserFacingSlashCommands([...builtinCommands, ...(slashCommands ?? [])]);
     return [...commands]
       .filter((command) => {
-        const name = command.name.toLowerCase();
-        const description = getSlashDescription(command, t).toLowerCase();
-        return name.includes(slashQuery) || description.includes(slashQuery);
+        return getSlashCommandSearchText(command, t).includes(slashQuery);
       })
       .sort((a, b) => {
         const rankDelta = slashMatchRank(a, slashQuery, t) - slashMatchRank(b, slashQuery, t);
@@ -1078,16 +1189,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const atCommandMatches = React.useMemo(() => {
     if (!atQuery) return [];
     const query = atQuery.query.toLowerCase();
-    return (slashCommands ?? [])
+    return filterUserFacingSlashCommands(slashCommands ?? [])
       .filter((command) => command.source === "skill" || command.source === "extension")
-      .filter((command) => command.name.toLowerCase().includes(query)
-        || (command.description ?? "").toLowerCase().includes(query))
+      .filter((command) => getSlashCommandSearchText(command, t).includes(query))
       .sort((a, b) => {
         const sourceDelta = (a.source === "skill" ? 0 : 1) - (b.source === "skill" ? 0 : 1);
         return sourceDelta || TEXT_COLLATOR.compare(a.name, b.name);
       })
       .slice(0, 24);
-  }, [atQuery, slashCommands]);
+  }, [atQuery, slashCommands, t]);
   const atToolMatches = React.useMemo(() => {
     if (!atQuery) return [];
     const query = atQuery.query.toLowerCase();
@@ -1163,7 +1273,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     let after = value.slice(cursor);
     if (item.kind === "command") {
       const argumentsText = [before.trim(), after.trim()].filter(Boolean).join(" ");
-      const nextValue = `/${item.command.name}${argumentsText ? ` ${argumentsText}` : " "}`;
+      const commandPrefix = getSlashCommandInsertText(item.command);
+      const nextValue = argumentsText
+        ? `${commandPrefix}${argumentsText}`
+        : commandPrefix;
       setValue(nextValue);
       setAtQuery(null);
       setAtMenuOpen(false);
@@ -1265,7 +1378,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, []);
 
   const applySlashCommand = useCallback((command: SlashCommandPaletteItem) => {
-    const nextValue = `/${command.name} `;
+    const nextValue = getSlashCommandInsertText(command);
     setValue(nextValue);
     setSlashMenuOpen(false);
     setSlashActiveIndex(0);
@@ -1998,7 +2111,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   flexShrink: 0,
                 }}
               >
-                 <span>{slashCommandsLoading ? t("chat.loadingCommands") : t("chat.slashCommands", { label: slashCommandCountLabel })}</span>
+                 <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                   <span>{slashCommandsLoading ? t("chat.loadingCommands") : t("chat.slashCommands", { label: slashCommandCountLabel })}</span>
+                   {!slashCommandsLoading && <small style={{ color: "var(--text-dim)", fontSize: 10 }}>{t("chat.slashHelp")}</small>}
+                 </span>
                  <span style={{ fontFamily: "var(--font-mono)" }}>{t("chat.tabEnter")}</span>
               </div>
               <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto", padding: 10 }}>
@@ -2039,6 +2155,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         {group.items.map(({ command, index }) => {
                           const active = index === slashActiveIndex;
                           const dormant = isDormantSkillCommand(command, skillDormancy);
+                          const presentation = getSlashCommandPresentation(command, t);
                           return (
                             <button
                               key={`${command.source}:${command.name}`}
@@ -2051,6 +2168,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 applySlashCommand(command);
                               }}
                               onMouseEnter={() => setSlashActiveIndex(index)}
+                              title={presentation.description}
+                              data-slash-source={command.source}
+                              data-slash-mode={presentation.mode}
                               style={{
                                 width: "100%",
                                 minWidth: 0,
@@ -2069,29 +2189,33 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                 boxShadow: active ? "0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent)" : "none",
                               }}
                             >
-                              <span style={{
-                                fontSize: 13,
-                                fontFamily: "var(--font-mono)",
-                                overflowWrap: "anywhere",
-                                wordBreak: "break-word",
-                                color: dormant ? "var(--text-dim)" : undefined,
-                              }}>
-                                /{command.name}
-                                {dormant && (
-                                  <span style={{
-                                    marginLeft: 6,
-                                    padding: "0 4px",
-                                    border: "1px solid var(--border)",
-                                    borderRadius: 3,
-                                    fontSize: 9,
-                                    color: "var(--text-dim)",
-                                    whiteSpace: "nowrap",
-                                  }}>
-                                    {t("chat.dormant")}
-                                  </span>
-                                )}
+                              <span style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                                <span style={{
+                                  minWidth: 0,
+                                  fontSize: 13,
+                                  fontFamily: "var(--font-mono)",
+                                  overflowWrap: "anywhere",
+                                  wordBreak: "break-word",
+                                  color: dormant ? "var(--text-dim)" : undefined,
+                                }}>
+                                  {presentation.label}
+                                </span>
+                                <span style={{
+                                  flexShrink: 0,
+                                  padding: "2px 5px",
+                                  border: "1px solid color-mix(in srgb, var(--border) 75%, transparent)",
+                                  borderRadius: 999,
+                                  color: "var(--text-dim)",
+                                  fontSize: 9,
+                                  lineHeight: 1.25,
+                                  whiteSpace: "nowrap",
+                                }}>
+                                  {dormant
+                                    ? t("chat.dormant")
+                                    : t(presentation.mode === "direct" ? "chat.directAction" : "chat.assistantInstruction")}
+                                </span>
                               </span>
-                               {command.description && (
+                              {presentation.description && (
                                 <span style={{
                                   display: "-webkit-box",
                                   WebkitBoxOrient: "vertical",
@@ -2101,7 +2225,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                   lineHeight: 1.35,
                                   color: "var(--text-dim)",
                                 }}>
-                                   {getSlashDescription(command, t)}
+                                  {presentation.description}
                                 </span>
                               )}
                             </button>
@@ -2171,6 +2295,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       if (item.kind === "command") {
                         const command = item.command;
                         const skill = command.source === "skill";
+                        const presentation = getSlashCommandPresentation(command, t);
                         return (
                           <button
                             key={`command:${command.source}:${command.name}`}
@@ -2209,16 +2334,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                             </span>
                             <span style={{ minWidth: 0, flex: 1 }}>
                               <strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600 }}>
-                                /{command.name}
+                                {presentation.label}
                               </strong>
-                              {command.description && (
+                              {presentation.description && (
                                 <small style={{ display: "block", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 10.5 }}>
-                                  {command.description}
+                                  {presentation.description}
                                 </small>
                               )}
                             </span>
                             <span style={{ flexShrink: 0, padding: "2px 7px", borderRadius: 999, background: "var(--bg-subtle)", color: "var(--text-dim)", fontSize: 9.5 }}>
-                              {skill ? t("chat.skill") : t("chat.pluginCommand")}
+                              {skill ? t("chat.assistantInstruction") : t(presentation.mode === "direct" ? "chat.directAction" : "chat.assistantInstruction")}
                             </span>
                           </button>
                         );

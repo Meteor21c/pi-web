@@ -45,6 +45,7 @@ import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import { createSessionScopedSettingsManager } from "./plugin-activation";
 import { withRelayImageGenerationSession } from "./relay-image-generation";
+import { appendRelayImageBillingEntries } from "./relay-image-billing";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -301,6 +302,18 @@ export class AgentSessionWrapper {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
       if (event.type === "agent_start") this.agentRunNeedsCompletion = true;
       if (event.type === "agent_end") {
+        try {
+          // pi-image-gen returns a successful image as a toolResult rather than
+          // a normal assistant usage message. Persist a small, private billing
+          // marker before the web client reloads the session so the relay usage
+          // overlay can reconcile the image charge independently of text cost.
+          appendRelayImageBillingEntries(this.inner.sessionManager);
+        } catch (error) {
+          console.error(
+            "[meteoragent] failed to persist image billing metadata:",
+            error instanceof Error ? error.message : error,
+          );
+        }
         invalidateSessionListCache();
       }
       const toolCallId = event.toolCallId;

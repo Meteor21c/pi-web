@@ -42,3 +42,17 @@ used.
   Users can update, disable, or remove it from Settings; removal is respected on
   later launches until the user explicitly retries preparation.
 - A real paid relay request is still required as a release acceptance test.
+
+## Billing display
+
+Successful `image_generate` results are recorded in a private
+`magent:image-billing` session entry. The normal text usage ledger remains
+independent; the web client reconciles image rows by normalized model and a
+five-minute completion window, with one upstream row used at most once. Older
+sessions are discovered from their tool results, so they do not need to be
+regenerated after upgrading.
+
+The final answer for a user turn shows the summed text input/output/cache and
+text charge. A separate image-charge chip appears only when an image was
+actually returned. It is muted while the relay ledger is still pending and
+switches to the theme color once the authoritative image charge is matched.

@@ -60,6 +60,69 @@ test("shows the authoritative relay charge with enough precision", () => {
   assert.match(html, /\$0\.000751/);
 });
 
+test("labels the final usage chips as a whole-turn summary", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k143",
+    model: "grok-4.6",
+    content: [{ type: "text", text: "Summary" }],
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 } },
+  }, {
+    usageOverride: { input: 2, output: 2, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.02 } },
+  });
+  assert.match(html, /data-tip="Turn summary · Input"/);
+  assert.match(html, />2<\/span>/);
+});
+
+test("shows image billing separately only on a successful generated-image turn", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k143",
+    model: "grok-4.6",
+    content: [{ type: "text", text: "Done" }],
+    usage: {
+      input: 10,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 },
+    },
+  }, {
+    imageBilling: { imageCount: 1, chargeCount: 1, matchedChargeCount: 1, actualCost: 0.12 },
+  });
+  assert.match(html, /Image \$0\.12/);
+  assert.match(html, /Image charge · 1 generation\(s\) · synced/);
+
+  const pending = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k143",
+    model: "grok-4.6",
+    content: [{ type: "text", text: "Waiting" }],
+  }, {
+    imageBilling: { imageCount: 1, chargeCount: 1, matchedChargeCount: 0, actualCost: 0 },
+  });
+  assert.match(pending, /Syncing/);
+  assert.match(pending, /ui-stat-chip-image is-pending/);
+});
+
+test("renders intermediate usage as small text without stat chips", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k143",
+    model: "grok-4.6",
+    content: [{ type: "toolCall", toolCallId: "call-1", toolName: "read", input: {} }],
+    usage: {
+      input: 100,
+      output: 20,
+      cacheRead: 30,
+      cacheWrite: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.02 },
+    },
+  }, { compactUsage: true, showModel: false });
+  assert.match(html, /ui-usage-compact/);
+  assert.doesNotMatch(html, /ui-stat-chip[^-]/);
+});
+
 test("matches response model aliases and otherwise includes the provider", () => {
   const names = {
     "gateway:claude-sonnet-5": "Sonnet 5",
@@ -325,6 +388,8 @@ test("renders assistant images instead of dropping the image content block", () 
   assert.equal((html.match(/aria-label="Preview image"/g) ?? []).length, 2);
   assert.match(html, /<img[^>]+src="data:image\/png;base64,YWJj"/);
   assert.match(html, /<img[^>]+src="https:\/\/example\.test\/generated\.webp"/);
+  assert.match(html, /max-width:min\(100%, 420px\)/);
+  assert.match(html, /max-height:320px/);
 });
 
 test("renders custom-message images as buttons that open a larger preview", () => {
