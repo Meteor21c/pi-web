@@ -102,6 +102,16 @@ export interface AppUpdateInstallStatus {
   runningSessionIds: string[];
 }
 
+/** Status returned while the installed launcher restarts the local service. */
+export type AppRestartPhase = "idle" | "preparing-restart" | "error";
+
+export interface AppRestartStatus {
+  phase: AppRestartPhase;
+  message?: string;
+  automaticRestartSupported: boolean;
+  runningSessionIds: string[];
+}
+
 export interface PushConfigResponse {
   publicKey: string;
 }

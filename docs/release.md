@@ -51,6 +51,15 @@ The `.tgz` is portable. The launchers are separated because Windows uses BAT/Pow
 
 Starting with v0.1.6, a launcher/global-CLI installation also enables the in-app updater. MeteorAgent reads release notes and integrity metadata from `latest.json`, downloads the exact versioned tarball, verifies its declared size and SHA-256, creates a local rollback package, then replaces and restarts the service. Account credentials, sessions, plugin settings, project files, and browser drafts live outside the application package and are not replaced.
 
+The lower-left account area also exposes **Restart Magent** for launcher-backed
+production installs. This is a real local-service restart, not a browser-only
+refresh: the independent restarter stops the launcher and Next.js process,
+starts the same installed version, waits for `/api/relay-health`, and then the
+page reloads itself. It refuses to start while an agent task is running and
+does not delete accounts, sessions, plugins, project files, or drafts. A plain
+development server intentionally shows the action as unavailable because it
+does not have a safe launcher process to hand off to.
+
 Versions older than v0.1.6 do not contain the independent updater and therefore require one final launcher/manual upgrade. Once v0.1.6 or newer is running, later releases can be accepted from the update dialog. Development servers and unsupported launch modes continue to offer the normal download link instead of attempting a privileged install.
 
 ## 3. Smoke test

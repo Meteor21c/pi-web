@@ -31,7 +31,7 @@ The CLI opens a browser after the server is ready. If it does not, open [http://
 
 Open **Settings → Models** to sign in with a Meteor API account. The app then syncs that account's API-key groups and models.
 
-To update, stop the running process with `Ctrl+C` and run the install command again. To uninstall, run `npm uninstall -g @meteor21c/webagent`.
+When started through a launcher, use **Restart Magent** in the lower-left account area to restart the local service (this is more than a browser refresh); the page reconnects automatically after health checks pass. Restarting is blocked while a task is running. App updates can also be accepted from the in-app update prompt; for a CLI install, stop the process with `Ctrl+C` and run the install command again. To uninstall, run `npm uninstall -g @meteor21c/webagent`.
 
 ## Configuration
 
