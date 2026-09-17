@@ -42,7 +42,12 @@ export async function GET(request: Request) {
       .filter((group) => group.accountId === account.accountId)
       .map((group) => {
         const provider = asRecord(providers?.[group.providerId]);
-        const chatModelCount = Array.isArray(provider?.models) ? provider.models.length : 0;
+        // The provider file may still contain a legacy catalog. The account
+        // index is authoritative for synced groups; missing snapshots are
+        // shown as zero until the user synchronizes the group.
+        const chatModelCount = Array.isArray(group.modelIds)
+          ? group.modelIds.length
+          : 0;
         const imageModelCount = group.imageModels?.length ?? 0;
         const protocols = protocolsFor(provider);
         if (imageModelCount > 0) protocols.push("openai-images");

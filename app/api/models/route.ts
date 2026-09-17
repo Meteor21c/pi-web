@@ -8,11 +8,16 @@ import {
   withSafeModelLoadFailure,
   type ModelsData,
 } from "@/lib/models-cache";
-import { filterModelScopeByProviders, resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
+import {
+  filterModelScopeByProviders,
+  filterModelScopeByRelayAuthorization,
+  resolveVisibleModels,
+  selectInitialModelScope,
+} from "@/lib/model-scope";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { projectTrustReloadOptions } from "@/lib/project-trust";
 import { readModelsConfig } from "@/lib/models-config-store";
-import { readRelayGroups } from "@/lib/relay-group-store";
+import { readRelayGroups, relayAuthorizedModelIdsByProvider } from "@/lib/relay-group-store";
 
 export const dynamic = "force-dynamic";
 
@@ -55,7 +60,10 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   const productProviderIds = process.env.NEXT_PUBLIC_AUTH_GATE === "1"
     ? new Set(readRelayGroups().map((group) => group.providerId))
     : null;
-  const selectableScope = filterModelScopeByProviders(scope, productProviderIds);
+  const selectableScope = filterModelScopeByRelayAuthorization(
+    filterModelScopeByProviders(scope, productProviderIds),
+    relayAuthorizedModelIdsByProvider(),
+  );
   const { visible, thinkingLevelPins, warnings } = selectableScope;
   const configured = readModelsConfig().providers as Record<string, { name?: unknown }> | undefined;
   modelList = visible.map((m) => ({

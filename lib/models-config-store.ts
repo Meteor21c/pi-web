@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import { invalidateModelsCache } from "./models-cache";
+import { relayAuthorizedModelIdsByProvider } from "./relay-group-store";
 
 const MODEL_COST_KEYS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
@@ -58,6 +59,33 @@ function sanitizeModelsConfig(data: Record<string, unknown>): Record<string, unk
   return { ...data, providers };
 }
 
+/**
+ * Account-synced relay providers are authoritative: only model ids returned by
+ * that API key's authenticated /v1/models snapshot may remain in models.json.
+ * Providers without an index entry are ordinary user-managed providers and are
+ * deliberately left untouched. A legacy indexed provider with no modelIds
+ * snapshot is fail-closed and must be synchronized before it can be used.
+ */
+export function filterRelayAuthorizedModels(
+  data: Record<string, unknown>,
+  modelsPath = getModelsConfigPath(),
+): Record<string, unknown> {
+  if (modelsPath !== getModelsConfigPath()) return data;
+  const authorized = relayAuthorizedModelIdsByProvider();
+  if (authorized.size === 0 || !isRecord(data.providers)) return data;
+
+  const providers = Object.fromEntries(Object.entries(data.providers).map(([providerId, provider]) => {
+    const allowed = authorized.get(providerId);
+    if (!allowed) return [providerId, provider];
+    if (!isRecord(provider)) return [providerId, provider];
+    const models = Array.isArray(provider.models)
+      ? provider.models.filter((model) => isRecord(model) && typeof model.id === "string" && allowed.has(model.id))
+      : [];
+    return [providerId, { ...provider, models }];
+  }));
+  return { ...data, providers };
+}
+
 export function getModelsConfigPath(): string {
   return join(getAgentDir(), "models.json");
 }
@@ -82,7 +110,8 @@ export function readModelsConfig(
 ): Record<string, unknown> {
   if (!existsSync(modelsPath)) return { providers: {} };
   try {
-    return JSON.parse(readFileSync(modelsPath, "utf8")) as Record<string, unknown>;
+    const parsed = JSON.parse(readFileSync(modelsPath, "utf8")) as Record<string, unknown>;
+    return filterRelayAuthorizedModels(parsed, modelsPath);
   } catch {
     return { providers: {} };
   }
@@ -94,7 +123,10 @@ export function writeModelsConfig(
 ): void {
   const dir = dirname(modelsPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const normalized = normalizeModelsConfigCosts(sanitizeModelsConfig(data));
+  const normalized = filterRelayAuthorizedModels(
+    normalizeModelsConfigCosts(sanitizeModelsConfig(data)),
+    modelsPath,
+  );
   writePrivateFileAtomicSync(modelsPath, JSON.stringify(normalized, null, 2));
   invalidateModelsCache();
 }

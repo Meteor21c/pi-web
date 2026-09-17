@@ -62,6 +62,7 @@ export interface RelayProviderSummary {
   platform?: string;
   rateMultiplier?: number;
   longContextPricingEnabled?: boolean;
+  modelIds?: string[];
   contextWindows?: Record<string, number>;
   imageModels?: string[];
   modelCount: number;
@@ -137,8 +138,9 @@ function summaryFor(
   modelCount: number,
   contextWindows?: Record<string, number>,
   imageModels: string[] = [],
+  modelIds: string[] = [],
 ): RelayProviderSummary {
-  const metadata = metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows, imageModels);
+  const metadata = metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows, imageModels, modelIds);
   return {
     providerId,
     displayName: metadata.keyName,
@@ -151,6 +153,7 @@ function summaryFor(
     platform: metadata.platform,
     rateMultiplier: metadata.rateMultiplier,
     longContextPricingEnabled: metadata.longContextPricingEnabled,
+    modelIds: metadata.modelIds,
     contextWindows: metadata.contextWindows,
     imageModels: metadata.imageModels,
     modelCount: modelCount + imageModels.length,
@@ -219,6 +222,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     providerId: string;
     models: ReturnType<typeof resolveMixedRelayModels>;
     imageModels: string[];
+    modelIds: string[];
     contextWindows: Record<string, number>;
     failure?: string;
   }> = [];
@@ -240,6 +244,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
         key,
         providerId,
         models,
+        modelIds: models.map((model) => model.id),
         imageModels: partition.imageModelIds,
         contextWindows,
         failure: !test.ok ? test.reason : !models.length && !partition.imageModelIds.length ? "empty-catalog" : undefined,
@@ -256,9 +261,26 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     const summaries: RelayProviderSummary[] = [];
     const warnings: NonNullable<RelaySyncResult["warnings"]> = [];
     try {
-      const nextMetadata = gathered.map(({ key, providerId, contextWindows, imageModels }) => (
-        metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows, imageModels)
-      ));
+      const previousByProvider = new Map(
+        initialIndex
+          .filter((entry) => entry.accountId === accountId)
+          .map((entry) => [entry.providerId, entry] as const),
+      );
+      const nextMetadata = gathered.flatMap(({ key, providerId, contextWindows, imageModels, modelIds, failure }) => {
+        // Keep the last known authorization snapshot when a transient catalog
+        // request fails. A brand-new failed key is not indexed at all: that
+        // preserves the old provider file for retry while keeping it out of
+        // the product account/model surface until a successful sync exists.
+        if (failure === "invalid-key") return [];
+        if (failure === "empty-catalog") {
+          return [metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows, imageModels, modelIds)];
+        }
+        if (failure) {
+          const previous = previousByProvider.get(providerId);
+          return previous ? [previous] : [];
+        }
+        return [metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows, imageModels, modelIds)];
+      });
       const presentProviderIds = new Set(nextMetadata.map((entry) => entry.providerId));
 
       // The website key list is authoritative in account-sync mode. These
@@ -273,12 +295,19 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
         if (!presentProviderIds.has(previous.providerId)) await removeRelayProvider(previous.providerId);
       }
 
+      // Update the authorization index before writing models.json. The model
+      // store filters indexed relay providers, so writing first would apply
+      // the previous (possibly empty) snapshot and erase a freshly synced
+      // catalog in the same request.
+      replaceRelayGroupsForAccount(accountId, nextMetadata);
+
       for (const item of gathered) {
-        const { key, providerId, models, imageModels, contextWindows, failure } = item;
+        const { key, providerId, models, modelIds, imageModels, contextWindows, failure } = item;
         if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };
         if (failure) {
           warnings.push({ providerId, reason: failure });
           if (failure === "invalid-key") await removeRelayProvider(providerId);
+          else if (failure === "empty-catalog") removeRelayProviderConfig(providerId);
           continue;
         }
         const family = dominantFamily(models.map((model) => model.id));
@@ -296,11 +325,10 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
           removeRelayProviderConfig(providerId);
           await storeProviderCredential(providerId, { type: "api_key", key: key.key });
         }
-        summaries.push(summaryFor(accountId, key, providerId, family, models.length, contextWindows, imageModels));
+        summaries.push(summaryFor(accountId, key, providerId, family, models.length, contextWindows, imageModels, modelIds));
       }
 
       if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };
-      replaceRelayGroupsForAccount(accountId, nextMetadata);
       syncRelayImageGenerationSettings();
       hydrateRelayImageGenerationEnvironment();
     } catch {

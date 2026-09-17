@@ -7,7 +7,13 @@ import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { createMeteorAgentBrandExtension, rebrandMeteorAgentSystemPrompt } from "./meteoragent-brand";
-import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
+import {
+  filterModelScopeByProviders,
+  filterModelScopeByRelayAuthorization,
+  resolveVisibleModels,
+  selectInitialModelScope,
+} from "./model-scope";
+import { readRelayGroups, relayAuthorizedModelIdsByProvider } from "./relay-group-store";
 import {
   createProjectCommandBashExtension,
   createProjectCommandBashOperations,
@@ -437,6 +443,19 @@ export class AgentSessionWrapper {
     this.inner.agent.state.systemPrompt = this.exactSystemPrompt();
   }
 
+  /** Reject requests that would use a stale/unauthorized relay model. */
+  private assertRelayModelAuthorized(provider: string, modelId: string): void {
+    const relayGroups = readRelayGroups();
+    const indexedRelayProviders = new Set(relayGroups.map((group) => group.providerId));
+    if (process.env.NEXT_PUBLIC_AUTH_GATE === "1" && !indexedRelayProviders.has(provider)) {
+      throw new Error("该模型不属于当前账户分组，请先同步账户分组");
+    }
+    const authorized = relayAuthorizedModelIdsByProvider().get(provider);
+    if (authorized && !authorized.has(modelId)) {
+      throw new Error("该模型未开放给当前 API Key，请先同步当前账户分组");
+    }
+  }
+
   private installExactSystemPromptContinuation(): void {
     if (!this.exactSystemPrompt) return;
     const previous = this.inner.agent.prepareNextTurnWithContext;
@@ -601,6 +620,9 @@ export class AgentSessionWrapper {
           if (this.inner.isBashRunning) {
             throw new Error("Cannot send a prompt while a shell command is running");
           }
+          if (this.inner.model) {
+            this.assertRelayModelAuthorized(this.inner.model.provider, this.inner.model.id);
+          }
           if (this.extensionUiAbortController.signal.aborted) {
             this.extensionUiAbortController = new AbortController();
           }
@@ -736,6 +758,7 @@ export class AgentSessionWrapper {
 
       case "set_model": {
         const { provider, modelId } = command as { provider: string; modelId: string };
+        this.assertRelayModelAuthorized(provider, modelId);
         let model = this.inner.modelRuntime.getModel(provider, modelId);
         if (!model) {
           await this.inner.modelRuntime.refresh({ allowNetwork: false });
@@ -911,12 +934,14 @@ export class AgentSessionWrapper {
 
       case "steer": {
         const steerImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
+        if (this.inner.model) this.assertRelayModelAuthorized(this.inner.model.provider, this.inner.model.id);
         await this.inner.steer(command.message as string, steerImages?.length ? steerImages : undefined);
         return null;
       }
 
       case "follow_up": {
         const followImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
+        if (this.inner.model) this.assertRelayModelAuthorized(this.inner.model.provider, this.inner.model.id);
         await this.inner.followUp(command.message as string, followImages?.length ? followImages : undefined);
         return null;
       }
@@ -2092,9 +2117,16 @@ export async function startRpcSession(
           },
       ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
     });
-    const scope = await resolveVisibleModels(
+    const resolvedScope = await resolveVisibleModels(
       services.modelRuntime,
       services.settingsManager.getEnabledModels(),
+    );
+    const productProviderIds = process.env.NEXT_PUBLIC_AUTH_GATE === "1"
+      ? new Set(readRelayGroups().map((group) => group.providerId))
+      : null;
+    const scope = filterModelScopeByRelayAuthorization(
+      filterModelScopeByProviders(resolvedScope, productProviderIds),
+      relayAuthorizedModelIdsByProvider(),
     );
     const effectiveInitialModel = initialModel && (
       !allowInitialModelFallback
@@ -2109,8 +2141,13 @@ export async function startRpcSession(
     const savedModel = hasExistingMessages
       ? getLatestModelChange(branch as unknown as SessionEntry[])
       : null;
-    const restoredModel = savedModel
+    const restoredCandidate = savedModel
       ? services.modelRuntime.getModel(savedModel.provider, savedModel.modelId)
+      : undefined;
+    const restoredModel = restoredCandidate && scope.visible.some(
+      (model) => model.provider === restoredCandidate.provider && model.id === restoredCandidate.id,
+    )
+      ? restoredCandidate
       : undefined;
     const initial = hasExistingMessages ? null : selectInitialModelScope(scope, {
         ...(effectiveInitialModel ? { requestedModel: effectiveInitialModel } : {}),
@@ -2119,9 +2156,16 @@ export async function startRpcSession(
           : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
       });
+    const fallbackForRestoredSession = hasExistingMessages && !restoredModel
+      ? selectInitialModelScope(scope, {
+          ...(defaultProvider && defaultModelId
+            ? { defaultModel: { provider: defaultProvider, modelId: defaultModelId } }
+            : {}),
+        }).model
+      : undefined;
     const startupModel = restoredModel && services.modelRuntime.hasConfiguredAuth(restoredModel.provider)
       ? restoredModel
-      : initial?.model;
+      : initial?.model ?? fallbackForRestoredSession;
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,

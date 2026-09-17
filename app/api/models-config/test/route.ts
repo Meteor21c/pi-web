@@ -5,6 +5,7 @@ import { join } from "path";
 import { completeSimple, type AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { readRelayGroups } from "@/lib/relay-group-store";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,22 @@ export async function POST(req: Request) {
 
     const modelId = typeof body.model.id === "string" ? body.model.id.trim() : "";
     if (!modelId) return NextResponse.json({ ok: false, error: "Model ID is required" }, { status: 400 });
+
+    const relayGroup = readRelayGroups().find((group) => group.providerId === providerName);
+    if (relayGroup && relayGroup.modelIds === undefined) {
+      return NextResponse.json({
+        ok: false,
+        error: "该分组还没有完成授权模型同步，请先同步当前账户分组。",
+        code: "relay_sync_required",
+      }, { status: 409 });
+    }
+    if (relayGroup && !relayGroup.modelIds?.includes(modelId)) {
+      return NextResponse.json({
+        ok: false,
+        error: "该模型未开放给当前 API Key。",
+        code: "relay_model_not_authorized",
+      }, { status: 403 });
+    }
 
     tempDir = mkdtempSync(join(tmpdir(), "pi-web-model-test-"));
     const modelsPath = join(tempDir, "models.json");

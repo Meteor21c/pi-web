@@ -17,6 +17,8 @@ export interface RelayGroupMetadata {
   platform?: string;
   rateMultiplier?: number;
   longContextPricingEnabled?: boolean;
+  /** Exact chat-model ids returned by this API key's authenticated /v1/models call. */
+  modelIds?: string[];
   /** Exact first-tier max_tokens keyed by model id, sourced from the authenticated model plaza. */
   contextWindows?: Record<string, number>;
   /** Dedicated image-generation model ids exposed by this key. */
@@ -64,6 +66,7 @@ function validMetadata(value: unknown): value is RelayGroupMetadata {
     && typeof value.keyId === "string" && value.keyId.length > 0
     && typeof value.keyName === "string"
     && typeof value.maskedKey === "string"
+    && (value.modelIds === undefined || (Array.isArray(value.modelIds) && value.modelIds.every((model) => typeof model === "string" && model.length > 0)))
     && (value.imageModels === undefined || (Array.isArray(value.imageModels) && value.imageModels.every((model) => typeof model === "string" && model.length > 0)))
     && typeof value.syncedAt === "number" && Number.isFinite(value.syncedAt);
 }
@@ -99,6 +102,21 @@ export function removeRelayGroupsForAccount(accountId: string): RelayGroupMetada
   const removed = all.filter((entry) => entry.accountId === accountId);
   if (removed.length) writeRelayGroups(all.filter((entry) => entry.accountId !== accountId));
   return removed;
+}
+
+/**
+ * Return the exact authenticated chat-model directory for each indexed relay
+ * provider. A provider entry without a modelIds snapshot is intentionally
+ * represented by an empty set: it must be synchronized before it can be used.
+ */
+export function relayAuthorizedModelIdsByProvider(
+  groups: readonly RelayGroupMetadata[] = readRelayGroups(),
+): Map<string, Set<string>> {
+  const authorized = new Map<string, Set<string>>();
+  for (const group of groups) {
+    authorized.set(group.providerId, new Set(group.modelIds ?? []));
+  }
+  return authorized;
 }
 
 /** Remove only providers whose ownership is proven by the private account index. */
@@ -156,6 +174,7 @@ export function metadataForRelayKey(
   syncedAt = Date.now(),
   contextWindows?: Record<string, number>,
   imageModels?: string[],
+  modelIds?: string[],
 ): RelayGroupMetadata {
   const safe = safeRelayKey(key);
   return {
@@ -170,6 +189,7 @@ export function metadataForRelayKey(
     platform: safe.platform,
     rateMultiplier: safe.rateMultiplier,
     longContextPricingEnabled: safe.longContextPricingEnabled,
+    ...(modelIds !== undefined ? { modelIds: [...new Set(modelIds.filter((model) => model.trim()))] } : {}),
     ...(contextWindows && Object.keys(contextWindows).length ? { contextWindows } : {}),
     ...(imageModels?.length ? { imageModels: [...new Set(imageModels)] } : {}),
     currentConcurrency: safe.currentConcurrency,

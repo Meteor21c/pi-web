@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveModelDiscoveryAuth } from "@/lib/model-discovery-auth";
 import { buildModelsListUrl, parseDiscoveredModels } from "@/lib/model-discovery";
+import { readRelayGroups } from "@/lib/relay-group-store";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,14 @@ export async function POST(req: Request) {
     const providerName = typeof body.providerName === "string" ? body.providerName.trim() : "";
     if (!providerName) return NextResponse.json({ error: "providerName is required" }, { status: 400 });
     if (!isRecord(body.provider)) return NextResponse.json({ error: "provider is required" }, { status: 400 });
+
+    const relayGroup = readRelayGroups().find((group) => group.providerId === providerName);
+    if (relayGroup && relayGroup.modelIds === undefined) {
+      return NextResponse.json({
+        error: "该分组还没有完成授权模型同步，请先同步当前账户分组。",
+        code: "relay_sync_required",
+      }, { status: 409 });
+    }
 
     const baseUrl = typeof body.provider.baseUrl === "string" ? body.provider.baseUrl.trim() : "";
     if (!baseUrl) return NextResponse.json({ error: "Base URL is required" }, { status: 400 });
@@ -74,9 +83,17 @@ export async function POST(req: Request) {
     } catch {
       return NextResponse.json({ error: "Upstream model list was not valid JSON" }, { status: 502 });
     }
-    const models = parseDiscoveredModels(payload);
+    let models = parseDiscoveredModels(payload);
+    if (relayGroup) {
+      const authorized = new Set(relayGroup.modelIds);
+      models = models.filter((model) => authorized.has(model.id));
+    }
     if (models.length === 0) {
-      return NextResponse.json({ error: "No models found in the upstream response" }, { status: 502 });
+      return NextResponse.json({
+        error: relayGroup
+          ? "当前 API Key 没有可导入的对话模型，请先同步分组。"
+          : "No models found in the upstream response",
+      }, { status: relayGroup ? 409 : 502 });
     }
 
     return NextResponse.json({ models, endpoint: endpoint.toString() });

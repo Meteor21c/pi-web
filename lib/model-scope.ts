@@ -69,6 +69,29 @@ export function filterModelScopeByProviders(
   };
 }
 
+/** Restrict indexed relay providers to the exact model ids authorized by each API key. */
+export function filterModelScopeByRelayAuthorization(
+  scope: ModelScopeResult,
+  authorizedModelIdsByProvider: ReadonlyMap<string, ReadonlySet<string>> | null,
+): ModelScopeResult {
+  if (authorizedModelIdsByProvider === null || authorizedModelIdsByProvider.size === 0) return scope;
+  const isAuthorized = (model: { provider: string; id: string }): boolean => {
+    const allowed = authorizedModelIdsByProvider.get(model.provider);
+    return allowed === undefined || allowed.has(model.id);
+  };
+  const visible = scope.visible.filter(isAuthorized);
+  const scopedModels = scope.scopedModels.filter((scoped) => isAuthorized(scoped.model));
+  const visibleKeys = new Set(visible.map((model) => `${model.provider}/${model.id}`));
+  return {
+    ...scope,
+    visible,
+    scopedModels,
+    thinkingLevelPins: Object.fromEntries(
+      Object.entries(scope.thinkingLevelPins).filter(([key]) => visibleKeys.has(key)),
+    ),
+  };
+}
+
 function matchesModel(
   model: { provider: string; id: string },
   ref: { provider: string; modelId: string },

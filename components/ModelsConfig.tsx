@@ -132,6 +132,8 @@ interface RelayGroupSummary {
   groupName?: string;
   platform?: string;
   rateMultiplier?: number;
+  /** Exact chat-model ids returned by the authenticated API key. */
+  modelIds?: string[];
   contextWindows?: Record<string, number>;
   imageModels?: string[];
   modelCount: number;
@@ -2071,17 +2073,25 @@ function relayProtocolLabel(protocol: string): string {
   return protocol;
 }
 
-function RelayModelImport({ providerName, provider, onAddModels }: {
+function RelayModelImport({ providerName, provider, authorizedModelIds, onAddModels }: {
   providerName: string;
   provider: ProviderEntry;
+  authorizedModelIds?: readonly string[];
   onAddModels: (models: DiscoveredModel[]) => void;
 }) {
   const [state, setState] = useState<ModelDiscoveryState>({ phase: "idle" });
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const existing = new Set((provider.models ?? []).map((model) => model.id));
+  const authorized = authorizedModelIds === undefined ? null : new Set(authorizedModelIds);
+  const existing = new Set((provider.models ?? [])
+    .filter((model) => authorized?.has(model.id) ?? false)
+    .map((model) => model.id));
   const discover = async () => {
     if (state.phase === "loading") return;
+    if (authorized === null) {
+      setState({ phase: "error", message: "请先同步当前分组，确认 API Key 实际开放的模型。" });
+      return;
+    }
     setState({ phase: "loading" });
     setSelected([]);
     try {
@@ -2106,7 +2116,7 @@ function RelayModelImport({ providerName, provider, onAddModels }: {
   const add = () => {
     if (state.phase !== "success") return;
     const ids = new Set(selected);
-    const additions = state.models.filter((model) => ids.has(model.id) && !existing.has(model.id));
+    const additions = state.models.filter((model) => authorized?.has(model.id) && ids.has(model.id) && !existing.has(model.id));
     if (!additions.length) return;
     onAddModels(additions);
     setSelected([]);
@@ -2118,8 +2128,8 @@ function RelayModelImport({ providerName, provider, onAddModels }: {
           <SectionTitle>选择和导入模型</SectionTitle>
           <div style={{ marginTop: 4, color: "var(--text-dim)", fontSize: 10 }}>从当前分组的可用目录中选择，无需填写接口参数。</div>
         </div>
-        <ConfigButton size="small" disabled={state.phase === "loading"} onClick={() => void discover()}>
-          {state.phase === "loading" ? "正在读取..." : state.phase === "success" ? "重新读取" : "读取可用模型"}
+        <ConfigButton size="small" disabled={state.phase === "loading" || authorized === null} onClick={() => void discover()}>
+          {authorized === null ? "请先同步分组" : state.phase === "loading" ? "正在读取..." : state.phase === "success" ? "重新读取" : "读取可用模型"}
         </ConfigButton>
       </div>
       {state.phase === "error" && <div role="alert" style={{ color: "#f87171", fontSize: 11 }}>{state.message}</div>}
@@ -2222,11 +2232,16 @@ function RelayGroupDetail({ group, provider, onSync, onAddModels }: {
         <div><dt>API Key</dt><dd>{group.maskedKey || "已安全保存"}</dd></div>
         <div><dt>实时倍率</dt><dd>{billingLoading ? "读取中..." : multiplier === undefined ? "暂不可用" : `${multiplier}x`}</dd></div>
         <div><dt>接口协议</dt><dd>{protocols.length ? protocols.map(relayProtocolLabel).join(" / ") : "自动匹配"}</dd></div>
-        <div><dt>可用模型</dt><dd>{(provider?.models?.length ?? 0) + (group.imageModels?.length ?? 0)} 个</dd></div>
+        <div><dt>可用模型</dt><dd>{group.modelIds === undefined ? "尚未同步" : (group.modelIds.length + (group.imageModels?.length ?? 0)) + " 个"}</dd></div>
       </dl>
+      {group.modelIds === undefined && (
+        <div style={{ border: "1px solid color-mix(in srgb, var(--accent) 35%, var(--border))", borderRadius: 8, padding: "9px 11px", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.55 }}>
+          这个分组还没有完成授权模型同步。请点击右上角“同步分组”，确认后才会显示可请求的模型。
+        </div>
+      )}
       {billing?.observedAt && <div style={{ color: "var(--text-dim)", fontSize: 10 }}>倍率更新时间：{new Date(billing.observedAt).toLocaleString()}</div>}
       <RelayUsageSummary providerId={group.providerId} enabled showBalance={false} />
-      {provider && <RelayModelImport providerName={group.providerId} provider={provider} onAddModels={onAddModels} />}
+      {provider && <RelayModelImport providerName={group.providerId} provider={provider} authorizedModelIds={group.modelIds} onAddModels={onAddModels} />}
     </div>
   );
 }
@@ -2726,7 +2741,7 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
       />;
     }
     if (!provider) return <ConfigEmptyState>该分组没有可用的对话模型。</ConfigEmptyState>;
-    const index = (provider.models ?? []).findIndex((model) => model.id === relaySelection.modelId);
+    const index = (provider.models ?? []).findIndex((model) => group.modelIds?.includes(model.id) && model.id === relaySelection.modelId);
     const model = index >= 0 ? provider.models?.[index] : undefined;
     if (!model || index < 0) return <ConfigEmptyState>该模型已不在当前分组中。</ConfigEmptyState>;
     return <ModelDetail
@@ -2808,8 +2823,11 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
                   ) : selectedRelayGroups.map((group) => {
                     const expanded = expandedRelayGroups.has(group.providerId);
                     const provider = config.providers?.[group.providerId];
+                    const authorizedChatModels = group.modelIds === undefined
+                      ? []
+                      : (provider?.models ?? []).filter((model) => group.modelIds?.includes(model.id));
                     const models = [
-                      ...(provider?.models ?? []).map((model) => ({ ...model, imageGeneration: false as const })),
+                      ...authorizedChatModels.map((model) => ({ ...model, imageGeneration: false as const })),
                       ...(group.imageModels ?? []).map((id) => ({ id, name: id, reasoning: false, imageGeneration: true as const })),
                     ];
                     const groupSelected = relaySelection?.type === "group" && relaySelection.providerId === group.providerId;
@@ -2841,6 +2859,7 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
                             <polyline points="9 18 15 12 9 6" />
                           </svg>
                           <ConfigSidebarText className="is-grow" title={group.keyName}>{group.keyName}</ConfigSidebarText>
+                          {group.modelIds === undefined && <small className="relay-group-rate" title="需要同步后确认可用模型">待同步</small>}
                           {group.rateMultiplier !== undefined && <small className="relay-group-rate">{group.rateMultiplier}x</small>}
                         </ConfigSidebarItem>
                         {expanded && models.map((model) => {
