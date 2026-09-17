@@ -8,7 +8,7 @@ interface Props {
 
 export function SystemPromptPanel({ loading, prompt, translate }: Props) {
   return (
-    <section className="system-prompt-panel" aria-label={translate("system.prompt")}>
+    <section className="system-prompt-panel ui-glass-menu" aria-label={translate("system.prompt")}>
       <header className="system-prompt-heading">
         <div className="system-prompt-heading-copy">
           <strong>{translate("system.label")}</strong>
@@ -37,15 +37,6 @@ export function SystemPromptPanel({ loading, prompt, translate }: Props) {
           height: min(calc(600px * var(--ui-scale, 1)), 72dvh);
           min-height: 220px;
           flex-direction: column;
-          background: color-mix(in srgb, var(--assistant-bg) 76%, transparent);
-          -webkit-backdrop-filter: blur(32px) saturate(1.7);
-          backdrop-filter: blur(32px) saturate(1.7);
-          border: 0.5px solid color-mix(in srgb, var(--border) 72%, transparent);
-          border-radius: 18px;
-          box-shadow:
-            inset 0 1px 0 0 color-mix(in srgb, var(--assistant-bg) 88%, transparent),
-            0 24px 64px rgba(0, 0, 0, 0.20),
-            0 4px 14px rgba(0, 0, 0, 0.08);
           overflow: hidden;
         }
         .system-prompt-heading {

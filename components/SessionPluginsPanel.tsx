@@ -118,7 +118,7 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
   }, [load, onReloaded, sessionId, sessionRunning]);
 
   return (
-    <section className="session-plugins-panel" aria-label={zh ? "当前会话插件" : "Session plugins"}>
+    <section className="session-plugins-panel ui-glass-menu" aria-label={zh ? "当前会话插件" : "Session plugins"}>
       <header className="session-plugins-heading">
         <div className="session-plugins-title-block">
           <span className="session-plugins-icon" aria-hidden="true">
@@ -212,7 +212,7 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
       )}
 
       <style>{`
-        .session-plugins-panel { width: calc(640px * var(--ui-scale, 1)); background: color-mix(in srgb, var(--assistant-bg) 72%, transparent); -webkit-backdrop-filter: blur(32px) saturate(1.8); backdrop-filter: blur(32px) saturate(1.8); border: .5px solid color-mix(in srgb, var(--border) 72%, transparent); border-radius: 18px; box-shadow: inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 88%, transparent), 0 24px 64px rgba(0,0,0,.20), 0 4px 14px rgba(0,0,0,.08); overflow: hidden; color: var(--text); }
+        .session-plugins-panel { width: calc(640px * var(--ui-scale, 1)); overflow: hidden; color: var(--text); }
         .session-plugins-heading { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px; border-bottom: .5px solid color-mix(in srgb, var(--border) 62%, transparent); background: color-mix(in srgb, var(--assistant-bg) 44%, transparent); }
         .session-plugins-title-block { min-width: 0; display: flex; align-items: center; gap: 10px; }
         .session-plugins-icon { width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; border-radius: 10px; color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, var(--assistant-bg)); }

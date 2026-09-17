@@ -21,7 +21,7 @@ import { TerminalPanel } from "./TerminalPanel";
 import { newTerminalTab, restoreTerminalTabs, TERMINAL_TABS_KEY, type TerminalTab } from "./terminal-tab-state";
 import { useTheme } from "@/hooks/useTheme";
 import { useUiScale } from "@/hooks/useUiScale";
-import { divideByUiScale } from "@/lib/ui-scale";
+import { divideByUiScale, currentUiScale } from "@/lib/ui-scale";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile, useIsNarrowMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
@@ -550,7 +550,8 @@ export function AppShell() {
       }
       if (activeTopPanel === "plugins") {
         const availableWidth = divideByUiScale(topBarRect.width);
-        const panelWidth = Math.max(280, Math.min(720, availableWidth - 16));
+        // 上限同样乘缩放：面板自身宽度（640px×scale）不能被未缩放的 wrapper 裁掉。
+        const panelWidth = Math.max(280, Math.min(720 * currentUiScale(), availableWidth - 16));
         // 按钮靠顶栏最右：面板右缘对齐按钮右缘，向左展开。
         const pluginsBtn = pluginsBtnRef.current;
         const btnRight = pluginsBtn && pluginsBtn.getBoundingClientRect().width > 0
