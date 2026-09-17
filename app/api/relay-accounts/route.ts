@@ -42,10 +42,16 @@ export async function GET(request: Request) {
       .filter((group) => group.accountId === account.accountId)
       .map((group) => {
         const provider = asRecord(providers?.[group.providerId]);
+        const chatModelCount = Array.isArray(provider?.models) ? provider.models.length : 0;
+        const imageModelCount = group.imageModels?.length ?? 0;
+        const protocols = protocolsFor(provider);
+        if (imageModelCount > 0) protocols.push("openai-images");
         return {
           ...group,
-          modelCount: Array.isArray(provider?.models) ? provider.models.length : 0,
-          protocols: protocolsFor(provider),
+          modelCount: chatModelCount + imageModelCount,
+          chatModelCount,
+          imageModelCount,
+          protocols: [...new Set(protocols)],
         };
       }),
   }));

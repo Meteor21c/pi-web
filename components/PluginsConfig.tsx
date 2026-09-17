@@ -317,6 +317,7 @@ function CommunityPluginPanel({
   catalogFetchedAt,
   catalogSource,
   onRefreshCatalog,
+  initialQuery,
 }: {
   packages: PluginPackageInfo[];
   projectResourcesLoaded: boolean;
@@ -330,6 +331,7 @@ function CommunityPluginPanel({
   catalogFetchedAt?: string;
   catalogSource?: CommunityPluginCatalogResponse["source"];
   onRefreshCatalog: () => void;
+  initialQuery?: string;
 }) {
   const { locale, t } = useI18n();
   const [category, setCategory] = useState<CommunityPluginCategory | "all">("all");
@@ -354,6 +356,10 @@ function CommunityPluginPanel({
     [entries],
   );
   const busy = busyKey !== null;
+
+  useEffect(() => {
+    if (initialQuery?.trim()) setQuery(initialQuery.trim());
+  }, [initialQuery]);
 
   useEffect(() => {
     const normalizedQuery = query.trim();
@@ -1156,12 +1162,14 @@ export function PluginsConfig({
   onClose,
   onReloaded,
   embedded = false,
+  initialCommunityQuery,
 }: {
   cwd: string;
   sessionId: string | null;
   onClose: () => void;
   onReloaded?: () => void;
   embedded?: boolean;
+  initialCommunityQuery?: string;
 }) {
   const { locale, t } = useI18n();
   const [data, setData] = useState<PluginsResponse | null>(null);
@@ -1542,6 +1550,7 @@ export function PluginsConfig({
             catalogFetchedAt={catalogData?.fetchedAt}
             catalogSource={catalogData?.source}
             onRefreshCatalog={() => void loadCatalog(true)}
+            initialQuery={initialCommunityQuery}
           />
         ) : (
         <ConfigSplitView>

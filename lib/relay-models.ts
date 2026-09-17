@@ -18,6 +18,7 @@ import {
   RELAY_OTHER_DEFAULT_CONTEXT_WINDOW,
   clampRelayContextWindow,
 } from "./relay-model-policy";
+import { isRelayImageGenerationModel } from "./relay-image-generation";
 
 export interface RelayModelDef {
   id: string;
@@ -162,7 +163,7 @@ function withCommonCapabilities(model: RelayModelDef): RelayModelDef {
 export function resolveMixedRelayModels(ids: string[], base = getRelayBaseUrl()): RelayModelDef[] {
   return [...new Set(ids)].flatMap((id) => {
     // Non-chat endpoints must not be advertised as conversational models.
-    if (/embedding|dall-e|gpt-image|whisper|tts|sora|rerank/i.test(id)) return [];
+    if (isRelayImageGenerationModel(id) || /embedding|whisper|tts|sora|rerank/i.test(id)) return [];
     const family = CLAUDE_MATCH.test(id) ? "claude" : GPT_MATCH.test(id) ? "gpt" : "other";
     return resolveRelayModels(family, [id]).map((model) => ({
       ...model,

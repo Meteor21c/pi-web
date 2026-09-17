@@ -84,6 +84,27 @@ export function storeProviderCredential(
   });
 }
 
+/** Read a stored API key for server-side runtime hydration; never expose it to a route response. */
+export function readStoredApiKey(
+  providerId: string,
+  authPath = join(getAgentDir(), "auth.json"),
+): string | undefined {
+  if (!existsSync(authPath)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(authPath, "utf-8"));
+    if (!isRecord(parsed)) return undefined;
+    const credential = parsed[providerId];
+    return isRecord(credential)
+      && credential.type === "api_key"
+      && typeof credential.key === "string"
+      && credential.key
+      ? credential.key
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Removes a provider credential only when its current stored type matches.
  *

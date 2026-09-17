@@ -133,7 +133,10 @@ interface RelayGroupSummary {
   platform?: string;
   rateMultiplier?: number;
   contextWindows?: Record<string, number>;
+  imageModels?: string[];
   modelCount: number;
+  chatModelCount?: number;
+  imageModelCount?: number;
   protocols?: string[];
   syncedAt?: string | number;
 }
@@ -2064,6 +2067,7 @@ function relayProtocolLabel(protocol: string): string {
   if (protocol === "openai-responses") return "OpenAI Responses";
   if (protocol === "anthropic-messages") return "Anthropic Messages";
   if (protocol === "openai-completions") return "OpenAI Chat Completions";
+  if (protocol === "openai-images") return "OpenAI Images";
   return protocol;
 }
 
@@ -2155,7 +2159,7 @@ function RelayModelImport({ providerName, provider, onAddModels }: {
 
 function RelayGroupDetail({ group, provider, onSync, onAddModels }: {
   group: RelayGroupSummary;
-  provider: ProviderEntry;
+  provider?: ProviderEntry;
   onSync: () => Promise<void>;
   onAddModels: (models: DiscoveredModel[]) => void;
 }) {
@@ -2190,7 +2194,10 @@ function RelayGroupDetail({ group, provider, onSync, onAddModels }: {
   }, [group.providerId]);
   const protocols = group.protocols?.length
     ? group.protocols
-    : Array.from(new Set((provider.models ?? []).flatMap((model) => model.api ? [model.api] : [])));
+    : Array.from(new Set([
+      ...(provider?.models ?? []).flatMap((model) => model.api ? [model.api] : []),
+      ...(group.imageModels?.length ? ["openai-images"] : []),
+    ]));
   const multiplier = billing?.effectiveRateMultiplier ?? group.rateMultiplier;
   const sync = async () => {
     if (syncing) return;
@@ -2215,18 +2222,101 @@ function RelayGroupDetail({ group, provider, onSync, onAddModels }: {
         <div><dt>API Key</dt><dd>{group.maskedKey || "已安全保存"}</dd></div>
         <div><dt>实时倍率</dt><dd>{billingLoading ? "读取中..." : multiplier === undefined ? "暂不可用" : `${multiplier}x`}</dd></div>
         <div><dt>接口协议</dt><dd>{protocols.length ? protocols.map(relayProtocolLabel).join(" / ") : "自动匹配"}</dd></div>
-        <div><dt>可用模型</dt><dd>{provider.models?.length ?? group.modelCount ?? 0} 个</dd></div>
+        <div><dt>可用模型</dt><dd>{(provider?.models?.length ?? 0) + (group.imageModels?.length ?? 0)} 个</dd></div>
       </dl>
       {billing?.observedAt && <div style={{ color: "var(--text-dim)", fontSize: 10 }}>倍率更新时间：{new Date(billing.observedAt).toLocaleString()}</div>}
       <RelayUsageSummary providerId={group.providerId} enabled showBalance={false} />
-      <RelayModelImport providerName={group.providerId} provider={provider} onAddModels={onAddModels} />
+      {provider && <RelayModelImport providerName={group.providerId} provider={provider} onAddModels={onAddModels} />}
+    </div>
+  );
+}
+
+interface RelayImageGenerationStatusResponse {
+  ok?: boolean;
+  packageName?: string;
+  models?: Array<{ providerId: string; modelId: string; alias: string; isDefault: boolean }>;
+  error?: string;
+}
+
+function RelayImageModelDetail({ group, modelId, onOpenPlugins }: {
+  group: RelayGroupSummary;
+  modelId: string;
+  onOpenPlugins?: (query: string) => void;
+}) {
+  const [status, setStatus] = useState<RelayImageGenerationStatusResponse | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch("/api/relay-image-generation", { cache: "no-store" });
+      const next = await response.json() as RelayImageGenerationStatusResponse;
+      if (!response.ok || next.error) throw new Error(next.error ?? `HTTP ${response.status}`);
+      setStatus(next);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  const current = status?.models?.find((model) => model.providerId === group.providerId && model.modelId === modelId);
+  const makeDefault = async () => {
+    if (saving || current?.isDefault) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/relay-image-generation", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId: group.providerId, modelId }),
+      });
+      const next = await response.json() as RelayImageGenerationStatusResponse;
+      if (!response.ok || next.error) throw new Error(next.error ?? `HTTP ${response.status}`);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const packageName = status?.packageName ?? "@amaster.ai/pi-image-gen";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <ConfigDetailHeader>
+        <ConfigDetailHeaderInfo>
+          <SectionTitle>图片生成模型</SectionTitle>
+          <div style={{ marginTop: 5, color: "var(--text)", fontSize: 17, fontWeight: 650 }}>{modelId}</div>
+          <div style={{ marginTop: 4, color: "var(--text-dim)", fontSize: 11 }}>{group.keyName} · 流星 API</div>
+        </ConfigDetailHeaderInfo>
+        <ConfigDetailActions>
+          <ConfigButton size="small" variant={current?.isDefault ? "secondary" : "primary"} disabled={saving || current?.isDefault} onClick={() => void makeDefault()}>
+            {current?.isDefault ? "当前默认" : saving ? "正在设置..." : "设为默认生图模型"}
+          </ConfigButton>
+        </ConfigDetailActions>
+      </ConfigDetailHeader>
+      <dl className="relay-group-facts">
+        <div><dt>能力</dt><dd>图片生成</dd></div>
+        <div><dt>接口</dt><dd>OpenAI Images 兼容</dd></div>
+        <div><dt>输出目录</dt><dd>.pi/images</dd></div>
+        <div><dt>模型路由</dt><dd>{current?.alias ?? "已自动同步"}</dd></div>
+      </dl>
+      <section style={{ border: "1px solid var(--border)", borderRadius: 9, padding: 14, display: "flex", flexDirection: "column", gap: 9 }}>
+        <strong style={{ fontSize: 13 }}>启用图片生成</strong>
+        <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.6 }}>
+          Magent 已自动配置这个模型。安装并启用社区插件 {packageName} 后，新建或重载会话即可让助手调用生图工具。插件可执行本机代码，安装前仍会显示安全提示。
+        </p>
+        {onOpenPlugins && <div><ConfigButton size="small" onClick={() => onOpenPlugins(packageName)}>前往插件社区安装</ConfigButton></div>}
+      </section>
+      {error && <div role="alert" style={{ color: "#f87171", fontSize: 12 }}>{error}</div>}
     </div>
   );
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ModelsConfig({ onClose, embedded = false }: { onClose: () => void; embedded?: boolean }) {
+export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
+  onClose: () => void;
+  embedded?: boolean;
+  onOpenPlugins?: (query: string) => void;
+}) {
   const { t, locale } = useI18n();
   const relaySession = useRelaySession();
   const [config, setConfig] = useState<ModelsJson>({ providers: {} });
@@ -2617,7 +2707,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
     }
     const group = selectedRelayGroups.find((entry) => entry.providerId === relaySelection.providerId);
     const provider = config.providers?.[relaySelection.providerId];
-    if (!group || !provider) return <ConfigEmptyState>这个分组正在同步，请稍后重试。</ConfigEmptyState>;
+    if (!group) return <ConfigEmptyState>这个分组正在同步，请稍后重试。</ConfigEmptyState>;
     if (relaySelection.type === "group") {
       return <RelayGroupDetail
         key={group.providerId}
@@ -2627,6 +2717,15 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
         onAddModels={(models) => addDiscoveredModels(group.providerId, models)}
       />;
     }
+    if (group.imageModels?.includes(relaySelection.modelId)) {
+      return <RelayImageModelDetail
+        key={`${group.providerId}-${relaySelection.modelId}`}
+        group={group}
+        modelId={relaySelection.modelId}
+        onOpenPlugins={onOpenPlugins}
+      />;
+    }
+    if (!provider) return <ConfigEmptyState>该分组没有可用的对话模型。</ConfigEmptyState>;
     const index = (provider.models ?? []).findIndex((model) => model.id === relaySelection.modelId);
     const model = index >= 0 ? provider.models?.[index] : undefined;
     if (!model || index < 0) return <ConfigEmptyState>该模型已不在当前分组中。</ConfigEmptyState>;
@@ -2709,7 +2808,10 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
                   ) : selectedRelayGroups.map((group) => {
                     const expanded = expandedRelayGroups.has(group.providerId);
                     const provider = config.providers?.[group.providerId];
-                    const models = provider?.models ?? [];
+                    const models = [
+                      ...(provider?.models ?? []).map((model) => ({ ...model, imageGeneration: false as const })),
+                      ...(group.imageModels ?? []).map((id) => ({ id, name: id, reasoning: false, imageGeneration: true as const })),
+                    ];
                     const groupSelected = relaySelection?.type === "group" && relaySelection.providerId === group.providerId;
                     return (
                       <div key={group.providerId} className="relay-sidebar-group">
@@ -2747,7 +2849,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
                             && relaySelection.modelId === model.id;
                           return (
                             <ConfigSidebarItem
-                              key={model.id}
+                              key={`${model.imageGeneration ? "image" : "chat"}:${model.id}`}
                               active={active}
                               className="models-sidebar-indented-item"
                               onClick={() => setRelaySelection({
@@ -2758,6 +2860,7 @@ export function ModelsConfig({ onClose, embedded = false }: { onClose: () => voi
                               })}
                             >
                               <ConfigSidebarText className="is-grow" title={model.id}>{model.name || model.id}</ConfigSidebarText>
+                              {model.imageGeneration && <span className="relay-reasoning-badge" title="图片生成">图</span>}
                               {model.reasoning && <span className="relay-reasoning-badge">T</span>}
                             </ConfigSidebarItem>
                           );

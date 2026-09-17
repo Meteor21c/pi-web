@@ -90,6 +90,12 @@ export async function persistRelayProvider(opts: {
 
 /** 删除一个 relay provider（密钥同步清理已删除的 key 时使用）。 */
 export async function removeRelayProvider(providerId: string): Promise<void> {
+  removeRelayProviderConfig(providerId);
+  await removeStoredCredentialIfType(providerId, "api_key").catch(() => {});
+}
+
+/** Remove chat-model configuration while retaining a credential used by an image-only group. */
+export function removeRelayProviderConfig(providerId: string): void {
   const config = readModelsConfig();
   const providers = isRecord(config.providers)
     ? { ...config.providers }
@@ -98,5 +104,4 @@ export async function removeRelayProvider(providerId: string): Promise<void> {
     delete providers[providerId];
     writeModelsConfig({ ...config, providers });
   }
-  await removeStoredCredentialIfType(providerId, "api_key").catch(() => {});
 }

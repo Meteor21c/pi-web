@@ -397,6 +397,7 @@ export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessi
   const [mountedSections, setMountedSections] = useState<ReadonlySet<SettingsSection>>(
     () => new Set([section]),
   );
+  const [pluginSearchQuery, setPluginSearchQuery] = useState("");
   const sections: { id: SettingsSection; label: string; requiresProject: boolean }[] = [
     { id: "general", label: t("settings.general"), requiresProject: false },
     { id: "models", label: t("common.models"), requiresProject: false },
@@ -488,10 +489,23 @@ export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessi
 
         <main className="settings-dialog-main">
           {sectionHost("general", <GeneralSettings sessionId={sessionId} onSessionReloaded={onSessionReloaded} quoteSelectionEnabled={quoteSelectionEnabled} onQuoteSelectionChange={onQuoteSelectionChange} />)}
-          {sectionHost("models", <ModelsConfig embedded onClose={onClose} />)}
+          {sectionHost("models", <ModelsConfig embedded
+            onClose={onClose}
+            onOpenPlugins={(query) => {
+              setPluginSearchQuery(query);
+              activateSection("plugins");
+            }}
+          />)}
           {cwd && sectionHost("skills", <SkillsConfig embedded key={cwd} cwd={cwd} onClose={onClose} />)}
           {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} sessionId={sessionId} onClose={onClose} onReloaded={onSessionReloaded} />)}
-          {cwd && sectionHost("plugins", <PluginsConfig embedded key={cwd} cwd={cwd} sessionId={sessionId} onClose={onClose} onReloaded={onSessionReloaded} />)}
+          {cwd && sectionHost("plugins", <PluginsConfig embedded
+            key={cwd}
+            cwd={cwd}
+            sessionId={sessionId}
+            initialCommunityQuery={pluginSearchQuery}
+            onClose={onClose}
+            onReloaded={onSessionReloaded}
+          />)}
         </main>
       </div>
     </div>

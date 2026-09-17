@@ -55,6 +55,10 @@ interface Props {
   modelScopeWarnings?: string[];
   onModelChange?: (provider: string, modelId: string) => void;
   modelSwitching?: boolean;
+  imageModel?: { provider: string; modelId: string } | null;
+  imageModelList?: { id: string; name: string; provider: string; providerDisplayName?: string }[];
+  onImageModelChange?: (provider: string, modelId: string) => void;
+  imageModelSwitching?: boolean;
   onCompact?: () => void;
   onAbortCompaction?: () => void;
   isCompacting?: boolean;
@@ -577,6 +581,7 @@ export function ModelScopeWarningBanner({ warnings }: { warnings?: string[] }) {
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
+  imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
@@ -1634,6 +1639,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       name,
     }));
   })();
+  const imageModelOptions: ModelSelectorOption[] = (imageModelList ?? []).map((item) => ({
+    provider: item.provider,
+    providerDisplayName: item.providerDisplayName,
+    modelId: item.id,
+    name: item.name,
+  }));
 
   const compactSavedTokens = compactResult
     ? Math.max(0, compactResult.tokensBefore - compactResult.estimatedTokensAfter)
@@ -2545,6 +2556,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 disabled={isStreaming}
                 busy={modelSwitching}
                 isAutoSelection={isAutoModelSelection}
+              />
+            )}
+            {imageModelOptions.length > 0 && onImageModelChange && (
+              <ModelSelector
+                options={imageModelOptions}
+                value={imageModel}
+                onChange={onImageModelChange}
+                disabled={isStreaming}
+                busy={imageModelSwitching}
+                selectedLabel={imageModel ? t("chat.imageModelLabel", { model: imageModel.modelId }) : t("chat.selectImageModel")}
+                emptyLabel={t("chat.selectImageModel")}
+                ariaLabel={t("chat.selectSessionImageModel")}
               />
             )}
           </div>

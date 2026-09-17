@@ -19,6 +19,8 @@ export interface RelayGroupMetadata {
   longContextPricingEnabled?: boolean;
   /** Exact first-tier max_tokens keyed by model id, sourced from the authenticated model plaza. */
   contextWindows?: Record<string, number>;
+  /** Dedicated image-generation model ids exposed by this key. */
+  imageModels?: string[];
   currentConcurrency?: number;
   usage1d?: number;
   usage5h?: number;
@@ -62,6 +64,7 @@ function validMetadata(value: unknown): value is RelayGroupMetadata {
     && typeof value.keyId === "string" && value.keyId.length > 0
     && typeof value.keyName === "string"
     && typeof value.maskedKey === "string"
+    && (value.imageModels === undefined || (Array.isArray(value.imageModels) && value.imageModels.every((model) => typeof model === "string" && model.length > 0)))
     && typeof value.syncedAt === "number" && Number.isFinite(value.syncedAt);
 }
 
@@ -106,6 +109,9 @@ export async function removeRelayAccountConfiguration(accountId: string): Promis
   const providerIds = [...new Set(owned.map((entry) => entry.providerId))];
   for (const providerId of providerIds) await removeRelayProvider(providerId);
   removeRelayGroupsForAccount(accountId);
+  const { syncRelayImageGenerationSettings, hydrateRelayImageGenerationEnvironment } = await import("./relay-image-generation");
+  syncRelayImageGenerationSettings();
+  hydrateRelayImageGenerationEnvironment();
   return providerIds.length;
 }
 
@@ -149,6 +155,7 @@ export function metadataForRelayKey(
   key: RelayKey,
   syncedAt = Date.now(),
   contextWindows?: Record<string, number>,
+  imageModels?: string[],
 ): RelayGroupMetadata {
   const safe = safeRelayKey(key);
   return {
@@ -164,6 +171,7 @@ export function metadataForRelayKey(
     rateMultiplier: safe.rateMultiplier,
     longContextPricingEnabled: safe.longContextPricingEnabled,
     ...(contextWindows && Object.keys(contextWindows).length ? { contextWindows } : {}),
+    ...(imageModels?.length ? { imageModels: [...new Set(imageModels)] } : {}),
     currentConcurrency: safe.currentConcurrency,
     usage1d: safe.usage1d,
     usage5h: safe.usage5h,

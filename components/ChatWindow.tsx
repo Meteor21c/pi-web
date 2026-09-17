@@ -25,6 +25,7 @@ import { isRelayProviderId } from "@/lib/relay-config";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { ToolEntry } from "@/lib/tool-presets";
 import { findChatScrollAnchor, type ChatScrollPosition } from "@/lib/chat-scroll-position";
+import { sendAgentCommand } from "@/lib/agent-client";
 import {
   captureScrollDistance,
   getPromptAnchorSpacerHeight,
@@ -234,6 +235,29 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     deferInitialScroll: Boolean(pendingScrollRestore),
   });
   const persistedSessionId = session?.id ?? sessionIdRef.current ?? undefined;
+  const [imageGeneration, setImageGeneration] = useState<{
+    models: Array<{ providerId: string; groupName: string; modelId: string; alias: string; isDefault: boolean }>;
+  }>({ models: [] });
+  const [imageModelSwitching, setImageModelSwitching] = useState(false);
+  const loadImageGeneration = useCallback(async () => {
+    try {
+      const sessionQuery = persistedSessionId ? `?sessionId=${encodeURIComponent(persistedSessionId)}` : "";
+      const response = await fetch(`/api/relay-image-generation${sessionQuery}`, { cache: "no-store" });
+      const data = await response.json() as {
+        ok?: boolean;
+        models?: Array<{ providerId: string; groupName: string; modelId: string; alias: string; isDefault: boolean }>;
+      };
+      if (response.ok && data.ok) setImageGeneration({ models: data.models ?? [] });
+    } catch {
+      // Image generation is optional; keep the chat controls usable offline.
+    }
+  }, [persistedSessionId]);
+  useEffect(() => {
+    void loadImageGeneration();
+    const refresh = () => void loadImageGeneration();
+    window.addEventListener("relay-config-updated", refresh);
+    return () => window.removeEventListener("relay-config-updated", refresh);
+  }, [loadImageGeneration, modelsRefreshKey]);
   const hasRelayMessages = messages.some((message) => (
     message.role === "assistant" && isRelayProviderId((message as AssistantMessage).provider)
   ));
@@ -251,6 +275,32 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     };
   }, [sessionStats, relayActualCosts]);
   const sessionBusy = agentRunning || bashRunning;
+  const selectedImageModel = imageGeneration.models.find((model) => model.isDefault);
+  const handleImageModelChange = useCallback(async (providerId: string, modelId: string) => {
+    if (imageModelSwitching || sessionBusy) return;
+    setImageModelSwitching(true);
+    try {
+      const response = await fetch("/api/relay-image-generation", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerId, modelId, ...(persistedSessionId ? { sessionId: persistedSessionId } : {}) }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok || result.error) throw new Error(result.error ?? `HTTP ${response.status}`);
+      await loadImageGeneration();
+      // pi-image-gen fixes its model-aware tool schema at registration. Reload
+      // the existing session so the same conversation immediately sees the
+      // new image model without replacing its primary chat model.
+      if (persistedSessionId) {
+        await sendAgentCommand(persistedSessionId, { type: "reload" });
+        await loadSlashCommands();
+      }
+    } catch {
+      // The settings panel remains the recovery path; never interrupt chat.
+    } finally {
+      setImageModelSwitching(false);
+    }
+  }, [imageModelSwitching, loadImageGeneration, loadSlashCommands, persistedSessionId, sessionBusy]);
   const [quotedSelection, setQuotedSelection] = useState<{
     text: string;
     top: number;
@@ -834,6 +884,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       modelScopeWarnings={modelScopeWarnings}
       onModelChange={handleModelChange}
       modelSwitching={modelSwitching}
+      imageModel={selectedImageModel ? { provider: selectedImageModel.providerId, modelId: selectedImageModel.modelId } : null}
+      imageModelList={imageGeneration.models.map((imageModel) => ({
+        provider: imageModel.providerId,
+        providerDisplayName: imageModel.groupName,
+        id: imageModel.modelId,
+        name: imageModel.modelId,
+      }))}
+      onImageModelChange={handleImageModelChange}
+      imageModelSwitching={imageModelSwitching}
       onCompact={session || isNew ? handleCompact : undefined}
       onAbortCompaction={handleAbortCompaction}
       isCompacting={isCompacting}

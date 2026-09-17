@@ -9,7 +9,7 @@ import {
   type RelayModelPlaza,
 } from "./relay-model-plaza";
 import { readModelsConfig } from "./models-config-store";
-import { persistRelayProvider, removeRelayProvider, dominantFamily, protocolFor } from "./relay-config-save";
+import { persistRelayProvider, removeRelayProvider, removeRelayProviderConfig, dominantFamily, protocolFor } from "./relay-config-save";
 import { testRelayConnection } from "./relay-config-test";
 import {
   checkRelaySession,
@@ -30,6 +30,12 @@ import {
   stableRelayAccountId,
   type RelayGroupMetadata,
 } from "./relay-group-store";
+import {
+  hydrateRelayImageGenerationEnvironment,
+  partitionRelayModelIds,
+  syncRelayImageGenerationSettings,
+} from "./relay-image-generation";
+import { storeProviderCredential } from "./provider-credential-store";
 
 type AccountSession = RelaySessionFile;
 
@@ -57,7 +63,10 @@ export interface RelayProviderSummary {
   rateMultiplier?: number;
   longContextPricingEnabled?: boolean;
   contextWindows?: Record<string, number>;
+  imageModels?: string[];
   modelCount: number;
+  chatModelCount: number;
+  imageModelCount: number;
 }
 
 export interface RelaySyncResult {
@@ -127,8 +136,9 @@ function summaryFor(
   family: RelayProviderSummary["family"],
   modelCount: number,
   contextWindows?: Record<string, number>,
+  imageModels: string[] = [],
 ): RelayProviderSummary {
-  const metadata = metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows);
+  const metadata = metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows, imageModels);
   return {
     providerId,
     displayName: metadata.keyName,
@@ -142,7 +152,10 @@ function summaryFor(
     rateMultiplier: metadata.rateMultiplier,
     longContextPricingEnabled: metadata.longContextPricingEnabled,
     contextWindows: metadata.contextWindows,
-    modelCount,
+    imageModels: metadata.imageModels,
+    modelCount: modelCount + imageModels.length,
+    chatModelCount: modelCount,
+    imageModelCount: imageModels.length,
   };
 }
 
@@ -205,6 +218,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     key: RelayKey & { id: number | string };
     providerId: string;
     models: ReturnType<typeof resolveMixedRelayModels>;
+    imageModels: string[];
     contextWindows: Record<string, number>;
     failure?: string;
   }> = [];
@@ -215,11 +229,21 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       const key = keys[cursor++];
       const providerId = providerIdFor(accountId, String(key.id), initial, initialIndex);
       const test = await testRelayConnection(key.key);
-      const resolved = test.ok ? resolveMixedRelayModels(test.modelIds ?? [], getRelayBaseUrl()) : [];
+      const partition = test.ok
+        ? partitionRelayModelIds(test.modelIds ?? [])
+        : { chatModelIds: [], imageModelIds: [] };
+      const resolved = test.ok ? resolveMixedRelayModels(partition.chatModelIds, getRelayBaseUrl()) : [];
       const contextWindows = contextWindowsForModels(plaza, key.group_id, resolved.map((model) => model.id));
       const officialCosts = officialCostsForModels(plaza, key.group_id, resolved.map((model) => model.id));
       const models = applyPlazaContextWindows(resolved, contextWindows, officialCosts);
-      gathered.push({ key, providerId, models, contextWindows, failure: !test.ok ? test.reason : !models.length ? "empty-catalog" : undefined });
+      gathered.push({
+        key,
+        providerId,
+        models,
+        imageModels: partition.imageModelIds,
+        contextWindows,
+        failure: !test.ok ? test.reason : !models.length && !partition.imageModelIds.length ? "empty-catalog" : undefined,
+      });
     }
   }));
 
@@ -232,7 +256,9 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     const summaries: RelayProviderSummary[] = [];
     const warnings: NonNullable<RelaySyncResult["warnings"]> = [];
     try {
-      const nextMetadata = gathered.map(({ key, providerId, contextWindows }) => metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows));
+      const nextMetadata = gathered.map(({ key, providerId, contextWindows, imageModels }) => (
+        metadataForRelayKey(accountId, providerId, key, Date.now(), contextWindows, imageModels)
+      ));
       const presentProviderIds = new Set(nextMetadata.map((entry) => entry.providerId));
 
       // The website key list is authoritative in account-sync mode. These
@@ -248,7 +274,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       }
 
       for (const item of gathered) {
-        const { key, providerId, models, contextWindows, failure } = item;
+        const { key, providerId, models, imageModels, contextWindows, failure } = item;
         if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };
         if (failure) {
           warnings.push({ providerId, reason: failure });
@@ -256,18 +282,27 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
           continue;
         }
         const family = dominantFamily(models.map((model) => model.id));
-        await persistRelayProvider({
-          providerId,
-          displayName: displayNameFor(key),
-          apiKey: key.key,
-          ...protocolFor(family),
-          models,
-        });
-        summaries.push(summaryFor(accountId, key, providerId, family, models.length, contextWindows));
+        if (models.length) {
+          await persistRelayProvider({
+            providerId,
+            displayName: displayNameFor(key),
+            apiKey: key.key,
+            ...protocolFor(family),
+            models,
+          });
+        } else {
+          // Image-only groups still need a credential, but must never appear as
+          // a conversational provider in models.json.
+          removeRelayProviderConfig(providerId);
+          await storeProviderCredential(providerId, { type: "api_key", key: key.key });
+        }
+        summaries.push(summaryFor(accountId, key, providerId, family, models.length, contextWindows, imageModels));
       }
 
       if (epoch !== relayOperationEpoch()) return { ok: false, reason: "unauthenticated", accountId };
       replaceRelayGroupsForAccount(accountId, nextMetadata);
+      syncRelayImageGenerationSettings();
+      hydrateRelayImageGenerationEnvironment();
     } catch {
       return {
         ok: false,

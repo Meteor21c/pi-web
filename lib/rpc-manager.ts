@@ -44,6 +44,7 @@ import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import { createSessionScopedSettingsManager } from "./plugin-activation";
+import { withRelayImageGenerationSession } from "./relay-image-generation";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -952,26 +953,28 @@ export class AgentSessionWrapper {
       }
 
       case "reload": {
-        if (this.extensionUiAbortController.signal.aborted) {
-          this.extensionUiAbortController = new AbortController();
-        }
-        const activeToolNames = this.inner.getActiveToolNames();
-        await this.waitForExtensionsBound();
-        this.extensionStatuses.clear();
-        this.resetExtensionWidgetsForReload();
-        // Plugin mode changes are persisted outside this runtime. Refresh the
-        // settings snapshot before ResourceLoader resolves packages so the
-        // session-local filter sees the latest mode and package list.
-        await this.inner.settingsManager.reload?.();
-        this.syncProjectTrust();
-        await this.inner.reload();
-        this.setActiveToolSelection(activeToolNames);
-        if (typeof this.inner.bindExtensions !== "function") {
-          this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
-        }
-        this.applyExactSystemPrompt();
-        invalidateModelsCache();
-        return { success: true };
+        return withRelayImageGenerationSession(this.inner.sessionManager, async () => {
+          if (this.extensionUiAbortController.signal.aborted) {
+            this.extensionUiAbortController = new AbortController();
+          }
+          const activeToolNames = this.inner.getActiveToolNames();
+          await this.waitForExtensionsBound();
+          this.extensionStatuses.clear();
+          this.resetExtensionWidgetsForReload();
+          // Plugin mode changes are persisted outside this runtime. Refresh the
+          // settings snapshot before ResourceLoader resolves packages so the
+          // session-local filter sees the latest mode and package list.
+          await this.inner.settingsManager.reload?.();
+          this.syncProjectTrust();
+          await this.inner.reload();
+          this.setActiveToolSelection(activeToolNames);
+          if (typeof this.inner.bindExtensions !== "function") {
+            this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
+          }
+          this.applyExactSystemPrompt();
+          invalidateModelsCache();
+          return { success: true };
+        });
       }
 
       case "abort_compaction": {
@@ -2003,7 +2006,7 @@ export async function startRpcSession(
   );
   const chatOnly = selectedToolNames?.length === 0 && !subagentLoadsResources;
   const finishStartingSession = trackStartingSession(sessionCwd);
-  const starting = (async () => {
+  const starting = withRelayImageGenerationSession(sessionManager, async () => {
     // Some extensions access the SDK's global theme even outside the terminal UI.
     if (!chatOnly) initTheme();
     const agentDir = getAgentDir();
@@ -2167,7 +2170,7 @@ export async function startRpcSession(
     registerRpcWrapper(wrapper);
 
     return { session: wrapper, realSessionId };
-  })().finally(() => {
+  }).finally(() => {
     locks.delete(sessionId);
     finishStartingSession();
   });
