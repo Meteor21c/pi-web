@@ -7,6 +7,7 @@ import { listSessionFamilies } from "@/lib/session-family";
 import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { skillExpansionToCommand } from "@/lib/slash-display";
+import { MeteorAgentDownloadLink } from "./MeteorAgentDownloadLink";
 import { getProjectActivity, getRecentProjects, sessionsForProject } from "@/lib/project-groups";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
 import { formatRelativeTime } from "@/lib/i18n/format";
@@ -1046,6 +1047,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         {/* logo 独占一行；新会话/搜索独立成行——窄边栏下互不遮挡 */}
         <div style={{ marginBottom: 10 }}>
           <MeteorAgentTitle />
+          <div style={{ marginTop: 6 }}>
+            <MeteorAgentDownloadLink variant="compact" />
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
           <button
