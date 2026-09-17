@@ -1183,14 +1183,18 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
   const resultDiff = result && !result.isError ? getResultDiff(result) : null;
 
   // Result display
-  const resultText = result
+  const rawResultText = result
     ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join("\n")
     : null;
   const resultImages = getToolResultImages(result, block.toolName, cwd, sessionId);
-  const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
   const isError = result?.isError ?? false;
-  const subagent = isSubagentToolDetails(result?.details) ? result.details : null;
   const hasGeneratedImages = !isError && block.toolName === "image_generate" && resultImages.length > 0;
+  // The plugin's text payload is a filesystem path intended for the CLI. Once
+  // the browser has a real image URL, keep that implementation detail out of
+  // the ordinary user's result pane.
+  const resultText = hasGeneratedImages ? "" : rawResultText;
+  const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
+  const subagent = isSubagentToolDetails(result?.details) ? result.details : null;
   // Image generation is a user-facing result, not a diagnostic tool call. Open
   // it as soon as the plugin returns its image details (including after the
   // initial render, when the live tool result arrives asynchronously).
