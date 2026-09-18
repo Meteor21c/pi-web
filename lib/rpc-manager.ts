@@ -52,6 +52,7 @@ import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./c
 import { createSessionScopedSettingsManager } from "./plugin-activation";
 import { withRelayImageGenerationSession } from "./relay-image-generation";
 import { appendRelayImageBillingEntries } from "./relay-image-billing";
+import { installRelayResponseRepair } from "./relay-responses";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -2117,6 +2118,7 @@ export async function startRpcSession(
           },
       ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
     });
+    installRelayResponseRepair(services.modelRuntime);
     const resolvedScope = await resolveVisibleModels(
       services.modelRuntime,
       services.settingsManager.getEnabledModels(),

@@ -18,6 +18,7 @@ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-acces
 import { projectTrustReloadOptions } from "@/lib/project-trust";
 import { readModelsConfig } from "@/lib/models-config-store";
 import { readRelayGroups, relayAuthorizedModelIdsByProvider } from "@/lib/relay-group-store";
+import { installRelayResponseRepair } from "@/lib/relay-responses";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,7 @@ async function loadModels(cwd: string): Promise<ModelsData> {
     agentDir,
     ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
   });
+  installRelayResponseRepair(services.modelRuntime);
   const modelError = services.modelRuntime.getError();
   const settings: SettingsManager = services.settingsManager;
   // `enabledModels` supports globs and fuzzy patterns, so resolve it the same

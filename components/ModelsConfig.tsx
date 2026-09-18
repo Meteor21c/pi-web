@@ -902,6 +902,10 @@ function ModelDetail({
   const catalogUndoRef = useRef<ModelEntry | null>(null);
   const costTemplateRef = useRef(model.cost);
   const set = <K extends keyof ModelEntry>(k: K, v: ModelEntry[K]) => onChange({ ...model, [k]: v });
+  const effectiveApi = model.api ?? provider.api ?? "openai-completions";
+  const relayOpenAiProtocolSwitch = relayMode
+    && /^(?:gpt-|codex(?:-|$))/i.test(model.id.trim())
+    && (effectiveApi === "openai-responses" || effectiveApi === "openai-completions");
   const setCost = (key: ModelCostKey, value: string) => {
     const nextDraft = { ...costDraftRef.current, [key]: value };
     const completeCost = parseCompleteModelCost(nextDraft);
@@ -1156,6 +1160,25 @@ function ModelDetail({
           <Field label="ID *"><TextInput value={model.id} onChange={(v) => set("id", v)} placeholder="model-id" mono /></Field>
           <Field label="Name"><TextInput value={model.name ?? ""} onChange={(v) => set("name", v || undefined)} placeholder="Display name" /></Field>
         </div>
+      )}
+
+      {relayOpenAiProtocolSwitch && (
+        <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "11px 12px", background: "var(--bg-subtle)" }}>
+          <Field label="接口模式">
+            <select
+              value={effectiveApi}
+              onChange={(event) => set("api", event.target.value)}
+              aria-label="接口模式"
+              style={{ ...inputStyle, background: "var(--bg-panel)" }}
+            >
+              <option value="openai-responses">Responses（推荐）</option>
+              <option value="openai-completions">Chat Completions（备用）</option>
+            </select>
+          </Field>
+          <div style={{ marginTop: 7, color: "var(--text-dim)", fontSize: 10, lineHeight: 1.5 }}>
+            Responses 支持更完整的工具和文件能力。如果该模型出现响应超时或协议错误，可切换到 Chat Completions；保存模型配置后，新请求会使用新的接口。
+          </div>
+        </section>
       )}
 
       {!relayMode && <div style={{ padding: "2px 0" }}>

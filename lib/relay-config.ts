@@ -26,3 +26,14 @@ export function getRelayBaseUrl(): string {
 export function getRelayResponsesBaseUrl(base = getRelayBaseUrl()): string {
   return `${base}/v1`;
 }
+
+/**
+ * The relay's GPT/Codex streams can occasionally emit malformed Responses
+ * SSE: long output chunks can end with an unterminated field or an extra JSON
+ * character. Keep this compatibility rule in one place for the stream repair
+ * layer. The API check in the caller keeps this scoped to conversational
+ * Responses models, not image endpoints.
+ */
+export function relayModelNeedsResponseRepair(modelId: string): boolean {
+  return /^(?:gpt-|codex(?:-|$))/i.test(modelId.trim());
+}
