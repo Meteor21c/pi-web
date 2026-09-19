@@ -52,8 +52,14 @@ async function fetchLatestVersion(): Promise<AppUpdateResponse> {
   };
 }
 
-async function loadUpdateStatus(): Promise<AppUpdateResponse> {
+async function loadUpdateStatus(forceRefresh = false): Promise<AppUpdateResponse> {
   const cache = getCache();
+  if (forceRefresh) {
+    const value = await fetchLatestVersion();
+    cache.value = value;
+    cache.expiresAt = Date.now() + CACHE_TTL_MS;
+    return value;
+  }
   if (cache.value && cache.expiresAt > Date.now()) return cache.value;
   if (!cache.inFlight) {
     cache.inFlight = fetchLatestVersion().then((value) => {
@@ -73,7 +79,7 @@ async function loadUpdateStatus(): Promise<AppUpdateResponse> {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   if (SKIP_VERSION_CHECK) {
     return NextResponse.json({
       currentVersion: CURRENT_VERSION,
@@ -85,7 +91,8 @@ export async function GET() {
     } satisfies AppUpdateResponse);
   }
   try {
-    return NextResponse.json(await loadUpdateStatus());
+    const forceRefresh = new URL(request.url).searchParams.get("refresh") === "1";
+    return NextResponse.json(await loadUpdateStatus(forceRefresh));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },

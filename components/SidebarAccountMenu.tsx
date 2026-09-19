@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
 import type { SettingsSection } from "@/lib/settings-navigation";
-import type { AppRestartStatus } from "@/lib/api-types";
+import type { AppRestartStatus, AppUpdateResponse } from "@/lib/api-types";
+import { announceManualAppUpdateResult } from "@/lib/app-update-browser";
 import { SettingsSectionIcon } from "./SettingsPanel";
 import styles from "./SidebarAccountMenu.module.css";
 
@@ -19,6 +20,59 @@ const MENU_SECTIONS: Array<{
   { id: "agents", labelKey: "common.agents", requiresProject: true },
   { id: "plugins", labelKey: "common.plugins", requiresProject: true },
 ];
+
+type UpdateCheckPhase = "idle" | "checking" | "latest" | "found" | "error";
+
+function CheckForUpdatesButton() {
+  const { t } = useI18n();
+  const [phase, setPhase] = useState<UpdateCheckPhase>("idle");
+  const [message, setMessage] = useState<string | null>(null);
+
+  const check = async () => {
+    if (phase === "checking") return;
+    setPhase("checking");
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/app-update?refresh=1&manual=${Date.now()}`, { cache: "no-store" });
+      const result = await response.json() as AppUpdateResponse & { error?: string };
+      if (!response.ok || result.error) throw new Error(result.error ?? `HTTP ${response.status}`);
+      if (result.updateAvailable) {
+        setPhase("found");
+        setMessage(t("appUpdate.found", { version: result.latestVersion }));
+        announceManualAppUpdateResult(result);
+        return;
+      }
+      setPhase("latest");
+      setMessage(t("appUpdate.latest", { version: result.currentVersion }));
+    } catch {
+      setPhase("error");
+      setMessage(t("appUpdate.checkFailed"));
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={styles.restartButton}
+        onClick={() => void check()}
+        disabled={phase === "checking"}
+        title={message ?? t("appUpdate.check")}
+        aria-label={t("appUpdate.check")}
+        data-check-app-update="true"
+      >
+        <svg className={phase === "checking" ? styles.restartIconSpinning : undefined} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 12a8 8 0 0 0-14.9-4L3 11" />
+          <path d="M3 5v6h6" />
+          <path d="M4 12a8 8 0 0 0 14.9 4L21 13" />
+          <path d="M21 19v-6h-6" />
+        </svg>
+        <span>{phase === "checking" ? t("appUpdate.checking") : t("appUpdate.check")}</span>
+      </button>
+      {message && <div className={styles.restartHint} role={phase === "error" ? "alert" : "status"}>{message}</div>}
+    </>
+  );
+}
 
 type RestartUiPhase = "checking" | "ready" | "unsupported" | "restarting" | "error";
 
@@ -242,6 +296,7 @@ export function SidebarAccountMenu({
             );
           })}
           <div className={styles.menuDivider} role="separator" />
+          <CheckForUpdatesButton />
           <RestartLocalServiceButton />
         </div>
       )}

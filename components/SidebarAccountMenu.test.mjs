@@ -17,6 +17,14 @@ test("keeps restart inside the expanded account menu", () => {
   assert.doesNotMatch(triggerTail.split("    </div>", 1)[0], /RestartLocalServiceButton/);
 });
 
+test("offers a cache-bypassing manual update check in the account menu", () => {
+  assert.match(source, /data-check-app-update="true"/);
+  assert.match(source, /\/api\/app-update\?refresh=1&manual=/);
+  assert.match(source, /announceManualAppUpdateResult\(result\)/);
+  assert.match(source, /appUpdate\.latest/);
+  assert.match(source, /appUpdate\.checkFailed/);
+});
+
 test("does not offer restart while the launcher is unavailable or a task is running", () => {
   assert.match(source, /phase === "unsupported"/);
   assert.match(source, /runningCount > 0/);

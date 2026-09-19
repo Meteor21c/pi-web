@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { AppUpdateInstallStatus, AppUpdateResponse } from "@/lib/api-types";
+import { MANUAL_APP_UPDATE_RESULT_EVENT } from "@/lib/app-update-browser";
 
 const SNOOZE_KEY = "magent-update-snooze";
 const SNOOZE_MS = 24 * 60 * 60 * 1000;
@@ -59,6 +60,21 @@ export function AppUpdatePrompt() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       controller?.abort();
     };
+  }, []);
+
+  useEffect(() => {
+    const onManualUpdateResult = (event: Event) => {
+      const result = (event as CustomEvent<AppUpdateResponse>).detail;
+      if (!result?.updateAvailable) return;
+      try {
+        localStorage.removeItem(SNOOZE_KEY);
+      } catch {}
+      setError(null);
+      setUpdate(result);
+      setOpen(true);
+    };
+    window.addEventListener(MANUAL_APP_UPDATE_RESULT_EVENT, onManualUpdateResult);
+    return () => window.removeEventListener(MANUAL_APP_UPDATE_RESULT_EVENT, onManualUpdateResult);
   }, []);
 
   const loadInstallStatus = useCallback(async () => {

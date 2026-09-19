@@ -30,6 +30,7 @@ export interface RelayModelDef {
   maxTokens?: number;
   api?: string;
   baseUrl?: string;
+  thinkingLevelMap?: Record<string, string | null>;
   compat?: Record<string, unknown>;
 }
 
@@ -79,18 +80,19 @@ const TABLE_BY_FAMILY: Record<"gpt" | "claude", Map<string, RelayModelDef>> = {
   claude: new Map(CLAUDE_MODELS.map((x) => [x.id, x])),
 };
 
-type RelayModelCapabilities = Pick<RelayModelDef, "reasoning" | "input">;
+type RelayModelCapabilities = Pick<RelayModelDef, "reasoning" | "input" | "thinkingLevelMap">;
 
 /**
  * Only enrich exact IDs from well-known upstream catalogs. An unknown or
  * relay-specific alias must keep the existing conservative fallback so that a
  * similar-looking name never enables a request feature the relay cannot use.
  */
-const COMMON_CAPABILITIES = new Map<string, RelayModelCapabilities>(
-  (["xai", "google", "deepseek"] as const).flatMap((provider) => (
+const BUILTIN_CAPABILITIES = new Map<string, RelayModelCapabilities>(
+  (["openai", "anthropic", "xai", "google", "deepseek"] as const).flatMap((provider) => (
     getBuiltinModels(provider).map((model) => [model.id.toLocaleLowerCase(), {
       reasoning: model.reasoning,
       input: model.input.filter((value): value is "text" | "image" => value === "text" || value === "image"),
+      thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
     }] as const)
   )),
 );
@@ -142,20 +144,28 @@ export function resolveRelayModels(
     }));
 }
 
-// Relay aliases use their documented family capabilities, not catalog presence
-// as evidence. Fable/review/spark remain conservative pending upstream validation.
+// Exact SDK IDs inherit the authoritative capability map. Relay-only aliases
+// fall back to documented family behavior; unverified review/spark/fable-like
+// aliases remain conservative rather than receiving capabilities by name.
 function withKnownCapabilities(model: RelayModelDef): RelayModelDef {
+  const capabilities = BUILTIN_CAPABILITIES.get(model.id.toLocaleLowerCase());
+  if (capabilities) return withCapabilities(model, capabilities);
   const conservative = /fable|auto-review|spark/.test(model.id);
   return { ...model, reasoning: !conservative, input: conservative ? ["text"] : ["text", "image"] };
 }
 
 function withCommonCapabilities(model: RelayModelDef): RelayModelDef {
-  const capabilities = COMMON_CAPABILITIES.get(model.id.toLocaleLowerCase());
+  const capabilities = BUILTIN_CAPABILITIES.get(model.id.toLocaleLowerCase());
   if (!capabilities) return model;
+  return withCapabilities(model, capabilities);
+}
+
+function withCapabilities(model: RelayModelDef, capabilities: RelayModelCapabilities): RelayModelDef {
   return {
     ...model,
     reasoning: capabilities.reasoning,
     input: capabilities.input ? [...capabilities.input] : model.input,
+    thinkingLevelMap: capabilities.thinkingLevelMap ? { ...capabilities.thinkingLevelMap } : undefined,
   };
 }
 

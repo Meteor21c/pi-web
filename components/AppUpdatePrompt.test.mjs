@@ -16,6 +16,13 @@ test("the update prompt checks again while a long-running app remains open", () 
   assert.match(source, /visibilitychange/);
 });
 
+test("a manual update check opens the prompt even when the release was snoozed", () => {
+  assert.match(source, /MANUAL_APP_UPDATE_RESULT_EVENT/);
+  assert.match(source, /localStorage\.removeItem\(SNOOZE_KEY\)/);
+  assert.match(source, /setUpdate\(result\)/);
+  assert.match(source, /setOpen\(true\)/);
+});
+
 test("the update prompt describes preserved data and blocks active-task updates", () => {
   assert.match(source, /appUpdate\.dataSafe/);
   assert.match(source, /runningCount > 0/);
