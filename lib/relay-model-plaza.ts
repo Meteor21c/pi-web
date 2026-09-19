@@ -132,7 +132,7 @@ export function firstTierContextWindow(
   if (!plaza || groupId === undefined) return undefined;
   const group = plaza.groups.find((entry) => String(entry.id) === String(groupId));
   if (!group || group.long_context_pricing_enabled === false) return undefined;
-  const model = group.models.find((entry) => entry.name.toLocaleLowerCase() === modelId.toLocaleLowerCase());
+  const model = group.models.find((entry) => sameRelayModelName(entry.name, modelId));
   if (!model || (model.pricing?.billing_mode && model.pricing.billing_mode !== "token")) return undefined;
   const first = [...(model.pricing?.intervals ?? [])]
     .filter((entry) => entry.max_tokens !== null)
@@ -151,6 +151,24 @@ export function contextWindowsForModels(
   }));
 }
 
+/**
+ * The relay and upstream catalogs have used both `claude-fable-5.1` and
+ * `claude-fable-5-1` for the same model. Keep the caller's id in the stored
+ * config, but compare a canonical form when joining it with model-plaza data.
+ * This is deliberately scoped to the known Fable alias instead of stripping
+ * punctuation from every model id (which could merge unrelated relay names).
+ */
+export function normalizeRelayModelName(value: string): string {
+  return value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/claude-fable-5[.-]1(?=$|[^0-9])/g, "claude-fable-5-1");
+}
+
+function sameRelayModelName(left: string, right: string): boolean {
+  return normalizeRelayModelName(left) === normalizeRelayModelName(right);
+}
+
 function perMillion(value: number): number {
   return Number((value * 1_000_000).toPrecision(12));
 }
@@ -163,7 +181,7 @@ export function officialCostForModel(
 ): RelayOfficialCost | undefined {
   if (!plaza || groupId === undefined) return undefined;
   const group = plaza.groups.find((entry) => String(entry.id) === String(groupId));
-  const model = group?.models.find((entry) => entry.name.toLocaleLowerCase() === modelId.toLocaleLowerCase());
+  const model = group?.models.find((entry) => sameRelayModelName(entry.name, modelId));
   const prices = model?.official_pricing;
   if (!model || !prices || (model.pricing?.billing_mode && model.pricing.billing_mode !== "token")) return undefined;
   if (typeof prices.input_price !== "number" || typeof prices.output_price !== "number") return undefined;

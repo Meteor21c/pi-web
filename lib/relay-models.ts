@@ -41,6 +41,10 @@ const GPT_FLAGSHIP_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW
 const OPUS_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } } as const;
 const SONNET_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } as const;
 const HAIKU_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } } as const;
+// Anthropic's Fable card differs from Sonnet. These values are only the
+// offline fallback; an account sync prefers the relay model-plaza prices.
+const FABLE5_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 } } as const;
+const FABLE51_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 } } as const;
 
 /** GPT 分组（M0 实测目录） */
 const GPT_MODELS: RelayModelDef[] = [
@@ -56,7 +60,7 @@ const GPT_MODELS: RelayModelDef[] = [
   { id: "gpt-6-astra", ...GPT_FLAGSHIP_FAMILY },
 ];
 
-/** Claude 分组（M0 实测目录；fable 家族参数未公开，按 sonnet 档估） */
+/** Claude 分组（M0 实测目录；在线同步时以模型广场官方价覆盖） */
 const CLAUDE_MODELS: RelayModelDef[] = [
   { id: "claude-opus-5", ...OPUS_FAMILY },
   { id: "claude-opus-4-8", ...OPUS_FAMILY },
@@ -68,8 +72,11 @@ const CLAUDE_MODELS: RelayModelDef[] = [
   { id: "claude-sonnet-4-5-20250929", ...SONNET_FAMILY },
   { id: "claude-haiku-4-5", ...HAIKU_FAMILY },
   { id: "claude-haiku-4-5-20251001", ...HAIKU_FAMILY },
-  { id: "claude-fable-5", ...SONNET_FAMILY },
-  { id: "claude-fable-5.1", ...SONNET_FAMILY },
+  { id: "claude-fable-5", ...FABLE5_FAMILY },
+  { id: "claude-fable-5.1", ...FABLE51_FAMILY },
+  // The relay has emitted the hyphenated spelling as well; keep both forms
+  // available so an offline catalog is useful before the next sync.
+  { id: "claude-fable-5-1", ...FABLE51_FAMILY },
 ];
 
 const GPT_MATCH = /gpt|codex/i;
