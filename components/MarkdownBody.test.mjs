@@ -184,3 +184,40 @@ test("keeps Mermaid source visible while the response is streaming", () => {
   assert.match(html, />Preview</);
   assert.match(html, /A --&gt; B/);
 });
+
+test("previews a standalone SVG response and exposes its accessible description", () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" aria-label="秋日林道上的鹈鹕"><title>备用标题</title><circle cx="5" cy="5" r="4" /></svg>';
+  const html = renderMarkdown(svg);
+
+  assert.match(html, /class="[^"]*svg-code-block/);
+  assert.match(html, /秋日林道上的鹈鹕/);
+  assert.match(html, /data:image\/svg\+xml;charset=utf-8,/);
+  assert.match(html, />Source<\/button>/);
+  assert.doesNotMatch(html, /<circle[^>]*>/);
+});
+
+test("previews fenced SVG and keeps dangerous active content out of the data URL", () => {
+  const svg = '```svg\n<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(2)</script><image href="https://example.com/remote.png" /><rect width="10" height="10" /></svg>\n```';
+  const html = renderMarkdown(svg);
+
+  assert.match(html, /class="[^"]*svg-code-block/);
+  assert.doesNotMatch(html, /onload/);
+  assert.doesNotMatch(html, /alert/);
+  assert.doesNotMatch(html, /example\.com/);
+  assert.match(html, /rect/);
+});
+
+test("keeps a complete SVG response in source mode while streaming", () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10" /></svg>';
+  const html = renderMarkdown(svg, { isStreaming: true });
+
+  assert.match(html, /class="markdown-code-block"/);
+  assert.match(html, />Preview<\/button>/);
+  assert.match(html, /&lt;svg/);
+  assert.doesNotMatch(html, /data:image\/svg\+xml/);
+});
+
+test("uses an SVG description when no title or aria-label is provided", () => {
+  const html = renderMarkdown('<svg xmlns="http://www.w3.org/2000/svg"><desc>一只在秋日林道骑车的鹈鹕</desc><rect width="10" height="10" /></svg>');
+  assert.match(html, /一只在秋日林道骑车的鹈鹕/);
+});

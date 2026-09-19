@@ -228,6 +228,7 @@ function customSelectionExists(config: ModelsJson, selection: Selection): boolea
 }
 
 const API_OPTIONS = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
+const RELAY_OPENAI_MODEL_ID = /^(?:gpt(?:-|$)|chatgpt(?:-|$)|codex(?:-|$)|o\d(?:-|$)|computer-use(?:-|$))/i;
 
 // ── Form field helpers ────────────────────────────────────────────────────────
 
@@ -904,8 +905,23 @@ function ModelDetail({
   const set = <K extends keyof ModelEntry>(k: K, v: ModelEntry[K]) => onChange({ ...model, [k]: v });
   const effectiveApi = model.api ?? provider.api ?? "openai-completions";
   const relayOpenAiProtocolSwitch = relayMode
-    && /^(?:gpt-|codex(?:-|$))/i.test(model.id.trim())
+    && RELAY_OPENAI_MODEL_ID.test(model.id.trim())
     && (effectiveApi === "openai-responses" || effectiveApi === "openai-completions");
+  const setRelayOpenAiProtocol = (api: "openai-responses" | "openai-completions") => {
+    const compat = { ...(model.compat ?? {}) };
+    if (api === "openai-completions") {
+      compat.sendSessionAffinityHeaders = true;
+      compat.sessionAffinityFormat = "openai";
+    } else {
+      delete compat.sendSessionAffinityHeaders;
+      delete compat.sessionAffinityFormat;
+    }
+    onChange({
+      ...model,
+      api,
+      compat: Object.keys(compat).length ? compat : undefined,
+    });
+  };
   const setCost = (key: ModelCostKey, value: string) => {
     const nextDraft = { ...costDraftRef.current, [key]: value };
     const completeCost = parseCompleteModelCost(nextDraft);
@@ -1163,20 +1179,35 @@ function ModelDetail({
       )}
 
       {relayOpenAiProtocolSwitch && (
-        <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "11px 12px", background: "var(--bg-subtle)" }}>
-          <Field label="接口模式">
-            <select
-              value={effectiveApi}
-              onChange={(event) => set("api", event.target.value)}
-              aria-label="接口模式"
-              style={{ ...inputStyle, background: "var(--bg-panel)" }}
+        <section className="relay-protocol-mode" aria-labelledby="relay-protocol-mode-title">
+          <div>
+            <div id="relay-protocol-mode-title" className="relay-protocol-mode-title">连接模式</div>
+            <div className="relay-protocol-mode-help">Responses 异常时，可切换到兼容模式继续使用这个模型。</div>
+          </div>
+          <div className="relay-protocol-mode-options" role="radiogroup" aria-label="连接模式">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={effectiveApi === "openai-responses"}
+              className={effectiveApi === "openai-responses" ? "is-active" : undefined}
+              onClick={() => setRelayOpenAiProtocol("openai-responses")}
             >
-              <option value="openai-responses">Responses（推荐）</option>
-              <option value="openai-completions">Chat Completions（备用）</option>
-            </select>
-          </Field>
-          <div style={{ marginTop: 7, color: "var(--text-dim)", fontSize: 10, lineHeight: 1.5 }}>
-            Responses 支持更完整的工具和文件能力。如果该模型出现响应超时或协议错误，可切换到 Chat Completions；保存模型配置后，新请求会使用新的接口。
+              <strong>增强模式</strong>
+              <span>Responses · 推荐，工具和文件能力更完整</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={effectiveApi === "openai-completions"}
+              className={effectiveApi === "openai-completions" ? "is-active" : undefined}
+              onClick={() => setRelayOpenAiProtocol("openai-completions")}
+            >
+              <strong>兼容模式</strong>
+              <span>Chat Completions · 增强模式报错时使用</span>
+            </button>
+          </div>
+          <div className="relay-protocol-mode-note">
+            切换后请点击右下角“保存”，再重新加载当前会话。兼容模式下，部分文件上传和工具调用可能不可用。
           </div>
         </section>
       )}
@@ -2889,6 +2920,9 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
                           const active = relaySelection?.type === "model"
                             && relaySelection.providerId === group.providerId
                             && relaySelection.modelId === model.id;
+                          const compatibilityMode = !model.imageGeneration
+                            && model.api === "openai-completions"
+                            && RELAY_OPENAI_MODEL_ID.test(model.id);
                           return (
                             <ConfigSidebarItem
                               key={`${model.imageGeneration ? "image" : "chat"}:${model.id}`}
@@ -2903,6 +2937,7 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
                             >
                               <ConfigSidebarText className="is-grow" title={model.id}>{model.name || model.id}</ConfigSidebarText>
                               {model.imageGeneration && <span className="relay-reasoning-badge" title="图片生成">图</span>}
+                              {compatibilityMode && <span className="relay-protocol-badge" title="Chat Completions 兼容模式">兼容</span>}
                               {model.reasoning && <span className="relay-reasoning-badge">T</span>}
                             </ConfigSidebarItem>
                           );

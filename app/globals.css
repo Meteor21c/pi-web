@@ -1106,6 +1106,11 @@ pre, code {
   background: var(--bg);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 42%, transparent);
 }
+.markdown-code-block.is-collapsed {
+  border-color: color-mix(in srgb, var(--border) 72%, transparent);
+  background: var(--bg-panel);
+  box-shadow: none;
+}
 .markdown-code-header {
   padding: 5px 10px;
   background: var(--bg-panel);
@@ -1117,10 +1122,25 @@ pre, code {
   align-items: center;
   gap: 8px;
 }
+.markdown-code-block.is-collapsed .markdown-code-header {
+  border-bottom: 0;
+  background: color-mix(in srgb, var(--bg-panel) 86%, var(--bg));
+}
+.markdown-code-summary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+}
 .markdown-code-lang {
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-weight: 650;
+}
+.markdown-code-size {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .markdown-code-actions {
   display: flex;
@@ -1151,6 +1171,17 @@ pre, code {
   background: var(--bg-selected);
   color: var(--text);
 }
+.markdown-code-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.markdown-code-toggle svg {
+  transition: transform 0.15s ease;
+}
+.markdown-code-toggle svg.is-expanded {
+  transform: rotate(180deg);
+}
 
 .mermaid-block {
   padding: 12px;
@@ -1168,6 +1199,43 @@ pre, code {
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+.svg-block {
+  padding: 12px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--bg) 92%, var(--bg-panel));
+}
+.svg-block-caption {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.svg-preview-trigger {
+  width: 100%;
+  max-width: 100%;
+  max-height: min(600px, calc(60dvh / var(--ui-scale, 1)));
+  overflow: auto;
+  text-align: left;
+}
+.svg-preview-trigger:hover {
+  opacity: 0.88;
+}
+.svg-preview-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.svg-block-image {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: min(560px, calc(58dvh / var(--ui-scale, 1)));
+  margin: 0 auto;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-panel);
 }
 
 .mermaid-preview-button {

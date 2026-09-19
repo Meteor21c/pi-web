@@ -54,6 +54,28 @@ export function sessionAffinityCompat(api: string): Record<string, unknown> | un
 }
 
 /**
+ * Keep a user's per-model Responses/Chat Completions fallback choice when an
+ * account sync refreshes the relay catalog. Every other field still comes
+ * from the authoritative catalog so pricing, limits and capabilities update.
+ */
+export function preserveRelayProtocolSelections(
+  models: RelayModelDef[],
+  previousProvider: unknown,
+): RelayModelDef[] {
+  if (!isRecord(previousProvider) || !Array.isArray(previousProvider.models)) return models;
+  const previousById = new Map<string, Record<string, unknown>>();
+  for (const candidate of previousProvider.models) {
+    if (isRecord(candidate) && typeof candidate.id === "string") previousById.set(candidate.id, candidate);
+  }
+  const switchable = new Set(["openai-responses", "openai-completions"]);
+  return models.map((model) => {
+    const previousApi = previousById.get(model.id)?.api;
+    if (typeof previousApi !== "string" || !switchable.has(previousApi) || !switchable.has(model.api ?? "")) return model;
+    return { ...model, api: previousApi };
+  });
+}
+
+/**
  * 写入/更新单个 relay provider（models.json + auth.json 凭据）。
  * - providerId：`meteor21c`（手动贴 key）或 `meteor21c-k<keyId>`（密钥同步）
  * - models：该 key 实际可见聊天目录，允许逐模型 api/baseUrl

@@ -186,6 +186,24 @@ test("per-model settings use one primary divider before advanced settings", () =
   assert.doesNotMatch(modelDetail, /borderBottom: "1px solid var\(--border\)"/);
 });
 
+test("relay GPT models expose a visible Responses and Chat Completions mode switch", () => {
+  const modelDetail = source.slice(
+    source.indexOf("function ModelDetail"),
+    source.indexOf("// ── OAuth detail"),
+  );
+
+  assert.match(modelDetail, /className="relay-protocol-mode"/);
+  assert.match(modelDetail, />增强模式</);
+  assert.match(modelDetail, /Responses · 推荐/);
+  assert.match(modelDetail, />兼容模式</);
+  assert.match(modelDetail, /Chat Completions · 增强模式报错时使用/);
+  assert.match(modelDetail, /setRelayOpenAiProtocol\("openai-completions"\)/);
+  assert.match(modelDetail, /sendSessionAffinityHeaders = true/);
+  assert.match(modelDetail, /重新加载当前会话/);
+  assert.match(source, /Chat Completions 兼容模式/);
+  assert.match(source, />兼容<\/span>/);
+});
+
 test("thinking level overrides keep explicit default, disabled, and custom controls", () => {
   const editor = source.slice(
     source.indexOf("function ThinkingLevelMapEditor"),

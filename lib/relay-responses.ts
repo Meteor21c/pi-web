@@ -11,14 +11,68 @@ const RECOVERABLE_DELTA_EVENTS = new Set([
   "response.custom_tool_call_input.delta",
 ]);
 
+// The relay has also been observed to truncate the final string-bearing event
+// for a tool call. Recovering these events is safe because pi-ai still owns
+// the actual tool-call state machine; we only provide the fields it needs to
+// finish the current item.
+const RECOVERABLE_STRING_EVENTS = new Map([
+  ["response.function_call_arguments.done", "arguments"],
+  ["response.custom_tool_call_input.done", "input"],
+  ["response.output_text.done", "text"],
+  ["response.refusal.done", "refusal"],
+  ["response.reasoning_summary_text.done", "text"],
+  ["response.reasoning_text.done", "text"],
+]);
+
 const installedRuntimes = new WeakSet<object>();
 
-/**
- * Read one complete JSON string value from a (possibly truncated) JSON object.
- * The relay failures we have observed happen after the useful delta field, so
- * keeping this deliberately small and conservative avoids inventing content.
- */
-function readJsonStringField(source: string, field: string): string | undefined {
+/** Repair the string portion of a JSON field, including an unterminated tail. */
+function repairJsonStringFragment(encoded: string): string | undefined {
+  let repaired = "";
+  let escaped = false;
+  for (let index = 0; index < encoded.length; index += 1) {
+    const character = encoded[index];
+    if (escaped) {
+      escaped = false;
+      if (character === "u") {
+        const digits = encoded.slice(index + 1, index + 5);
+        if (/^[0-9a-fA-F]{4}$/.test(digits)) {
+          repaired += `\\u${digits}`;
+          index += 4;
+          continue;
+        }
+        repaired += "\\\\";
+        continue;
+      }
+      if (/["\\/bfnrt]/.test(character)) {
+        repaired += `\\${character}`;
+      } else {
+        repaired += `\\\\${character}`;
+      }
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && codePoint < 0x20) {
+      const escapes: Record<string, string> = { "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+      repaired += escapes[character] ?? `\\u${codePoint.toString(16).padStart(4, "0")}`;
+    } else {
+      repaired += character;
+    }
+  }
+  if (escaped) repaired += "\\\\";
+
+  try {
+    return JSON.parse(`"${repaired}"`) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+function readJsonStringField(source: string, field: string, allowPartial = false): { value: string; complete: boolean } | undefined {
   const fieldPattern = new RegExp(`"${escapeRegExp(field)}"\\s*:\\s*"`);
   const match = fieldPattern.exec(source);
   if (!match) return undefined;
@@ -37,13 +91,12 @@ function readJsonStringField(source: string, field: string): string | undefined 
     }
     if (character !== '"') continue;
     const encoded = source.slice(start, index);
-    try {
-      return JSON.parse(`"${encoded}"`) as string;
-    } catch {
-      return undefined;
-    }
+    const value = repairJsonStringFragment(encoded);
+    return value === undefined ? undefined : { value, complete: true };
   }
-  return undefined;
+  if (!allowPartial) return undefined;
+  const value = repairJsonStringFragment(source.slice(start));
+  return value === undefined ? undefined : { value, complete: false };
 }
 
 function readJsonNumberField(source: string, field: string): number | undefined {
@@ -60,26 +113,73 @@ function escapeRegExp(value: string): string {
 
 /**
  * Recover only the fields needed by pi-ai's Responses event reducer. A
- * malformed terminal event is intentionally not recovered; the SDK must still
- * report an incomplete stream instead of silently claiming success.
+ * terminal response event is intentionally not fabricated; a missing terminal
+ * response must still surface as an incomplete stream instead of silently
+ * claiming success. String-bearing content/tool events can be recovered when
+ * their useful value is present but the relay cut off the JSON envelope.
  */
 export function recoverMalformedResponseEvent(source: string): Record<string, unknown> | undefined {
-  const type = readJsonStringField(source, "type");
-  if (!type || !RECOVERABLE_DELTA_EVENTS.has(type)) return undefined;
+  const typeField = readJsonStringField(source, "type", true);
+  const type = typeField?.value;
+  if (!type) return undefined;
 
-  const delta = readJsonStringField(source, "delta");
-  if (delta === undefined) return undefined;
+  const stringField = RECOVERABLE_DELTA_EVENTS.has(type)
+    ? "delta"
+    : RECOVERABLE_STRING_EVENTS.get(type);
+  if (!stringField) return undefined;
+  const valueField = readJsonStringField(source, stringField, true);
+  if (valueField === undefined) return undefined;
 
-  const recovered: Record<string, unknown> = { type, delta };
+  const recovered: Record<string, unknown> = { type, [stringField]: valueField.value };
   for (const field of ["output_index", "content_index", "sequence_number"]) {
     const value = readJsonNumberField(source, field);
     if (value !== undefined) recovered[field] = value;
   }
   for (const field of ["item_id", "call_id", "id"]) {
     const value = readJsonStringField(source, field);
-    if (value !== undefined) recovered[field] = value;
+    if (value !== undefined) recovered[field] = value.value;
   }
   return recovered;
+}
+
+/**
+ * Parse the first complete JSON object in a frame. Some relay responses have
+ * appended a second fragment after a valid event, which otherwise produces
+ * `Unexpected non-whitespace character after JSON` in the OpenAI SDK.
+ */
+function readJsonObjectPrefix(source: string): Record<string, unknown> | undefined {
+  const start = source.search(/\S/);
+  if (start === -1 || source[start] !== "{") return undefined;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth !== 0) continue;
+      try {
+        const parsed = JSON.parse(source.slice(start, index + 1)) as unknown;
+        return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
 }
 
 function repairSseFrame(frame: string): string {
@@ -100,6 +200,13 @@ function repairSseFrame(frame: string): string {
     JSON.parse(data);
     return `${frame}\n\n`;
   } catch {
+    const prefix = readJsonObjectPrefix(data);
+    if (typeof prefix?.type === "string" && prefix.type.startsWith("response.")) {
+      const firstDataIndex = dataIndexes[0];
+      const rewritten = lines.filter((_, index) => !dataIndexes.includes(index));
+      rewritten.splice(firstDataIndex, 0, `data: ${JSON.stringify(prefix)}`);
+      return `${rewritten.join("\n")}\n\n`;
+    }
     const recovered = recoverMalformedResponseEvent(data);
     if (!recovered) return "";
     const firstDataIndex = dataIndexes[0];

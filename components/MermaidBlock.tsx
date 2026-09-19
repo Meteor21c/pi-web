@@ -7,6 +7,7 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { useTheme } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
 import { copyText } from "@/lib/clipboard";
+import { ImagePreview } from "./ImagePreview";
 
 interface MermaidBlockProps {
   code: string;
@@ -17,6 +18,103 @@ interface MermaidBlockProps {
 const ZOOM_STEP = 0.25;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
+
+/**
+ * Return true when a value is a complete, standalone SVG document.
+ *
+ * Model responses sometimes contain SVG directly instead of an image content
+ * block. Keeping this check deliberately strict means an inline icon or a
+ * paragraph that merely mentions `<svg>` still goes through Markdown.
+ */
+export function isSvgMarkup(value: string): boolean {
+  const trimmed = value.trim().replace(/^<\?xml[\s\S]*?\?>\s*/i, "");
+  return /^<svg(?:\s|>)/i.test(trimmed) && /<\/svg\s*>\s*$/i.test(trimmed);
+}
+
+function escapeSvgAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function sanitizeSvgCss(value: string): string {
+  const withoutImports = value
+    .replace(/@import[\s\S]*?;/gi, "")
+    .replace(/(?:javascript|vbscript|data|file):/gi, "")
+    .replace(/expression\s*\([^)]*\)/gi, "none");
+
+  return withoutImports.replace(/url\(\s*(?:(['"])(.*?)\1|([^)]*?))\s*\)/gi, (match, quote: string | undefined, quoted: string | undefined, unquoted: string | undefined) => {
+    const target = (quoted ?? unquoted ?? "").trim();
+    // Local fragment references are needed for gradients, masks, filters and
+    // clip paths. Every other URL is external input and is removed.
+    return /^#[A-Za-z_][\w:.-]*$/.test(target) ? `url(${quote ?? ""}${target}${quote ?? ""})` : "none";
+  });
+}
+
+/**
+ * Make an SVG safe to use as an image data URL.
+ *
+ * We intentionally render model SVG through `<img>` rather than injecting it
+ * into the application DOM. This extra sanitization removes active content
+ * and external references while retaining local styles and animations.
+ */
+export function sanitizeSvgMarkup(markup: string): string {
+  let safe = markup.trim()
+    .replace(/^<\?xml[\s\S]*?\?>\s*/i, "")
+    .replace(/<!DOCTYPE[\s\S]*?(?:>|$)/gi, "");
+
+  safe = safe.replace(/<(script|foreignObject|iframe|object|embed|audio|video|canvas)\b[\s\S]*?<\/\1\s*>/gi, "");
+  safe = safe.replace(/<(script|foreignObject|iframe|object|embed|audio|video|canvas)\b[^>]*\/?>/gi, "");
+  safe = safe.replace(/\s+on[a-z0-9:_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+
+  safe = safe.replace(/\s+((?:xlink:)?href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (match, name: string, doubleQuoted: string | undefined, singleQuoted: string | undefined, unquoted: string | undefined) => {
+    const target = (doubleQuoted ?? singleQuoted ?? unquoted ?? "").trim();
+    return /^#[A-Za-z_][\w:.-]*$/.test(target) ? ` ${name}="${escapeSvgAttribute(target)}"` : "";
+  });
+
+  safe = safe.replace(/\s+style\s*=\s*(?:"([^"]*)"|'([^']*)')/gi, (match, doubleQuoted: string | undefined, singleQuoted: string | undefined) => {
+    const style = sanitizeSvgCss(doubleQuoted ?? singleQuoted ?? "");
+    return ` style="${escapeSvgAttribute(style)}"`;
+  });
+  safe = safe.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, (match, open: string, css: string, close: string) => `${open}${sanitizeSvgCss(css)}${close}`);
+
+  return safe;
+}
+
+function decodeSvgText(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, "")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/** Extract a short human-readable description from a model-generated SVG. */
+export function extractSvgLabel(markup: string): string | undefined {
+  const root = markup.match(/<svg\b[^>]*>/i)?.[0] ?? "";
+  const aria = root.match(/\baria-label\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+  const ariaLabel = decodeSvgText(aria?.[1] ?? aria?.[2] ?? aria?.[3] ?? "");
+  if (ariaLabel) return ariaLabel.slice(0, 240);
+
+  const title = markup.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i);
+  const titleText = decodeSvgText(title?.[1] ?? "");
+  if (titleText) return titleText.slice(0, 240);
+
+  const description = markup.match(/<desc\b[^>]*>([\s\S]*?)<\/desc\s*>/i);
+  const descriptionText = decodeSvgText(description?.[1] ?? "");
+  return descriptionText ? descriptionText.slice(0, 240) : undefined;
+}
+
+export function downloadSvgMarkup(markup: string, filename = "image.svg"): void {
+  const url = URL.createObjectURL(new Blob([markup], { type: "image/svg+xml;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 export function downloadMermaidSvg(svg: SVGSVGElement): void {
   // Mermaid's HTML serialization can leave void tags such as <br> unclosed.
@@ -141,6 +239,74 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
         </div>
       </div>
       {body}
+    </div>
+  );
+}
+
+interface SvgBlockProps {
+  code: string;
+  isStreaming?: boolean;
+  defaultPreview?: boolean;
+}
+
+/**
+ * Preview a complete SVG returned as assistant text while retaining a source
+ * view for copying/debugging. This is intentionally separate from Mermaid:
+ * arbitrary SVG is already a finished image and does not need a diagram
+ * renderer or an HTML injection into the app DOM.
+ */
+export function SvgBlock({ code, isStreaming, defaultPreview = true }: SvgBlockProps) {
+  const { t } = useI18n();
+  const [showPreview, setShowPreview] = useState(defaultPreview);
+  const previewVisible = showPreview && !isStreaming;
+  const safeMarkup = useMemo(() => sanitizeSvgMarkup(code), [code]);
+  const label = useMemo(() => extractSvgLabel(code), [code]);
+  const imageSrc = useMemo(
+    () => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(safeMarkup)}`,
+    [safeMarkup],
+  );
+
+  const previewButton = useMemo(() => (
+    <button
+      type="button"
+      onClick={() => setShowPreview((value) => !value)}
+      disabled={isStreaming}
+      title={isStreaming ? t("i18n.previewAfterStreaming") : (previewVisible ? t("i18n.showSvgSource") : t("i18n.previewSvg"))}
+      className={["markdown-code-action", previewVisible ? "is-active" : ""].filter(Boolean).join(" ")}
+    >
+      {previewVisible ? t("i18n.source") : t("i18n.preview")}
+    </button>
+  ), [isStreaming, previewVisible, t]);
+
+  if (!previewVisible) {
+    return <CodeBlock code={code} lang="svg" headerAction={previewButton} isStreaming={isStreaming} />;
+  }
+
+  return (
+    <div className="markdown-code-block svg-code-block">
+      <div className="markdown-code-header">
+        <span className="markdown-code-lang">svg</span>
+        <div className="markdown-code-actions">
+          <button
+            type="button"
+            className="markdown-code-action"
+            title={`${t("i18n.downloadFile")} (SVG)`}
+            aria-label={`${t("i18n.downloadFile")} (SVG)`}
+            onClick={() => downloadSvgMarkup(safeMarkup)}
+          >
+            SVG
+          </button>
+          {previewButton}
+        </div>
+      </div>
+      <div className="svg-block">
+        <div className="svg-block-caption">{label ?? t("i18n.svgImage")}</div>
+        <ImagePreview src={imageSrc} alt={label ?? t("i18n.svgImage")} className="svg-preview-trigger">
+          {/* SVG is displayed as an image data URL, never injected into the app DOM. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="svg-block-image" src={imageSrc} alt={label ?? t("i18n.svgImage")} decoding="async" />
+        </ImagePreview>
+      </div>
     </div>
   );
 }
@@ -270,6 +436,13 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
   const { isDark } = useTheme();
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const lineCount = code ? code.split("\n").length : 0;
+  // Keep ordinary snippets immediately readable. Large model-generated files
+  // are secondary detail for most users, so they start as one compact row and
+  // only pay the syntax-highlighting/rendering cost when explicitly opened.
+  const collapsible = lineCount > 18 || code.length > 1_600;
+  const codeVisible = !collapsible || expanded;
 
   const copy = () => {
     copyText(code).then(() => {
@@ -279,20 +452,52 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
   };
 
   return (
-    <div className="markdown-code-block">
+    <div className={["markdown-code-block", !codeVisible ? "is-collapsed" : ""].filter(Boolean).join(" ")}>
       <div className="markdown-code-header">
-        <span className="markdown-code-lang">{lang || "text"}</span>
+        <span className="markdown-code-summary">
+          <span className="markdown-code-lang">{lang || "text"}</span>
+          {collapsible && (
+            <span className="markdown-code-size">
+              {t("chat.codeLines", { count: lineCount })}
+            </span>
+          )}
+        </span>
         <div className="markdown-code-actions">
           {headerAction}
           <button
+            type="button"
             onClick={copy}
             className="markdown-code-action"
           >
             {copied ? t("i18n.copied") : t("i18n.copy")}
           </button>
+          {collapsible && (
+            <button
+              type="button"
+              onClick={() => setExpanded((value) => !value)}
+              className="markdown-code-action markdown-code-toggle"
+              aria-expanded={expanded}
+            >
+              {expanded ? t("i18n.collapse") : t("i18n.expand")}
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 10 10"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                className={expanded ? "is-expanded" : undefined}
+              >
+                <polyline points="2 3.5 5 6.5 8 3.5" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
-      {isStreaming ? (
+      {codeVisible && (isStreaming ? (
         <pre
           style={{
             margin: 0,
@@ -323,7 +528,7 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
         >
           {code}
         </SyntaxHighlighter>
-      )}
+      ))}
     </div>
   );
 });

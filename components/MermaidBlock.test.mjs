@@ -82,6 +82,27 @@ test("CodeBlock renders plain text without tokenization while streaming", () => 
   assert.match(html, /const x = 1;/);
 });
 
+test("CodeBlock keeps large generated code collapsed by default", () => {
+  const code = Array.from({ length: 24 }, (_, index) => `const value${index} = ${index};`).join("\n");
+  const html = renderCode({ code, lang: "javascript" });
+
+  assert.match(html, /markdown-code-block is-collapsed/);
+  assert.match(html, /24 lines of code/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, />Expand/);
+  assert.doesNotMatch(html, /const value23/);
+  assert.doesNotMatch(html, /class="token/);
+});
+
+test("CodeBlock leaves short useful snippets visible", () => {
+  const html = renderCode({ code: "const answer = 42;", lang: "javascript" });
+
+  assert.doesNotMatch(html, /is-collapsed/);
+  assert.doesNotMatch(html, /aria-expanded/);
+  assert.match(html, /const/);
+  assert.match(html, /answer/);
+});
+
 test("MermaidBlock handles Chinese characters in diagram", () => {
   const chineseMermaid = `sequenceDiagram
     participant PC as PC客户端

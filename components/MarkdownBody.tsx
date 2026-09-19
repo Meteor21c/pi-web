@@ -6,7 +6,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { looksLikeLocalFileReference, resolveLocalFileHref, resolveLocalFileReference, shouldOpenLocalFileInApp } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins, markdownUrlTransform, normalizeDisplayMath } from "@/lib/markdown";
-import { MermaidBlock, CodeBlock } from "./MermaidBlock";
+import { isSvgMarkup, MermaidBlock, CodeBlock, SvgBlock } from "./MermaidBlock";
 import { ImagePreview } from "./ImagePreview";
 
 interface MarkdownBodyProps {
@@ -20,6 +20,7 @@ interface MarkdownBodyProps {
 export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
   const { t } = useI18n();
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
+  const standaloneSvg = isSvgMarkup(children);
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
     code({ className, children, ...props }) {
@@ -36,6 +37,9 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
               defaultPreview
             />
           );
+        }
+        if (isSvgMarkup(raw) && (lang === "svg" || lang === "xml" || lang === "html" || lang === "xhtml" || !lang)) {
+          return <SvgBlock code={raw.replace(/\n$/, "")} isStreaming={isStreaming} defaultPreview />;
         }
         return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={isStreaming} />;
       }
@@ -151,14 +155,18 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>
-      <ReactMarkdown
-        remarkPlugins={markdownRemarkPlugins}
-        rehypePlugins={markdownRehypePlugins}
-        urlTransform={onOpenFile ? markdownUrlTransform : undefined}
-        components={components}
-      >
-        {normalizedMarkdown}
-      </ReactMarkdown>
+      {standaloneSvg ? (
+        <SvgBlock code={children} isStreaming={isStreaming} defaultPreview />
+      ) : (
+        <ReactMarkdown
+          remarkPlugins={markdownRemarkPlugins}
+          rehypePlugins={markdownRehypePlugins}
+          urlTransform={onOpenFile ? markdownUrlTransform : undefined}
+          components={components}
+        >
+          {normalizedMarkdown}
+        </ReactMarkdown>
+      )}
     </div>
   );
 }

@@ -9,7 +9,14 @@ import {
   type RelayModelPlaza,
 } from "./relay-model-plaza";
 import { readModelsConfig } from "./models-config-store";
-import { persistRelayProvider, removeRelayProvider, removeRelayProviderConfig, dominantFamily, protocolFor } from "./relay-config-save";
+import {
+  persistRelayProvider,
+  preserveRelayProtocolSelections,
+  removeRelayProvider,
+  removeRelayProviderConfig,
+  dominantFamily,
+  protocolFor,
+} from "./relay-config-save";
 import { testRelayConnection } from "./relay-config-test";
 import {
   checkRelaySession,
@@ -312,12 +319,13 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
         }
         const family = dominantFamily(models.map((model) => model.id));
         if (models.length) {
+          const modelsWithProtocolPreferences = preserveRelayProtocolSelections(models, initial[providerId]);
           await persistRelayProvider({
             providerId,
             displayName: displayNameFor(key),
             apiKey: key.key,
             ...protocolFor(family),
-            models,
+            models: modelsWithProtocolPreferences,
           });
         } else {
           // Image-only groups still need a credential, but must never appear as
