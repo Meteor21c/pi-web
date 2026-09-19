@@ -8,7 +8,7 @@ import { ThinkingIcon } from "./ThinkingIcon";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
-import { getAssistantErrorMessage, getThinkingPreview, isEmptyThinkingBlock } from "@/lib/message-display";
+import { getAssistantErrorMessage, getThinkingPreview, isEmptyThinkingBlock, isTruncatedResponseError } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { isEditToolName } from "@/lib/tool-names";
 import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thinking-expansion-preference";
@@ -671,6 +671,9 @@ function AssistantMessageView({
     .filter(({ block }) => !isEmptyThinkingBlock(block, { isStreaming })), [message.content, isStreaming]);
   const blocks = useMemo(() => blockItems.map(({ block }) => block), [blockItems]);
   const providerError = getAssistantErrorMessage(message, { isStreaming });
+  const providerErrorDisplay = isTruncatedResponseError(providerError)
+    ? t("chat.responseInterrupted")
+    : providerError;
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
   const streamStartRef = useRef<number | null>(null);
@@ -852,7 +855,7 @@ function AssistantMessageView({
         ))}
       </div>
 
-      {providerError && (
+      {providerErrorDisplay && (
         <div
           role="alert"
           style={{
@@ -869,7 +872,7 @@ function AssistantMessageView({
             overflowWrap: "anywhere",
           }}
         >
-          Error: {providerError}
+          {t("chat.modelError")}: {providerErrorDisplay}
         </div>
       )}
 

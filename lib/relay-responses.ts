@@ -192,7 +192,13 @@ function repairSseFrame(frame: string): string {
     dataParts.push(line.slice(5).trimStart());
   }
 
-  if (dataIndexes.length === 0) return `${frame}\n\n`;
+  // A valid SSE message is dispatched only when it contains at least one
+  // `data:` field. The relay occasionally emits a cut-off event-only frame
+  // such as `event: response.o:`. OpenAI's SDK still attempts to parse that
+  // frame as an empty JSON payload and throws `Unexpected end of JSON input`,
+  // aborting the otherwise healthy stream. Comments/keepalives and malformed
+  // event-only frames carry no response payload, so dropping them is safe.
+  if (dataIndexes.length === 0) return "";
   const data = dataParts.join("\n");
   if (data === "[DONE]") return `${frame}\n\n`;
 

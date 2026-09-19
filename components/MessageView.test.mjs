@@ -289,7 +289,7 @@ test("renders a provider error when the assistant message has no content", () =>
   });
 
   assert.match(html, /role="alert"/);
-  assert.match(html, /Error: OpenAI API error \(403\)/);
+  assert.match(html, /Model error: OpenAI API error \(403\)/);
   assert.match(html, /&lt;html&gt;request forbidden&lt;\/html&gt;/);
 });
 
@@ -304,7 +304,22 @@ test("renders partial assistant content before the provider error", () => {
   });
 
   assert.match(html, /Partial response/);
-  assert.match(html, /Error: Connection closed/);
+  assert.match(html, /Model error: Connection closed/);
+});
+
+test("replaces a low-level truncated Responses error with actionable guidance", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k20",
+    model: "gpt-6-astra",
+    content: [{ type: "text", text: "Partial response" }],
+    stopReason: "error",
+    errorMessage: "Unexpected end of JSON input",
+  });
+
+  assert.match(html, /upstream response was interrupted/i);
+  assert.match(html, /Compatibility mode/);
+  assert.doesNotMatch(html, /Unexpected end of JSON input/);
 });
 
 test("marks persisted assistant messages with their source entry", () => {

@@ -412,6 +412,7 @@ export const enLocale: LocalePlugin = {
     "chat.followUpHint": "Queue this message after the agent finishes",
     "chat.inputHistory": "Input history",
     "chat.modelError": "Model error",
+    "chat.responseInterrupted": "The upstream response was interrupted and may be incomplete. Retry, or switch this model to Compatibility mode if it keeps happening.",
     "chat.modelScopeWarning": "Model scope warning",
     "chat.modelScopeWarnings": "Model scope warnings",
     "chat.send": "Send",

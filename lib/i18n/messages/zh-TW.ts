@@ -412,6 +412,7 @@ export const zhTWLocale: LocalePlugin = {
     "chat.followUpHint": "在 Agent 完成後排入此訊息",
     "chat.inputHistory": "輸入紀錄",
     "chat.modelError": "模型錯誤",
+    "chat.responseInterrupted": "上游回傳中斷，內容可能不完整。請重試；若反覆出現，請在模型設定中切換「相容模式」。",
     "chat.modelScopeWarning": "模型範圍警告",
     "chat.modelScopeWarnings": "模型範圍警告",
     "chat.send": "傳送",

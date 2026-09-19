@@ -32,6 +32,12 @@ export function getAssistantErrorMessage(
   return message.errorMessage?.trim() || "Unknown provider error";
 }
 
+/** Errors produced when a Responses SSE connection ends mid-event. */
+export function isTruncatedResponseError(message: string | null): boolean {
+  if (!message) return false;
+  return /Unexpected end of JSON input|Responses stream ended (?:before a terminal response event|without a stop reason)/i.test(message);
+}
+
 function isFinalAnswerBlock(block: AssistantContentBlock): boolean {
   return block.type === "text" || block.type === "image";
 }
