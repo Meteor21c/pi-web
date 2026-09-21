@@ -21,6 +21,7 @@ test("offers a cache-bypassing manual update check in the account menu", () => {
   assert.match(source, /data-check-app-update="true"/);
   assert.match(source, /\/api\/app-update\?refresh=1&manual=/);
   assert.match(source, /announceManualAppUpdateResult\(result\)/);
+  assert.match(source, /announceManualAppUpdateResult\(result\);[\s\S]*?if \(result\.updateAvailable\)/);
   assert.match(source, /appUpdate\.latest/);
   assert.match(source, /appUpdate\.checkFailed/);
 });

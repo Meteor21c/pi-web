@@ -23,6 +23,13 @@ test("a manual update check opens the prompt even when the release was snoozed",
   assert.match(source, /setOpen\(true\)/);
 });
 
+test("a later up-to-date check clears a stale update prompt", () => {
+  assert.match(source, /if \(!result\.updateAvailable\) \{/);
+  assert.match(source, /setUpdate\(null\)/);
+  assert.match(source, /setOpen\(false\)/);
+  assert.match(source, /installingRef/);
+});
+
 test("the update prompt describes preserved data and blocks active-task updates", () => {
   assert.match(source, /appUpdate\.dataSafe/);
   assert.match(source, /runningCount > 0/);

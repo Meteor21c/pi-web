@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { AppUpdateInstallStatus, AppUpdateResponse } from "@/lib/api-types";
 import { MANUAL_APP_UPDATE_RESULT_EVENT } from "@/lib/app-update-browser";
@@ -31,6 +31,11 @@ export function AppUpdatePrompt() {
   const [status, setStatus] = useState<AppUpdateInstallStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const installing = Boolean(status && status.phase !== "idle" && status.phase !== "error");
+  const installingRef = useRef(false);
+
+  useEffect(() => {
+    installingRef.current = installing;
+  }, [installing]);
 
   useEffect(() => {
     let disposed = false;
@@ -41,7 +46,19 @@ export function AppUpdatePrompt() {
       void fetch("/api/app-update", { cache: "no-store", signal: controller.signal })
         .then(async (response) => response.ok ? response.json() as Promise<AppUpdateResponse> : null)
         .then((result) => {
-          if (disposed || !result?.updateAvailable) return;
+          if (disposed || !result) return;
+          if (!result.updateAvailable) {
+            // A previous check may have opened the modal while a newer check
+            // now reports that this process is already current. Clear the
+            // stale UI instead of leaving a misleading update prompt visible.
+            if (!installingRef.current) {
+              setUpdate(null);
+              setOpen(false);
+              setStatus(null);
+              setError(null);
+            }
+            return;
+          }
           setUpdate(result);
           if (!readSnooze(result.latestVersion)) setOpen(true);
         })
@@ -65,7 +82,16 @@ export function AppUpdatePrompt() {
   useEffect(() => {
     const onManualUpdateResult = (event: Event) => {
       const result = (event as CustomEvent<AppUpdateResponse>).detail;
-      if (!result?.updateAvailable) return;
+      if (!result) return;
+      if (!result.updateAvailable) {
+        if (!installingRef.current) {
+          setUpdate(null);
+          setOpen(false);
+          setStatus(null);
+          setError(null);
+        }
+        return;
+      }
       try {
         localStorage.removeItem(SNOOZE_KEY);
       } catch {}

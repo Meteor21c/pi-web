@@ -1040,6 +1040,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           borderRadius: 16,
           background: "color-mix(in srgb, var(--assistant-bg) 58%, transparent)",
           boxShadow: "inset 0 1px 0 color-mix(in srgb, var(--assistant-bg) 82%, transparent), 0 8px 24px -18px rgba(0,0,0,.28)",
+          // Keep the project picker above the scrolling session list. The
+          // header's backdrop-filter creates a stacking context, so the z
+          // index must be applied here rather than only to the dropdown.
+          position: "relative",
+          zIndex: 20,
+          overflow: "visible",
           flexShrink: 0,
         }}
       >
@@ -1182,7 +1188,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               top: "calc(100% + 6px)",
               left: 0,
               right: 0,
-              zIndex: 100,
+              zIndex: 200,
               padding: 5,
               overflow: "hidden",
             }}

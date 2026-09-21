@@ -26,6 +26,11 @@ test("scrolling keeps the focused session and the viewport mounted without expan
   assert.ok(!blurred.includes(0));
 });
 
+test("keeps the project picker above the scrolling session list", () => {
+  assert.match(source, /className="session-sidebar-header-card"[\s\S]*?position: "relative"[\s\S]*?zIndex: 20/);
+  assert.match(source, /top: "calc\(100% \+ 6px\)"[\s\S]*?zIndex: 200/);
+});
+
 test("session windows stay valid after a project shrinks and before the viewport is measured", () => {
   assert.deepEqual(getSessionListIndices(5, 80000, 335, 1999), [0, 1, 2, 3, 4]);
   assert.deepEqual(getSessionListIndices(0, 80000, 335, 1999), []);

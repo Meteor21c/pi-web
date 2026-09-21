@@ -36,10 +36,12 @@ function CheckForUpdatesButton() {
       const response = await fetch(`/api/app-update?refresh=1&manual=${Date.now()}`, { cache: "no-store" });
       const result = await response.json() as AppUpdateResponse & { error?: string };
       if (!response.ok || result.error) throw new Error(result.error ?? `HTTP ${response.status}`);
+      // Keep the global prompt in sync even when this check confirms that the
+      // running process is current; otherwise an older prompt can remain open.
+      announceManualAppUpdateResult(result);
       if (result.updateAvailable) {
         setPhase("found");
         setMessage(t("appUpdate.found", { version: result.latestVersion }));
-        announceManualAppUpdateResult(result);
         return;
       }
       setPhase("latest");
