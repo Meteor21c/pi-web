@@ -104,6 +104,14 @@ const BUILTIN_CAPABILITIES = new Map<string, RelayModelCapabilities>(
   )),
 );
 
+// The relay has exposed Fable 5.1 with both a dotted and a hyphenated ID.
+// pi-ai currently uses the hyphenated spelling, so explicitly share its
+// authoritative capabilities with the relay's dotted alias as well.
+const fable51Capabilities = BUILTIN_CAPABILITIES.get("claude-fable-5-1");
+if (fable51Capabilities) {
+  BUILTIN_CAPABILITIES.set("claude-fable-5.1", fable51Capabilities);
+}
+
 const FALLBACK: RelayModelDef = {
   id: "",
   reasoning: false,
