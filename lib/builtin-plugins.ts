@@ -14,10 +14,12 @@ import type {
   PluginScope,
 } from "./api-types";
 import { writePrivateFileAtomicSync } from "./atomic-file";
+import { setPluginActivationMode } from "./plugin-activation";
 import { getProjectTrustStatus } from "./project-trust";
 import { withPluginOperationLock } from "./plugin-operation-lock";
 import {
   BUILTIN_PLUGIN_DEFINITIONS,
+  builtinRecommendedUpdateSource,
   npmPackageName,
   sameNpmPackageSource,
   type BuiltinPluginDefinition,
@@ -388,7 +390,7 @@ function progressFor(
   };
 }
 
-async function runBuiltinBootstrap(cwd: string): Promise<BuiltinPluginsResponse> {
+async function runBuiltinBootstrap(cwd: string, force = false): Promise<BuiltinPluginsResponse> {
   const saved = readSavedState();
   const startedAt = new Date().toISOString();
   const registry = registryForBootstrap(cwd);
@@ -430,6 +432,12 @@ async function runBuiltinBootstrap(cwd: string): Promise<BuiltinPluginsResponse>
       continue;
     }
     const configured = userPackageForDefinition(packages, definition);
+    // A previously-ready package that is no longer configured was removed by
+    // the user. A catalog migration may install a newly introduced starter,
+    // but must not silently restore older packages. Explicit Retry may do so.
+    if (!force && !configured && savedPlugin(saved, definition.id)?.state === "ready") {
+      continue;
+    }
     const conflict = configured ? undefined : conflictingPackageForDefinition(packages, definition);
     if (conflict) {
       updateProgressState(saved, definition, "conflict", {
@@ -452,11 +460,25 @@ async function runBuiltinBootstrap(cwd: string): Promise<BuiltinPluginsResponse>
         // checkout, using exactly the source they configured.
         if (!configured.installedPath) {
           await inspected.manager!.install(configured.source, { local: configured.scope === "project" });
+        } else {
+          const recommendedSource = builtinRecommendedUpdateSource(
+            definition,
+            configured.source,
+            readInstalledVersion(configured.installedPath),
+          );
+          if (recommendedSource) {
+            // Install the exact version audited with this Magent release while
+            // preserving the unpinned settings entry for later user updates.
+            await inspected.manager!.install(recommendedSource);
+          }
         }
       } else {
         // Unpinned official source: the user can update it later from the same
         // Installed view, and a future release does not need to vendor files.
         await inspected.manager!.installAndPersist(definition.source);
+      }
+      if (!configured && "activationMode" in definition && definition.activationMode === "session") {
+        setPluginActivationMode(inspected.settings!, definition.source, "global", "session");
       }
       await inspected.settings!.flush();
       const refreshed = userPackageForDefinition(inspected.manager!.listConfiguredPackages(), definition);
@@ -523,11 +545,19 @@ export function ensureBuiltinPlugins(
 ): Promise<BuiltinPluginsResponse> {
   const current = getBuiltinPluginStatus(cwd);
   const saved = readSavedState();
-  if (!current.running && current.state === "ready") return Promise.resolve(current);
+  const tracksEveryDefinition = BUILTIN_PLUGIN_DEFINITIONS.every((definition) => Boolean(savedPlugin(saved, definition.id)));
+  if (!current.running && current.state === "ready") {
+    if (!tracksEveryDefinition) {
+      current.plugins.forEach((plugin) => mergeSavedPlugin(saved, plugin));
+      saved.state = "ready";
+      saveState(saved);
+    }
+    return Promise.resolve(current);
+  }
   // A user may intentionally remove a starter package. Once the bootstrap has
   // completed successfully, a normal app start must not silently reinstall it;
   // the explicit Retry action passes force:true when the user wants it back.
-  if (!options.force && !current.running && saved.state === "ready") return Promise.resolve(current);
+  if (!options.force && !current.running && saved.state === "ready" && tracksEveryDefinition) return Promise.resolve(current);
   // A package from another source is deliberately left untouched. Once that
   // decision has been recorded, do not show a retry loop on every app launch;
   // the explicit Retry action can re-check after the user changes the package.
@@ -538,7 +568,7 @@ export function ensureBuiltinPlugins(
   const existing = globalState.__magentBuiltinPluginBootstrap?.task;
   if (existing) return existing;
   const safeCwd = existsSync(cwd) ? cwd : process.cwd();
-  const task = withPluginOperationLock(resolve(getAgentDir()), () => runBuiltinBootstrap(safeCwd)).catch((error) => {
+  const task = withPluginOperationLock(resolve(getAgentDir()), () => runBuiltinBootstrap(safeCwd, options.force === true)).catch((error) => {
     try {
       recordUnexpectedBootstrapFailure(error);
     } catch {

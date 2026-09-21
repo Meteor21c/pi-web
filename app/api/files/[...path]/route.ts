@@ -20,6 +20,7 @@ import { resolveDirentIsDirectory } from "@/lib/file-dirent";
 import { isFilePathReferencedBySession } from "@/lib/session-file-references";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import {
+  availableUploadFileName,
   inspectUploadTargets,
   parseUploadConflictStrategy,
   validateUploadFileNames,
@@ -188,14 +189,22 @@ export async function POST(
     const uploaded: string[] = [];
     const skipped: string[] = [];
     const errors: Array<{ name: string; error: string }> = [];
+    // Reserve every explicitly selected name so an auto-renamed attachment
+    // never steals the name of another file in the same request.
+    const reservedNames = new Set(fileNames);
 
     for (const file of files) {
-      const destination = path.join(directory, file.name);
+      reservedNames.delete(file.name);
+      const uploadName = strategy === "rename"
+        ? availableUploadFileName(directory, file.name, reservedNames)
+        : file.name;
+      reservedNames.add(uploadName);
+      const destination = path.join(directory, uploadName);
       if (conflictSet.has(file.name) && strategy === "skip") {
         skipped.push(file.name);
         continue;
       }
-      if (conflictSet.has(file.name) && nonReplaceableSet.has(file.name)) {
+      if (strategy !== "rename" && conflictSet.has(file.name) && nonReplaceableSet.has(file.name)) {
         errors.push({ name: file.name, error: "Cannot replace a directory or symbolic link" });
         continue;
       }
@@ -208,7 +217,7 @@ export async function POST(
         continue;
       }
 
-      if (conflictSet.has(file.name)) {
+      if (strategy === "overwrite" && conflictSet.has(file.name)) {
         try {
           fs.unlinkSync(destination);
         } catch (error) {
@@ -219,7 +228,7 @@ export async function POST(
 
       try {
         fs.writeFileSync(destination, bytes, { flag: "wx" });
-        uploaded.push(file.name);
+        uploaded.push(uploadName);
       } catch (error) {
         errors.push({ name: file.name, error: error instanceof Error ? error.message : String(error) });
       }

@@ -295,6 +295,28 @@ test("renders the compact composer with the standard Send button and no session 
   assert.doesNotMatch(html, /type="file"|Attach image|Change tool preset/);
 });
 
+test("the full composer accepts general files without overwriting project files", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(
+      I18nProvider,
+      null,
+      React.createElement(ChatInput, {
+        onSend() {},
+        onAbort() {},
+        isStreaming: false,
+        cwd: "/tmp/project",
+      }),
+    ),
+  );
+  const source = readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8");
+
+  assert.match(html, /type="file"/);
+  assert.doesNotMatch(html, /accept="image\/\*"/);
+  assert.match(html, /title="Add files or images"/);
+  assert.match(source, /conflict=rename/);
+  assert.match(source, /buildFileAtMentionsText\(fileNames\)/);
+});
+
 test("shows and locks the optimistic model while a switch is pending", () => {
   const html = renderToStaticMarkup(
     React.createElement(

@@ -19,9 +19,10 @@ import {
   isBase64ImageWithinLimits,
 } from "@/lib/image-attachments";
 import {
-  buildEntriesFromFiles, buildAtInsertText, extractAtQuery, filterFileEntries,
+  buildEntriesFromFiles, buildAtInsertText, buildFileAtMentionsText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
+import { encodeFilePathForApi } from "@/lib/file-paths";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
@@ -35,6 +36,12 @@ export interface AttachedImage {
   data: string;   // base64, no prefix
   mimeType: string;
   previewUrl: string; // object URL for display
+}
+
+interface ComposerUploadResponse {
+  uploaded?: string[];
+  errors?: Array<{ name: string; error: string }>;
+  error?: string;
 }
 
 interface Props {
@@ -716,6 +723,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => (
     draftKey ? draftImagesToAttachedImages(getDraft(draftKey)?.images) : []
   ));
+  const [fileUploadStatus, setFileUploadStatus] = useState<{
+    phase: "idle" | "uploading" | "success" | "error";
+    message?: string;
+  }>({ phase: "idle" });
   const trimmedValue = value.trimStart();
   const bashMode = attachedImages.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
@@ -976,6 +987,77 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }, [compact]);
 
+  const appendUploadedFileMentions = useCallback((fileNames: string[]) => {
+    if (!fileNames.length) return;
+    const mentions = buildFileAtMentionsText(fileNames);
+    setValue((current) => {
+      const separator = current && !/\s$/.test(current) ? " " : "";
+      const next = `${current}${separator}${mentions}`;
+      valueRef.current = next;
+      return next;
+    });
+    // Force the next @ lookup to include the files that were just uploaded.
+    fileIndexMetaRef.current = null;
+    setFileIndex(null);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+    });
+  }, []);
+
+  const uploadProjectFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    if (!cwd) {
+      setFileUploadStatus({ phase: "error", message: t("chat.fileUploadNeedsProject") });
+      return;
+    }
+
+    setFileUploadStatus({ phase: "uploading", message: t("chat.uploadingFiles") });
+    try {
+      const formData = new FormData();
+      files.forEach((file) => formData.append("files", file, file.name));
+      const response = await fetch(
+        `/api/files/${encodeFilePathForApi(cwd)}?type=upload&conflict=rename`,
+        { method: "POST", body: formData },
+      );
+      const data = await response.json().catch(() => ({})) as ComposerUploadResponse;
+      if (!response.ok) {
+        throw new Error(data.error ?? t("chat.fileUploadFailed"));
+      }
+      const uploaded = data.uploaded ?? [];
+      appendUploadedFileMentions(uploaded);
+      const failures = data.errors ?? [];
+      if (failures.length > 0) {
+        setFileUploadStatus({
+          phase: "error",
+          message: failures.map((item) => `${item.name}: ${item.error}`).join("\n"),
+        });
+      } else {
+        setFileUploadStatus({
+          phase: "success",
+          message: t("chat.filesAdded", { count: uploaded.length }),
+        });
+      }
+    } catch (error) {
+      setFileUploadStatus({
+        phase: "error",
+        message: error instanceof Error ? error.message : t("chat.fileUploadFailed"),
+      });
+    }
+  }, [appendUploadedFileMentions, cwd, t]);
+
+  const processComposerFiles = useCallback((files: File[]) => {
+    if (compact || files.length === 0) return;
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    const projectFiles = files.filter((file) => !file.type.startsWith("image/"));
+    if (images.length > 0) void processImageFiles(images);
+    if (projectFiles.length > 0) void uploadProjectFiles(projectFiles);
+  }, [compact, processImageFiles, uploadProjectFiles]);
+
   const removeImage = useCallback((index: number) => {
     setAttachedImages((prev) => {
       const next = [...prev];
@@ -999,6 +1081,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setValue("");
     setAtQuery(null);
     setHistoryMenuOpen(false);
+    setFileUploadStatus({ phase: "idle" });
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
@@ -1819,12 +1902,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       {!compact && <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
         multiple
         style={{ display: "none" }}
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
-          processImageFiles(files);
+          processComposerFiles(files);
           e.target.value = "";
         }}
       />}
@@ -1958,6 +2040,34 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
           >
             {compactError}
+          </div>
+        )}
+        {fileUploadStatus.phase !== "idle" && (
+          <div
+            role={fileUploadStatus.phase === "error" ? "alert" : "status"}
+            aria-live="polite"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginBottom: 6,
+              color: fileUploadStatus.phase === "error"
+                ? "#ef4444"
+                : fileUploadStatus.phase === "success"
+                  ? "#22c55e"
+                  : "var(--text-muted)",
+              fontSize: 11,
+              lineHeight: 1.4,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {fileUploadStatus.phase === "uploading" && (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" style={{ animation: "spin 0.8s linear infinite", flexShrink: 0 }} aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-5.7-8.4" />
+              </svg>
+            )}
+            <span>{fileUploadStatus.message}</span>
           </div>
         )}
         {/* Image previews */}
@@ -2628,30 +2738,30 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div style={{ flex: isMobile ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
             <button
               onClick={() => fileInputRef.current?.click()}
-             title={t("chat.attachImage")}
+              title={t("chat.attachFiles")}
+              aria-label={t("chat.attachFiles")}
+              disabled={fileUploadStatus.phase === "uploading"}
               style={{
                 flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
                 width: 32, height: 32, padding: 0,
                 background: "none", border: "none",
                 borderRadius: 9,
-                color: attachedImages.length ? "var(--accent)" : "var(--text-muted)",
-                cursor: "pointer",
-                opacity: 1,
+                color: attachedImages.length || fileUploadStatus.phase === "success" ? "var(--accent)" : "var(--text-muted)",
+                cursor: fileUploadStatus.phase === "uploading" ? "wait" : "pointer",
+                opacity: fileUploadStatus.phase === "uploading" ? 0.7 : 1,
                 transition: "background 0.12s, color 0.12s",
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text)";
+                e.currentTarget.style.color = attachedImages.length || fileUploadStatus.phase === "success" ? "var(--accent)" : "var(--text)";
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = "none";
-                e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text-muted)";
+                e.currentTarget.style.color = attachedImages.length || fileUploadStatus.phase === "success" ? "var(--accent)" : "var(--text-muted)";
               }}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-                <polyline points="21 15 16 10 5 21" />
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 1 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" />
               </svg>
             </button>
             <button

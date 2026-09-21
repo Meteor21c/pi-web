@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 
-export const UPLOAD_CONFLICT_STRATEGIES = ["error", "overwrite", "skip"] as const;
+export const UPLOAD_CONFLICT_STRATEGIES = ["error", "overwrite", "skip", "rename"] as const;
 export type UploadConflictStrategy = typeof UPLOAD_CONFLICT_STRATEGIES[number];
 
 const UPLOAD_CONFLICT_STRATEGY_SET = new Set<string>(UPLOAD_CONFLICT_STRATEGIES);
@@ -56,4 +56,28 @@ export function inspectUploadTargets(directory: string, fileNames: string[]): Up
   }
 
   return { conflicts, nonReplaceable };
+}
+
+/**
+ * Pick a sibling name without overwriting an existing project file. Composer
+ * attachments use this policy because attaching the same-named download twice
+ * should be safe and should not interrupt the chat with an overwrite dialog.
+ */
+export function availableUploadFileName(
+  directory: string,
+  requestedName: string,
+  reservedNames: ReadonlySet<string> = new Set(),
+): string {
+  if (!reservedNames.has(requestedName) && !fs.existsSync(path.join(directory, requestedName))) {
+    return requestedName;
+  }
+
+  const parsed = path.parse(requestedName);
+  for (let suffix = 1; suffix <= 10_000; suffix += 1) {
+    const candidate = `${parsed.name} (${suffix})${parsed.ext}`;
+    if (!reservedNames.has(candidate) && !fs.existsSync(path.join(directory, candidate))) {
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to choose an available file name for: ${requestedName}`);
 }
