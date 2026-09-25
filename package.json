@@ -1,6 +1,6 @@
 {
   "name": "@meteor21c/webagent",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "MeteorAgent — AI coding agent for meteor21c relay customers",
   "homepage": "https://github.com/Meteor21c/pi-web#readme",
   "repository": {

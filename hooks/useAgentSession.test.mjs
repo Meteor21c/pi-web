@@ -300,7 +300,7 @@ test("post-accept prompt errors do not duplicate the user submission", () => {
   assert.doesNotMatch(promptErrorSource, /restoreSubmission/);
 });
 
-test("delegates event stream readiness and hides an empty agent phase", () => {
+test("delegates event stream readiness and keeps live activity visible", () => {
   const ensureSource = source.slice(
     source.indexOf("const ensureEventsConnected"),
     source.indexOf("const respondToExtensionUi"),
@@ -312,7 +312,8 @@ test("delegates event stream readiness and hides an empty agent phase", () => {
   assert.match(ensureSource, /eventConnectionRef\.current!\.maintain\(sid\)/);
   assert.match(chatWindowSource, /const hasStreamingContent = Boolean\(streamState\.streamingMessage\?\.content\.length\)/);
   assert.match(chatWindowSource, /streamState\.isStreaming && hasStreamingContent && streamState\.streamingMessage/);
-  assert.match(chatWindowSource, /agentRunning && !hasStreamingContent && agentPhase/);
+  assert.match(chatWindowSource, /agentRunning && !bashRunning/);
+  assert.match(chatWindowSource, /<AgentActivityCard phase=\{agentPhase\}/);
   assert.match(chatWindowSource, /return null;/);
 });
 
