@@ -1015,7 +1015,7 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
     return <AssistantImageBlock block={block as ImageContent} />;
   }
   if (block.type === "thinking") {
-    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
+    return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} isStreaming={isStreaming} sessionId={sessionId} entryId={entryId} blockIndex={blockIndex} />;
   }
   if (block.type === "toolCall") {
     const tc = block as ToolCallContent;
@@ -1057,9 +1057,10 @@ function AssistantImageBlock({ block }: { block: ImageContent }) {
   );
 }
 
-export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
+export function ThinkingBlock({ block, duration, isStreaming = false, sessionId, entryId, blockIndex }: {
   block: ThinkingContent;
   duration?: number;
+  isStreaming?: boolean;
   sessionId?: string;
   entryId?: string;
   blockIndex: number;
@@ -1113,60 +1114,67 @@ export function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex 
 
   return (
     <div style={{
-      display: "flex", alignItems: "flex-start", gap: 6, minWidth: 0,
-      border: "1px solid var(--border)",
-      borderRadius: 7,
-      padding: "6px 10px",
-      background: "var(--bg)",
-      fontFamily: "var(--font-mono)",
-      fontSize: "calc(11px + var(--chat-font-size-offset, 0px))",
+      minWidth: 0,
+      border: "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))",
+      borderLeft: "3px solid color-mix(in srgb, var(--accent) 55%, var(--border))",
+      borderRadius: 9,
+      padding: "7px 10px",
+      background: "color-mix(in srgb, var(--accent) 4%, var(--bg))",
+      fontSize: "calc(12px + var(--chat-font-size-offset, 0px))",
       lineHeight: 1.5,
     }}>
       <button
         type="button"
         aria-expanded={expanded}
         aria-label={`${t("i18n.thinking")}${preview ? `: ${preview}` : ""}`}
-        title={t("i18n.thinking")}
+        title={t("chat.thinkingVisibilityHint")}
         onClick={() => setExpanded((v) => !v)}
         style={{
-          display: "inline-flex",
+          display: "flex",
           alignItems: "center",
-          gap: 6,
-          width: expanded ? 14 : "100%",
-          flexShrink: expanded ? 0 : 1,
+          gap: 8,
+          width: "100%",
           minWidth: 0,
-          minHeight: "1.5em",
+          minHeight: 22,
           padding: 0,
           background: "transparent",
           border: "none",
-          color: "var(--text-muted)",
+          color: "var(--text)",
           cursor: "pointer",
           font: "inherit",
           textAlign: "left",
         }}
       >
-        <ThinkingIcon active={expanded} />
+        <ThinkingIcon active={expanded || isStreaming} />
+        <span style={{ flexShrink: 0, fontWeight: 600 }}>{t("chat.thinkingBlockTitle")}</span>
         {!expanded && (
-          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {preview ? <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown> : "..."}
+          <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-muted)" }}>
+            {preview ? <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown> : t("chat.thinkingPending")}
           </span>
         )}
+        {duration !== undefined && (
+          <span style={{ marginLeft: "auto", flexShrink: 0, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums", fontSize: 11 }}>{duration}s</span>
+        )}
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: "var(--text-muted)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
+          <polyline points="4 2.5 7.5 6 4 9.5" />
+        </svg>
       </button>
       {expanded && (
         <div
           style={{
-            flex: 1,
             minWidth: 0,
+            marginTop: 8,
+            paddingTop: 8,
+            borderTop: "1px solid var(--border)",
             color: error ? "#f87171" : "var(--text-muted)",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
+            fontFamily: "var(--font-mono)",
+            fontSize: "calc(11px + var(--chat-font-size-offset, 0px))",
           }}
         >
            {loading ? t("i18n.loadingThinking") : error ?? (block.deferred ? content : block.thinking)}
         </div>
-      )}
-      {duration !== undefined && (
-        <span style={{ flexShrink: 0, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
       )}
     </div>
   );

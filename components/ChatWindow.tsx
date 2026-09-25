@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, getThinkingPreview, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { getModelDisplayName, MessageView, type ImageBillingSummary } from "./MessageView";
@@ -74,6 +74,18 @@ interface Props {
 function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
   if (phase?.kind === "running_tools") {
     const latest = phase.tools[phase.tools.length - 1];
+    if (latest && phase.tools.length === 1) {
+      const name = latest.name.toLowerCase();
+      const key = /^(read|grep|find|ls)$/.test(name) ? "chat.activityReading"
+        : /^(edit|write)$/.test(name) ? "chat.activityEditing"
+        : /^(bash|powershell)$/.test(name) ? "chat.runningCommand"
+        : /^(web_search|get_search_content)$/.test(name) ? "chat.activitySearching"
+        : name === "image_generate" ? "chat.activityGeneratingImage"
+        : name === "computer_use_tools" ? "chat.activityUsingComputer"
+        : name.startsWith("document_") ? "chat.activityProcessingDocument"
+        : null;
+      if (key) return latest.progress ? `${t(key)} · ${latest.progress}` : t(key);
+    }
     if (latest?.progress) {
       return `${t("chat.runningNamedTool", { name: latest.name })} ${latest.progress}`;
     }
@@ -86,6 +98,45 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
   if (phase?.kind === "waiting_model") return t("chat.waitingModel");
   if (phase?.kind === "running_command") return t("chat.runningCommand");
   return null;
+}
+
+function AgentActivityCard({ phase, streamingStage, t }: {
+  phase: AgentPhase;
+  streamingStage?: AssistantContentBlock["type"];
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  const [startedAt] = useState(() => Date.now());
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  const step = phase?.kind === "running_tools" || phase?.kind === "running_command"
+    ? phaseLabel(phase, t)
+    : streamingStage === "thinking"
+      ? t("chat.activityModelThinking")
+      : streamingStage === "toolCall"
+        ? t("chat.generatingToolInput")
+        : streamingStage === "text"
+          ? t("chat.activityWriting")
+          : phaseLabel(phase, t) ?? t("chat.waitingModel");
+
+  return (
+    <div role="status" className="ui-agent-activity" style={{
+      display: "flex", alignItems: "center", gap: 10, width: "fit-content", maxWidth: "100%",
+      margin: "8px 0 16px", padding: "10px 13px", borderRadius: 12,
+      border: "1px solid color-mix(in srgb, var(--accent) 24%, var(--border))",
+      background: "color-mix(in srgb, var(--accent) 5%, var(--bg))",
+      boxShadow: "0 5px 18px -14px rgba(0,0,0,.35)",
+    }}>
+      <span aria-hidden="true" style={{ width: 9, height: 9, flexShrink: 0, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent)", animation: "pulse 1.5s ease-in-out infinite" }} />
+      <div style={{ minWidth: 0, fontSize: 12, lineHeight: 1.45 }}>
+        <div style={{ color: "var(--text)", fontWeight: 600 }}>{t("chat.activityTitle")}</div>
+        <div style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>{step}</div>
+      </div>
+      {elapsedSeconds > 0 && <span aria-hidden="true" style={{ marginLeft: 5, alignSelf: "flex-start", color: "var(--text-dim)", fontSize: 11, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{elapsedSeconds}s</span>}
+    </div>
+  );
 }
 
 const CHAT_MINIMAP_WIDTH = 36;
@@ -169,7 +220,7 @@ function aggregateTurnActualCost(
   return usageEntries.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 }
 
-function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
+function ProcessDetailsGroup({ messageCount, toolCallCount, thinkingPreview, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; thinkingPreview?: string; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   useLayoutEffect(() => {
     if (reveal) setExpanded(true);
@@ -205,6 +256,11 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
         <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {parts.join(" · ")}
         </span>
+        {!expanded && !reveal && thinkingPreview && (
+          <span style={{ minWidth: 0, maxWidth: "min(36vw, 320px)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)" }}>
+            · {thinkingPreview}
+          </span>
+        )}
       </button>
       {(expanded || reveal) && (
         <div style={{ marginTop: 8 }}>
@@ -1258,6 +1314,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
                 const processViews: ReactNode[] = [];
                 let processToolCount = 0;
+                let thinkingPreview: string | undefined;
                 let processRefIdx: number | undefined;
                 let revealProcess = false;
 
@@ -1274,6 +1331,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     : processMessage;
                   const blocks = getDisplayableAssistantBlocks(message);
                   if (blocks.length === 0) continue;
+                  if (!thinkingPreview) {
+                    const thinkingBlock = blocks.find((block) => block.type === "thinking" && block.thinking.trim());
+                    if (thinkingBlock?.type === "thinking") {
+                      thinkingPreview = getThinkingPreview(thinkingBlock.thinking)
+                        .replace(/^(?:[#>*-]\s*)+/u, "")
+                        .replace(/\*\*(.*?)\*\*/gu, "$1")
+                        .slice(0, 120);
+                    }
+                  }
                   processRefIdx ??= visibleRefIndexByMessage.get(processIdx);
                   processToolCount += countToolCallBlocks(blocks);
                   revealProcess ||= Boolean(pendingSearchScroll && entryIds[processIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
@@ -1293,7 +1359,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                       key={`process-group-${entryIds[userIdx] ?? userIdx}`}
                       ref={processRefIdx === undefined ? undefined : (el) => { messageRefs.current[processRefIdx] = el; }}
                     >
-                      <ProcessDetailsGroup messageCount={processViews.length} toolCallCount={processToolCount} defaultExpanded={!finalAnswerMessage} reveal={revealProcess} t={t}>
+                      <ProcessDetailsGroup messageCount={processViews.length} toolCallCount={processToolCount} thinkingPreview={thinkingPreview} defaultExpanded={!finalAnswerMessage} reveal={revealProcess} t={t}>
                         {processViews}
                       </ProcessDetailsGroup>
                     </div>,
@@ -1343,10 +1409,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               <MessageView message={streamState.streamingMessage as AgentMessage} toolResults={toolResultsMap} isStreaming modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
             )}
 
-            {agentRunning && !hasStreamingContent && agentPhase && (
-              <div className="break-words py-2 text-[13px] text-text-muted">
-                <span className="animate-[pulse_1.5s_infinite]">{phaseLabel(agentPhase, t)}</span>
-              </div>
+            {agentRunning && !bashRunning && (
+              <AgentActivityCard phase={agentPhase} streamingStage={streamState.streamingMessage?.content.at(-1)?.type} t={t} />
             )}
 
             {bashRunning && !pendingBash && (

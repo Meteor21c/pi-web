@@ -7,13 +7,14 @@ const UPSTREAM_DOCS_BLOCK = /\n\n[A-Z][a-z] documentation \(read only[\s\S]*?- A
 const UPSTREAM_PROMPT_SIGNATURE = /^You are an expert coding assistant operating inside [a-z]+, a coding agent harness\./;
 const UPSTREAM_PROMPT_INTRO = /^You are an expert coding assistant operating inside [a-z]+, a coding agent harness\. You help users by reading files, executing commands, editing code, and writing new files\./;
 const METEORAGENT_PROMPT_SIGNATURE = "You are Magent, the expert coding assistant inside MeteorAgent.";
+const METEORAGENT_COMPLETION_GUIDANCE = "When you finish a task, explain the outcome in plain language. For work involving files or tools, briefly say what you changed, what you checked, and whether the user needs to do anything next. Keep simple answers short, and never claim work or checks you did not perform.";
 
 /** Rebrand only the SDK-owned default prompt; user instructions are untouched. */
 export function rebrandMeteorAgentSystemPrompt(prompt: string): string {
   if (!UPSTREAM_PROMPT_SIGNATURE.test(prompt) && !prompt.includes(METEORAGENT_PROMPT_SIGNATURE)) {
     return prompt;
   }
-  return prompt
+  const branded = prompt
     .replace(
       UPSTREAM_PROMPT_INTRO,
       "You are Magent, the expert coding assistant inside MeteorAgent. You help users by reading files, executing commands, editing code, and writing new files.",
@@ -21,6 +22,9 @@ export function rebrandMeteorAgentSystemPrompt(prompt: string): string {
     .replace(UPSTREAM_DOCS_BLOCK, "")
     .replace(/(?:You can inspect|Inspect) PI_\* environment variables for current model and session details\.?/g, "Inspect the runtime state for current model and session details.")
     .replace(/(?<![/@._-])\bpi\b(?![/._*-])/gi, METEORAGENT_NAME);
+  return branded.includes(METEORAGENT_COMPLETION_GUIDANCE)
+    ? branded
+    : `${branded}\n\n${METEORAGENT_COMPLETION_GUIDANCE}`;
 }
 
 /** Also sanitize state returned by a wrapper created before a dev-server hot reload. */
