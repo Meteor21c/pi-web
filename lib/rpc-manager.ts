@@ -266,7 +266,6 @@ export class AgentSessionWrapper {
     this.onAgentRunComplete = options.onAgentRunComplete;
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
     this.installExactSystemPromptContinuation();
-    this.applyExactSystemPrompt();
   }
 
   get sessionId(): string {
@@ -361,7 +360,6 @@ export class AgentSessionWrapper {
 
   private ensureExtensionsBound(): Promise<void> {
     if (this.extensionsBound) {
-      this.applyExactSystemPrompt();
       return Promise.resolve();
     }
     if (this.extensionBindingPromise) return this.extensionBindingPromise;
@@ -400,7 +398,6 @@ export class AgentSessionWrapper {
         this.inner.extensionRunner.setUIContext?.(uiContext, "rpc");
       }
       this.extensionsBound = true;
-      this.applyExactSystemPrompt();
       console.log(`[meteoragent] session_start dispatched to extensions for session ${this.inner.sessionId}`);
     })().catch((err) => {
       this.extensionBindingError = err;
@@ -439,11 +436,6 @@ export class AgentSessionWrapper {
     }
   }
 
-  private applyExactSystemPrompt(): void {
-    if (!this.exactSystemPrompt || !this.inner.agent.state) return;
-    this.inner.agent.state.systemPrompt = this.exactSystemPrompt();
-  }
-
   /** Reject requests that would use a stale/unauthorized relay model. */
   private assertRelayModelAuthorized(provider: string, modelId: string): void {
     const relayGroups = readRelayGroups();
@@ -474,7 +466,6 @@ export class AgentSessionWrapper {
 
   setActiveToolSelection(toolNames: string[]): void {
     this.inner.setActiveToolsByName(withExtensionTools(this.inner, toolNames));
-    this.applyExactSystemPrompt();
   }
 
   private emit(event: AgentEvent): void {
@@ -666,10 +657,7 @@ export class AgentSessionWrapper {
               // Match pi's RPC contract: acknowledge only after synchronous prompt
               // validation and extension preflight have accepted the submission.
               preflightResult: (success) => {
-                if (success) {
-                  this.applyExactSystemPrompt();
-                  acceptPreflight();
-                }
+                if (success) acceptPreflight();
               },
             });
           } catch (error) {
@@ -725,12 +713,8 @@ export class AgentSessionWrapper {
         const model = this.inner.model;
         const contextUsage = this.inner.getContextUsage();
         const currentSystemPrompt = this.inner.agent.state?.systemPrompt ?? "";
-        const visibleSystemPrompt = this.chatOnly
-          ? currentSystemPrompt
-          : rebrandMeteorAgentSystemPrompt(currentSystemPrompt);
-        if (this.inner.agent.state && visibleSystemPrompt !== currentSystemPrompt) {
-          this.inner.agent.state.systemPrompt = visibleSystemPrompt;
-        }
+        const visibleSystemPrompt = this.exactSystemPrompt?.()
+          ?? (this.chatOnly ? currentSystemPrompt : rebrandMeteorAgentSystemPrompt(currentSystemPrompt));
         return {
           sessionId: this.inner.sessionId,
           sessionFile: this.inner.sessionFile ?? "",
@@ -1010,7 +994,6 @@ export class AgentSessionWrapper {
           if (typeof this.inner.bindExtensions !== "function") {
             this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
           }
-          this.applyExactSystemPrompt();
           invalidateModelsCache();
           return { success: true };
         });
@@ -1700,7 +1683,6 @@ export class AgentSessionWrapper {
             this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
           },
         });
-        this.applyExactSystemPrompt();
       },
     };
   }
@@ -2102,6 +2084,9 @@ export async function startRpcSession(
         : chatOnly
           ? CHAT_ONLY_RESOURCE_LOADER_OPTIONS
         : {
+            systemPromptOverride: (basePrompt) => basePrompt
+              ? rebrandMeteorAgentSystemPrompt(basePrompt)
+              : basePrompt,
             extensionFactories: [
               createProjectCommandBashExtension({
                 cwd: sessionCwd,
@@ -2177,13 +2162,6 @@ export async function startRpcSession(
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
       ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES] } : {}),
     });
-
-    // The System panel can be opened before the first model turn, so brand the
-    // SDK-owned default prompt immediately as well as in before_agent_start.
-    // Custom/overridden prompts are left untouched by the guarded transformer.
-    if (!chatOnly && !subagentResources && inner.agent.state) {
-      inner.agent.state.systemPrompt = rebrandMeteorAgentSystemPrompt(inner.agent.state.systemPrompt);
-    }
 
     const persistedPreferences = await persistExplicitStartupPreferences(
       services.settingsManager,
