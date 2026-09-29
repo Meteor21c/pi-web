@@ -389,6 +389,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [customPathOpen, setCustomPathOpen] = useState(false);
   const [customPathValue, setCustomPathValue] = useState(loadLastCustomCwd);
   const [customPathError, setCustomPathError] = useState<string | null>(null);
+  const [nativeDirectoryBusy, setNativeDirectoryBusy] = useState(false);
+  const [nativeDirectoryError, setNativeDirectoryError] = useState<string | null>(null);
   const [customPathValidating, setCustomPathValidating] = useState(false);
   const [validatedProject, setValidatedProject] = useState<ValidatedProject | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -957,6 +959,24 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   // Sessions of every worktree in the selected project are shown together
   const selectedProject = projectFor(selectedCwd);
+  const nativeDirectoryPath = selectedProject?.root ?? selectedCwd;
+  const handleOpenNativeDirectory = useCallback(async () => {
+    if (!nativeDirectoryPath || nativeDirectoryBusy) return;
+    setNativeDirectoryBusy(true);
+    setNativeDirectoryError(null);
+    try {
+      const response = await fetch("/api/open-directory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: nativeDirectoryPath }),
+      });
+      if (!response.ok) throw new Error("Open directory failed");
+    } catch {
+      setNativeDirectoryError(t("sidebar.openDirectoryFailed"));
+    } finally {
+      setNativeDirectoryBusy(false);
+    }
+  }, [nativeDirectoryBusy, nativeDirectoryPath, t]);
 
   // Per-project activity counts (running / unread) for the workspace selector.
   // Uses the same stable server key as the project list and filtering.
@@ -1121,64 +1141,104 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               {t("sidebar.projectAddressHint")}
             </div>
           </div>
-          <button
-            onClick={() => setDropdownOpen((v) => !v)}
-            title={selectedProject?.root ?? selectedCwd ?? ""}
-            style={{
-              width: "100%",
-              display: "flex",
-              alignItems: "center",
-              padding: "6px 10px",
-              background: selectedCwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)",
-              border: selectedCwd ? "1px solid var(--border)" : "1px solid rgba(37,99,235,0.4)",
-              borderRadius: 10,
-              cursor: "pointer",
-              fontSize: 12,
-              color: "var(--text)",
-              textAlign: "left",
-              transition: "border-color 0.15s, background 0.15s",
-            }}
-          >
-            {selectedCwd ? (
-              <PathLabel
-                text={displayCwd(selectedProject?.root ?? selectedCwd, homeDir)}
-                style={{
-                  flex: 1,
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: "var(--text)",
-                }}
-              />
-            ) : (
-              <span
-                style={{
-                  flex: 1,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: "var(--text-dim)",
-                }}
-              >
-                 {initialSessionId && !restoredRef.current ? "" : t("sidebar.selectProject")}
-              </span>
-            )}
-            {hasOtherWorkspaceActivity && (
-              <span
-                title={t("sidebar.newActivity")}
-                aria-label={t("sidebar.newActivity")}
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  marginLeft: 6,
-                  background: "var(--accent)",
-                }}
-              />
-            )}
-          </button>
+          <div style={{ display: "flex", alignItems: "stretch", gap: 4 }}>
+            <button
+              onClick={() => setDropdownOpen((v) => !v)}
+              title={selectedProject?.root ?? selectedCwd ?? ""}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                display: "flex",
+                alignItems: "center",
+                padding: "6px 10px",
+                background: selectedCwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)",
+                border: selectedCwd ? "1px solid var(--border)" : "1px solid rgba(37,99,235,0.4)",
+                borderRadius: 10,
+                cursor: "pointer",
+                fontSize: 12,
+                color: "var(--text)",
+                textAlign: "left",
+                transition: "border-color 0.15s, background 0.15s",
+              }}
+            >
+              {selectedCwd ? (
+                <PathLabel
+                  text={displayCwd(selectedProject?.root ?? selectedCwd, homeDir)}
+                  style={{
+                    flex: 1,
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    color: "var(--text)",
+                  }}
+                />
+              ) : (
+                <span
+                  style={{
+                    flex: 1,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    color: "var(--text-dim)",
+                  }}
+                >
+                  {initialSessionId && !restoredRef.current ? "" : t("sidebar.selectProject")}
+                </span>
+              )}
+              {hasOtherWorkspaceActivity && (
+                <span
+                  title={t("sidebar.newActivity")}
+                  aria-label={t("sidebar.newActivity")}
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    flexShrink: 0,
+                    marginLeft: 6,
+                    background: "var(--accent)",
+                  }}
+                />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleOpenNativeDirectory()}
+              disabled={!nativeDirectoryPath || nativeDirectoryBusy}
+              title={t("sidebar.openInFileManager")}
+              aria-label={t("sidebar.openInFileManager")}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flex: "0 0 34px",
+                width: 34,
+                padding: 0,
+                border: "1px solid var(--border)",
+                borderRadius: 9,
+                background: "var(--bg-hover)",
+                color: nativeDirectoryPath ? "var(--text-muted)" : "var(--text-dim)",
+                cursor: nativeDirectoryPath && !nativeDirectoryBusy ? "pointer" : "not-allowed",
+                opacity: nativeDirectoryBusy ? 0.65 : 1,
+              }}
+            >
+              {nativeDirectoryBusy ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: "spin 0.8s linear infinite" }} aria-hidden="true">
+                  <path d="M21 12a9 9 0 1 1-5.7-8.4" />
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z" />
+                  <path d="M3 10h18" />
+                </svg>
+              )}
+            </button>
+          </div>
+          {nativeDirectoryError && (
+            <div role="alert" style={{ marginTop: 4, paddingLeft: 2, color: "#f87171", fontSize: 10, lineHeight: 1.35 }}>
+              {nativeDirectoryError}
+            </div>
+          )}
 
           <AnimatedDropdown
             open={dropdownOpen}

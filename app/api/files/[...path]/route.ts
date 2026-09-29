@@ -28,6 +28,7 @@ import {
 import { parseFormDataWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { filePathFromApiSegments, samePath } from "@/lib/paths";
 import { readTextPreviewChunk } from "@/lib/text-preview";
+import { deleteProjectFile } from "@/lib/file-mutations";
 
 const IGNORED_NAMES = new Set([
   "node_modules", ".git", ".next", "dist", "build", "__pycache__",
@@ -238,6 +239,26 @@ export async function POST(
       { uploaded, skipped, errors },
       { status: errors.length > 0 ? 207 : 200 },
     );
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  if (!isApiRequestAllowed(request)) {
+    return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+  }
+
+  try {
+    const { path: segments } = await params;
+    const filePath = filePathFromApiSegments(segments);
+    const allowedRoots = await getAllowedFileRoots();
+    const result = deleteProjectFile(filePath, allowedRoots);
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }

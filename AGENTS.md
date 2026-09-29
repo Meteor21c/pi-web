@@ -61,7 +61,8 @@ app/api/
   auth/providers/route.ts         GET OAuth and API-key provider lists
   cwd/validate/route.ts           POST validate/select a cwd
   default-cwd/route.ts            POST create ~/pi-cwd-YYYYMMDD
-  files/[...path]/route.ts        GET file contents for viewer
+  files/[...path]/route.ts        GET/list/upload/delete files inside allowed roots
+  open-directory/route.ts         POST open an allowed project folder in the OS file manager
   home/route.ts                   GET user home directory
   models/route.ts                 GET { models, modelList, defaultModel }
   models-config/route.ts          GET/PUT — read/write ~/.pi/agent/models.json
@@ -105,7 +106,7 @@ components/
   AgentsConfig.tsx    built-in subagent toggle + agent profile editor
   PluginsConfig.tsx   modal for installed package plugins
   SkillsConfig.tsx    modal for loaded/search/installable skills
-  FileExplorer.tsx    file tree inside sidebar
+  FileExplorer.tsx    file tree inside sidebar, including confirmed regular-file deletion
   FileIcons.tsx       file icon helpers
   FileViewer.tsx      file content in a tab
   TabBar.tsx          tab bar (Chat + open file tabs)

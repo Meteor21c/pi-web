@@ -218,6 +218,7 @@ function TreeNode({
   depth,
   cwd,
   onOpenFile,
+  onDeleteFile,
   onAtMention,
   expandedPaths,
   onToggleExpanded,
@@ -231,6 +232,7 @@ function TreeNode({
   depth: number;
   cwd: string;
   onOpenFile: (filePath: string, fileName: string, options?: OpenFileOptions) => void;
+  onDeleteFile?: (filePath: string, fileName: string) => Promise<boolean>;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
   expandedPaths: Set<string>;
   onToggleExpanded: (fullPath: string, open: boolean) => void;
@@ -251,6 +253,7 @@ function TreeNode({
   const [loaded, setLoaded] = useState(node.loaded ?? false);
   const [loading, setLoading] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const loadChildren = useCallback(async (force = false) => {
     if (loaded && !force) return;
@@ -283,6 +286,18 @@ function TreeNode({
       onOpenFile(node.fullPath, node.name);
     }
   }, [node.isDir, node.fullPath, node.name, loaded, open, loadChildren, onOpenFile, onToggleExpanded]);
+
+  const handleDelete = useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (node.isDir || !onDeleteFile || deleting) return;
+    if (!window.confirm(t("files.confirmDelete", { name: node.name }))) return;
+    setDeleting(true);
+    try {
+      await onDeleteFile(node.fullPath, node.name);
+    } finally {
+      setDeleting(false);
+    }
+  }, [deleting, node.fullPath, node.isDir, node.name, onDeleteFile, t]);
 
   return (
     <div>
@@ -372,7 +387,7 @@ function TreeNode({
             title={t("files.insertPath")}
             style={{
               position: "absolute",
-              right: !node.isDir ? 28 : 4,
+              right: !node.isDir ? (onDeleteFile ? 80 : 52) : 4,
               top: "50%",
               transform: "translateY(-50%)",
               display: "flex",
@@ -403,7 +418,7 @@ function TreeNode({
             title={t("files.download")}
             style={{
               position: "absolute",
-              right: 4,
+              right: onDeleteFile ? 29 : 4,
               top: "50%",
               transform: "translateY(-50%)",
               display: "flex",
@@ -430,6 +445,43 @@ function TreeNode({
             </svg>
           </a>
         )}
+        {hovered && !node.isDir && onDeleteFile && (
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={(event) => void handleDelete(event)}
+            title={t("files.delete")}
+            aria-label={t("files.delete")}
+            style={{
+              position: "absolute",
+              right: 4,
+              top: "50%",
+              transform: "translateY(-50%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 22,
+              height: 20,
+              padding: 0,
+              background: "var(--bg-panel)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              color: "#ef4444",
+              cursor: deleting ? "wait" : "pointer",
+              opacity: deleting ? 0.6 : 1,
+            }}
+          >
+            {deleting ? (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: "spin 0.8s linear infinite" }} aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-5.7-8.4" />
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m19 6-1 14H6L5 6" /><path d="M10 11v5M14 11v5" />
+              </svg>
+            )}
+          </button>
+        )}
       </div>
       {node.isDir && open && (
         <div>
@@ -440,6 +492,7 @@ function TreeNode({
               depth={depth + 1}
               cwd={cwd}
               onOpenFile={onOpenFile}
+              onDeleteFile={onDeleteFile}
               onAtMention={onAtMention}
               expandedPaths={expandedPaths}
               onToggleExpanded={onToggleExpanded}
@@ -543,6 +596,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSummary, setUploadSummary] = useState<UploadSummary | null>(null);
+  const [fileActionMessage, setFileActionMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [pendingConflict, setPendingConflict] = useState<PendingConflict | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchPaths, setSearchPaths] = useState<string[]>([]);
@@ -739,6 +793,23 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     void prepareUpload(files);
   }, [prepareUpload]);
 
+  const handleDeleteFile = useCallback(async (filePath: string, fileName: string): Promise<boolean> => {
+    setFileActionMessage(null);
+    try {
+      const response = await fetch(`/api/files/${encodeFilePathForApi(filePath)}`, { method: "DELETE" });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+      setFileActionMessage({ kind: "success", text: t("files.deleteSuccess", { name: fileName }) });
+      setTreeRefreshKey((key) => key + 1);
+      const relative = getRelativeFilePath(filePath, cwd);
+      setSearchPaths((paths) => paths.filter((entry) => entry !== relative));
+      return true;
+    } catch {
+      setFileActionMessage({ kind: "error", text: t("files.deleteFailed", { name: fileName }) });
+      return false;
+    }
+  }, [cwd, t]);
+
   useImperativeHandle(ref, () => ({
     openUploadPicker() {
       if (!uploadBusy) uploadInputRef.current?.click();
@@ -798,7 +869,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     onChangesCountChange?.(gitFiles.length);
   }, [gitFiles, onChangesCountChange]);
 
-  const showUploadFeedback = uploadBusy || pendingConflict !== null || uploadError !== null || uploadSummary !== null;
+  const showUploadFeedback = uploadBusy || pendingConflict !== null || uploadError !== null || uploadSummary !== null || fileActionMessage !== null;
 
   const addUploadedFilesToChat = useCallback(() => {
     if (!uploadSummary || uploadSummary.uploaded.length === 0) return;
@@ -864,6 +935,13 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
           <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, lineHeight: 1.35, color: "#f87171" }}>
             <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>{uploadError}</span>
             <DismissButton onClick={() => setUploadError(null)} title={t("files.dismissError")} />
+          </div>
+        )}
+
+        {fileActionMessage && (
+          <div role={fileActionMessage.kind === "error" ? "alert" : "status"} style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, lineHeight: 1.35, color: fileActionMessage.kind === "error" ? "#f87171" : "#22c55e" }}>
+            <span style={{ minWidth: 0, flex: 1, overflowWrap: "anywhere" }}>{fileActionMessage.text}</span>
+            <DismissButton onClick={() => setFileActionMessage(null)} title={t("files.dismissError")} />
           </div>
         )}
 
@@ -973,6 +1051,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                     depth={0}
                     cwd={cwd}
                     onOpenFile={onOpenFile}
+                    onDeleteFile={handleDeleteFile}
                     onAtMention={onAtMention}
                     expandedPaths={searchExpanded}
                     onToggleExpanded={(fullPath, open) => {
@@ -1031,6 +1110,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                 depth={0}
                 cwd={cwd}
                 onOpenFile={onOpenFile}
+                onDeleteFile={handleDeleteFile}
                 onAtMention={onAtMention}
                 expandedPaths={expandedPaths}
                 onToggleExpanded={handleToggleExpanded}
