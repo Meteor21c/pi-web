@@ -104,6 +104,14 @@ const BUILTIN_CAPABILITIES = new Map<string, RelayModelCapabilities>(
   )),
 );
 
+// This relay vision alias existed in the previous SDK catalog and remains
+// available upstream, although the newer catalog no longer lists it.
+BUILTIN_CAPABILITIES.set("deepseek-v4-flash-vision-exp", {
+  reasoning: true,
+  input: ["text", "image"],
+  thinkingLevelMap: { minimal: null, low: "low", medium: null, high: "high", max: "max" },
+});
+
 // The relay has exposed Fable 5.1 with both a dotted and a hyphenated ID.
 // pi-ai currently uses the hyphenated spelling, so explicitly share its
 // authoritative capabilities with the relay's dotted alias as well.
