@@ -1,6 +1,6 @@
 # Prompt presets and work modes
 
-Date: 2026-10-28. Status: full-prompt replacement is included in the v0.1.17-beta prerelease; additive prompt presets shipped in v0.1.17.
+Date: 2026-10-28. Status: full-prompt replacement is prepared for v0.1.17-beta; prerelease publication is pending. Additive prompt presets shipped in v0.1.17.
 
 ## User experience
 

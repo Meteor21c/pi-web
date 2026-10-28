@@ -80,12 +80,13 @@ git push meteor meteoragent-v<version>
 
 ### Beta prereleases
 
-Use a SemVer prerelease suffix such as `0.1.18-beta.1` for GitHub Pre-releases.
+Use a SemVer prerelease suffix such as `0.1.17-beta` for GitHub Pre-releases.
 Attach the versioned tarball and platform launchers to the prerelease, and do
 not upload its `latest.json` to the stable `/webagent/latest.json` path. Stable
-installations intentionally ignore prerelease versions; beta builds use the
-stable update feed and do not automatically discover later beta builds. Share
-the versioned GitHub asset URLs directly with beta testers.
+installations intentionally ignore prerelease versions. The current in-app
+updater validates stable versions only, so beta builds do not discover beta or
+stable updates automatically; beta testers must install later releases from
+their versioned GitHub assets. Share those URLs directly with beta testers.
 
 ## 5. Publish
 
