@@ -90,7 +90,7 @@ lib/
   subagent-settings.ts  read/write ~/.pi/agent/agents/settings.json
   tool-presets.ts     PRESET_NONE/READ_ONLY/DEFAULT/FULL + getPresetFromTools()
   tool-preset-preference.ts  browser-persisted default for fresh sessions
-  prompt-presets.ts    prompt snapshots, work modes, and additive instruction composition
+  prompt-presets.ts    full-prompt snapshots, work modes, and legacy v1 composition
   prompt-preset-store.ts  private local prompt preset settings and atomic per-action updates
   types.ts            shared TypeScript types
   normalize.ts        normalizeToolCalls() — field name mismatch between file format and our types
@@ -108,7 +108,7 @@ components/
   ModelsConfig.tsx    modal for editing models.json (opened from sidebar bottom)
   AgentsConfig.tsx    built-in subagent toggle + agent profile editor
   PluginsConfig.tsx   modal for installed package plugins
-  PromptPresetsConfig.tsx  saved additional instructions and defaults for new conversations
+  PromptPresetsConfig.tsx  saved full system-prompt alternatives for new conversations
   SkillsConfig.tsx    modal for loaded/search/installable skills
   FileExplorer.tsx    file tree inside sidebar, including confirmed regular-file deletion
   FileIcons.tsx       file icon helpers
@@ -156,9 +156,9 @@ The last preset explicitly selected by the user is stored in browser `localStora
 `GET /api/models` returns `defaultModel` read from `~/.pi/agent/settings.json`. `ChatWindow` pre-selects this on mount for new sessions. Explicit browser model/thinking selections are applied atomically during AgentSession construction, then `lib/startup-preferences.ts` persists their effective values without replaying `set_model`/`set_thinking_level`; implicit `enabledModels` fallbacks and thinking pins are not persisted.
 
 ### Prompt presets and work modes
-- Local presets and the next-conversation selection live in `meteoragent-prompt-presets.json` under `getAgentDir()`, written atomically with private permissions. Settings offers CRUD; the top Assistant rules panel selects an additional prompt. Auto/Plan/Goal is a separate control below the chat composer, before the model selector; started conversations display their persisted mode.
+- Local full-system-prompt presets, the editable MeteorAgent default prompt, and the next-conversation selection live in `meteoragent-prompt-presets.json` under `getAgentDir()`, written atomically with private permissions. A selected v2 prompt replaces the provider-facing system prompt while preserving active tool declarations; Auto/Plan/Goal instructions remain a separate runtime layer. Existing v1 conversation snapshots retain their original additive behavior. Auto/Plan/Goal is a separate control below the chat composer, before the model selector; started conversations display their persisted mode.
 - New main sessions persist a `meteoragent:prompt-selection` custom-entry snapshot, including an explicit Auto/no-preset value. An empty provisional session refreshes that snapshot before the first prompt; after a user/assistant message exists, editing, selecting, or deleting global presets cannot change it. Legacy sessions without metadata stay unchanged; subagent profile prompts remain separate.
-- Pi 0.87.1 sends structured system messages. The wrapper appends a named section through `agent.transformContext` after the SDK projection, on the first and all subsequent provider calls. Never assign the read-only `agent.state.systemPrompt`, replace the base tool/project rules, or inject only through `prepareNextTurnWithContext` (that misses the first request).
+- Pi 0.87.1 sends structured system messages. V2 prompt presets project the selected complete prompt through `agent.transformContext` after the SDK projection, preserving tool declarations on the first and all subsequent provider calls. Never assign the read-only `agent.state.systemPrompt` or inject only through `prepareNextTurnWithContext` (that misses the first request).
 - Plan mode limits the active tool selection to built-in read/grep/find/ls, removes other tools from projected definitions, and blocks non-read-only calls via `beforeToolCall`. Manual shell and slash commands are rejected. Installed extensions still have their normal local-code privileges; this is not an OS sandbox. Goal mode provides single-task persistence and completion guidance, without scheduling or automatic future turns.
 - See `docs/adr/0005-prompt-presets-work-modes.md` for storage, lifecycle, and verification boundaries. The v0.1.16 upstream selection and compatibility scope are recorded in `docs/upstream-review-2026-10-28.md`.
 

@@ -1,11 +1,13 @@
 # Prompt presets and work modes
 
-Date: 2026-10-28. Status: included in MeteorAgent v0.1.16.
+Date: 2026-10-28. Status: full-prompt replacement is included in the v0.1.17-beta prerelease; additive prompt presets shipped in v0.1.17.
 
 ## User experience
 
-Settings → Prompt presets manages multiple named instruction presets. The top
-Assistant rules panel selects an optional preset for new conversations. Auto /
+Settings → Prompt presets manages multiple named complete system prompts. The
+top Assistant rules panel selects a full prompt for new conversations and edits
+the MeteorAgent default prompt. Selecting a preset replaces the default prompt
+instead of appending to it. Auto /
 Plan / Goal lives below the chat input, beside the model selector. Prompt preset
 settings do not include a mode control. The complete generated prompt is folded
 by default. A started conversation displays its persisted mode in the composer
@@ -22,16 +24,19 @@ Modes are independent of presets:
 
 ## Persistence and compatibility
 
-`getAgentDir()/meteoragent-prompt-presets.json` contains version 1, a preset list,
-`selectedPresetId`, and `mode`. Presets are global to the local Magent instance.
+`getAgentDir()/meteoragent-prompt-presets.json` contains version 2, a preset list,
+`selectedPresetId`, `mode`, and an optional `defaultSystemPrompt`. Version 1
+settings are read and upgraded on the next write. Presets are global to the
+local Magent instance.
 The API applies individual operations against the latest file and writes it
 atomically with mode 0600. It checks trusted request origins, JSON content,
 preset shape, unique identifiers, maximum 100 presets, names up to 80 characters,
-and content up to 32,000 characters. Malformed files are not silently reset.
+and prompt content up to 120,000 characters. Malformed files are not silently reset.
 
-New main conversations save a `meteoragent:prompt-selection` custom entry with
-the selected preset's id, name, and **content copy**, plus mode. Auto/no preset is
-also explicit. Runtime creation for command discovery may precede the first user
+New main conversations save a v2 `meteoragent:prompt-selection` custom entry with
+the selected preset's id, name, and **full prompt copy**, plus mode. A customized
+default prompt is snapshotted the same way. Auto/default is also explicit. Runtime
+creation for command discovery may precede the first user
 message; an empty runtime refreshes the selection before its first prompt.
 Once a user or assistant message exists anywhere in the session, global changes
 cannot replace the snapshot. Resuming, reloading, and branching retain stored
@@ -43,15 +48,15 @@ Deleting a preset clears it as a new-conversation default but does not remove
 snapshots in existing conversations. This operation edits a single JSON file;
 it never deletes directories or session files.
 
-## Actual provider injection
+## Actual provider prompt
 
 Pi 0.87.1 represents prompts as structured system messages, with tools declared in
-`toolsAdded`. `agent.state.systemPrompt` is a read-only replayed getter.
-The wrapper chains `agent.transformContext` after the SDK's existing projection
-and adds the instructions as a named section of the leading system message.
-The source transcript is not mutated. This covers the first request, tool-loop
-continuations, context compaction, and later user turns without accumulating
-duplicate text. Tool/project instructions and custom preset text are preserved.
+`toolsAdded`. `agent.state.systemPrompt` is a read-only replayed getter. A v2
+selection projects the complete chosen prompt into the provider request while
+preserving active tool declarations. It does not mutate the source transcript and
+applies to the first request, tool-loop continuations, context compaction, and
+later turns. Plan/Goal instructions are applied separately. Existing v1
+conversation snapshots keep their original additive behavior.
 
 Plan mode filters active tools and provider tool definitions to read/grep/find/ls.
 A chained `beforeToolCall` blocks other model-requested tools even if a plugin

@@ -59,7 +59,7 @@ export function PromptPresetsConfig() {
           <label>{t("presets.newPreset")}
             <select value={settings?.selectedPresetId ?? ""} disabled={!settings || busy}
               onChange={(event) => void update({ type: "select", selectedPresetId: event.target.value || null })}>
-              <option value="">{t("presets.none")}</option>
+              <option value="">{t("presets.magentDefault")}</option>
               {settings?.presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
             </select>
           </label>

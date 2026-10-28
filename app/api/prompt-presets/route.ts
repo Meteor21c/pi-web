@@ -19,7 +19,7 @@ export async function POST(req: Request) {
   if (!hasJsonContentType(req)) return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
   try {
     const text = await req.text();
-    if (text.length > 200_000) return NextResponse.json({ error: "Preset is too large" }, { status: 413 });
+    if (text.length > 400_000) return NextResponse.json({ error: "Prompt settings are too large" }, { status: 413 });
     return NextResponse.json(updatePromptPresetSettings(JSON.parse(text)), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, {

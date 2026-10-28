@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
@@ -55,7 +56,7 @@ import { appendRelayImageBillingEntries } from "./relay-image-billing";
 import { installRelayResponseRepair } from "./relay-responses";
 import { readPromptPresetSettings } from "./prompt-preset-store";
 import {
-  appendSessionPromptSelection, composeSessionSystemPrompt, PLAN_TOOL_NAMES,
+  appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
   promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection,
 } from "./prompt-presets";
 import {
@@ -480,17 +481,39 @@ export class AgentSessionWrapper {
     this.inner.agent.transformContext = async (messages, signal) => {
       const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
       const selection = this.promptSelection!;
-      const extra = composeSessionSystemPrompt("", selection);
-      if (!extra) return transformed;
-      // Pi 0.86 carries prompts in structured system messages. Project a named
-      // section on EVERY provider call, including the first and post-compaction
-      // continuations. Do not mutate the transcript or the SDK's read-only getter.
-      const head = transformed[0]?.role === "system" ? transformed[0] : undefined;
-      const projected = {
-        ...(head ?? { role: "system" as const, content: "", timestamp: Date.now() }),
-        sections: { ...head?.sections, meteoragentUserInstructions: extra },
-      };
-      return [projected, ...transformed.slice(head ? 1 : 0)].map((message) => {
+      let projectedMessages = transformed;
+      if (selection.version === 1) {
+        // Keep the original behavior for conversations that already have a v1
+        // snapshot. New sessions store v2 full-prompt selections.
+        const extra = composeSessionSystemPrompt("", selection);
+        if (extra) {
+          const head = transformed[0]?.role === "system" ? transformed[0] : undefined;
+          const projected = {
+            ...(head ?? { role: "system" as const, content: "", timestamp: Date.now() }),
+            sections: { ...head?.sections, meteoragentUserInstructions: extra },
+          };
+          projectedMessages = [projected, ...transformed.slice(head ? 1 : 0)];
+        }
+      } else if (selection.preset) {
+        // A v2 preset is the complete provider-facing system prompt. Keep the
+        // active tool declarations but remove the SDK and project prompt text.
+        const current = getCurrentSystemMessage(transformed);
+        const projected = {
+          role: "system" as const,
+          content: composeSessionSystemPrompt("", selection),
+          ...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
+          timestamp: current?.timestamp ?? Date.now(),
+        };
+        projectedMessages = [projected, ...transformed.filter((message) => message.role !== "system")];
+      } else if (MODE_INSTRUCTIONS[selection.mode]) {
+        const head = transformed[0]?.role === "system" ? transformed[0] : undefined;
+        const projected = {
+          ...(head ?? { role: "system" as const, content: "", timestamp: Date.now() }),
+          sections: { ...head?.sections, meteoragentWorkMode: MODE_INSTRUCTIONS[selection.mode] },
+        };
+        projectedMessages = [projected, ...transformed.slice(head ? 1 : 0)];
+      }
+      return projectedMessages.map((message) => {
         if (selection.mode !== "plan" || message.role !== "system") return message;
         return { ...message, toolsAdded: message.toolsAdded?.filter((tool) => PLAN_TOOL_NAMES.has(tool.name)) };
       });
@@ -659,7 +682,10 @@ export class AgentSessionWrapper {
       switch (type) {
       case "get_prompt_selection": {
         this.refreshUnstartedPromptSelection();
-        return this.promptSelection ?? null;
+        const currentSystemPrompt = this.inner.agent.state?.systemPrompt ?? "";
+        const baseSystemPrompt = this.exactSystemPrompt?.()
+          ?? (this.chatOnly ? currentSystemPrompt : rebrandMeteorAgentSystemPrompt(currentSystemPrompt));
+        return { selection: this.promptSelection ?? null, baseSystemPrompt };
       }
       case "prompt": {
         // Serialize only admission. Once the preceding prompt has either
@@ -798,6 +824,7 @@ export class AgentSessionWrapper {
             ? { percent: contextUsage.percent, contextWindow: contextUsage.contextWindow, tokens: contextUsage.tokens }
             : null,
           systemPrompt: composeSessionSystemPrompt(visibleSystemPrompt, this.promptSelection),
+          baseSystemPrompt: visibleSystemPrompt,
           promptSelection: this.promptSelection ?? null,
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           extensionStatuses: this.getExtensionStatuses(),

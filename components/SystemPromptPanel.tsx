@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePromptPresets } from "@/hooks/usePromptPresets";
 import { sendAgentCommand } from "@/lib/agent-client";
-import type { SessionPromptSelection } from "@/lib/prompt-presets";
+import { MAX_PRESET_CONTENT_LENGTH, METEORAGENT_DEFAULT_PROMPT_ID, type SessionPromptSelection } from "@/lib/prompt-presets";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -16,9 +16,17 @@ interface Props {
   onSelectionChanged: () => Promise<void>;
 }
 
+interface PromptSelectionInfo {
+  selection: SessionPromptSelection | null;
+  baseSystemPrompt: string;
+}
+
 export function SystemPromptPanel({ loading, prompt, translate, sessionId, onManagePresets, onSelectionChanged }: Props) {
   const { settings, busy, error, update, reload } = usePromptPresets();
   const [applied, setApplied] = useState<SessionPromptSelection | null>(null);
+  const [baseSystemPrompt, setBaseSystemPrompt] = useState("");
+  const [defaultPromptDraft, setDefaultPromptDraft] = useState("");
+  const [editingDefault, setEditingDefault] = useState(false);
   const [appliedLoaded, setAppliedLoaded] = useState(false);
   const [appliedError, setAppliedError] = useState(false);
   useEffect(() => {
@@ -26,17 +34,42 @@ export function SystemPromptPanel({ loading, prompt, translate, sessionId, onMan
     setAppliedLoaded(false);
     setAppliedError(false);
     if (!sessionId) return;
-    void sendAgentCommand<SessionPromptSelection | null>(sessionId, { type: "get_prompt_selection" })
-      .then((selection) => {
-        if (!cancelled) { setApplied(selection); setAppliedLoaded(true); }
+    void sendAgentCommand<PromptSelectionInfo>(sessionId, { type: "get_prompt_selection" })
+      .then((info) => {
+        if (!cancelled) {
+          setApplied(info.selection);
+          setBaseSystemPrompt(info.baseSystemPrompt);
+          setDefaultPromptDraft(settings?.defaultSystemPrompt ?? info.baseSystemPrompt);
+          setAppliedLoaded(true);
+        }
       }).catch(() => { if (!cancelled) setAppliedError(true); });
     return () => { cancelled = true; };
-  }, [sessionId]);
+  }, [sessionId, settings?.defaultSystemPrompt]);
+
+  useEffect(() => {
+    if (!editingDefault) setDefaultPromptDraft(settings?.defaultSystemPrompt ?? baseSystemPrompt);
+  }, [baseSystemPrompt, editingDefault, settings?.defaultSystemPrompt]);
 
   const select = async (action: Record<string, unknown>) => {
     if (await update({ type: "select", ...action })) {
       // Refresh preview for a still-empty composer. Started conversations keep
       // their persisted selection even when the next-conversation default changes.
+      await onSelectionChanged().catch(() => {});
+    }
+  };
+
+  const saveDefaultPrompt = async () => {
+    if (!defaultPromptDraft.trim()) return;
+    if (await update({ type: "set_default_prompt", prompt: defaultPromptDraft })) {
+      setEditingDefault(false);
+      await onSelectionChanged().catch(() => {});
+    }
+  };
+
+  const resetDefaultPrompt = async () => {
+    if (await update({ type: "set_default_prompt", prompt: null })) {
+      setEditingDefault(false);
+      setDefaultPromptDraft(baseSystemPrompt);
       await onSelectionChanged().catch(() => {});
     }
   };
@@ -62,10 +95,10 @@ export function SystemPromptPanel({ loading, prompt, translate, sessionId, onMan
           <div className="system-prompt-preset-title"><strong>{translate("presets.forNew")}</strong>
             <button type="button" onClick={onManagePresets}>{translate("presets.manage")}</button>
           </div>
-          <label className="system-prompt-preset-picker">{translate("presets.additional")}
+          <label className="system-prompt-preset-picker">{translate("presets.systemPrompt")}
             <select value={settings?.selectedPresetId ?? ""} disabled={!settings || busy}
               onChange={(event) => void select({ selectedPresetId: event.target.value || null })}>
-              <option value="">{translate("presets.none")}</option>
+              <option value="">{settings?.defaultSystemPrompt ? translate("presets.magentDefaultCustom") : translate("presets.magentDefault")}</option>
               {settings?.presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
             </select>
           </label>
@@ -74,9 +107,31 @@ export function SystemPromptPanel({ loading, prompt, translate, sessionId, onMan
           {sessionId && <div className="system-prompt-applied">
             <strong>{translate("presets.current")}</strong>
             <span>{appliedError ? translate("presets.failed") : !appliedLoaded ? translate("presets.loading")
-              : applied?.preset?.name ?? translate("presets.none")}</span>
+              : applied?.preset?.id === METEORAGENT_DEFAULT_PROMPT_ID
+                ? translate("presets.magentDefault")
+                : applied?.preset?.name ?? translate("presets.magentDefault")}</span>
             {applied?.preset && <details><summary>{translate("presets.viewApplied")}</summary><div className="system-prompt-text">{applied.preset.content}</div></details>}
           </div>}
+          <div className="system-prompt-default-editor">
+            <div className="system-prompt-preset-title">
+              <strong>{translate("presets.magentDefault")}</strong>
+              {!editingDefault && <button type="button" disabled={!baseSystemPrompt && !settings?.defaultSystemPrompt} onClick={() => setEditingDefault(true)}>{translate("presets.editDefault")}</button>}
+            </div>
+            <p className="system-prompt-hint">{translate("presets.defaultPromptHelp")}</p>
+            {editingDefault && <>
+              <textarea aria-label={translate("presets.magentDefault")} value={defaultPromptDraft} maxLength={MAX_PRESET_CONTENT_LENGTH}
+                onChange={(event) => setDefaultPromptDraft(event.target.value)} disabled={busy || (!appliedLoaded && !settings?.defaultSystemPrompt)}
+                placeholder={translate("presets.defaultPromptPlaceholder")} />
+              <div className="system-prompt-default-actions">
+                <span>{defaultPromptDraft.length.toLocaleString()} / {MAX_PRESET_CONTENT_LENGTH.toLocaleString()}</span>
+                <div>
+                  {settings?.defaultSystemPrompt && <button type="button" disabled={busy} onClick={() => void resetDefaultPrompt()}>{translate("presets.resetDefault")}</button>}
+                  <button type="button" disabled={busy} onClick={() => { setEditingDefault(false); setDefaultPromptDraft(settings?.defaultSystemPrompt ?? baseSystemPrompt); }}>{translate("presets.cancelEdit")}</button>
+                  <button type="button" disabled={busy || !defaultPromptDraft.trim() || defaultPromptDraft === settings?.defaultSystemPrompt} onClick={() => void saveDefaultPrompt()}>{translate("presets.save")}</button>
+                </div>
+              </div>
+            </>}
+          </div>
         </div>
         <details className="system-prompt-full"><summary>{translate("presets.fullRules")} <span>{translate("system.readOnly")}</span></summary>
         {prompt ? (
@@ -128,6 +183,13 @@ export function SystemPromptPanel({ loading, prompt, translate, sessionId, onMan
         .system-prompt-applied strong { color: var(--text-muted); font-weight: 500; }
         .system-prompt-applied summary { cursor: pointer; color: var(--accent); padding-top: 4px; }
         .system-prompt-applied .system-prompt-text { padding-top: 8px; }
+        .system-prompt-default-editor { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); }
+        .system-prompt-default-editor textarea { width: 100%; min-height: 180px; max-height: 38dvh; resize: vertical; overflow: auto; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: 12px/1.6 var(--font-mono); white-space: pre-wrap; }
+        .system-prompt-default-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; color: var(--text-dim); }
+        .system-prompt-default-actions > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+        .system-prompt-default-actions button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); cursor: pointer; }
+        .system-prompt-default-actions button:last-child { border-color: var(--accent); color: var(--accent); }
+        .system-prompt-default-actions button:disabled { opacity: .5; cursor: not-allowed; }
         .system-prompt-full { border-top: 1px solid var(--border); padding-top: 12px; }
         .system-prompt-full > summary { cursor: pointer; font-size: 12px; color: var(--text-muted); padding: 4px 0 12px; }
         .system-prompt-full > summary span { margin-left: 6px; font-size: 11px; opacity: .7; }
