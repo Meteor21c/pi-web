@@ -45,7 +45,7 @@ it never deletes directories or session files.
 
 ## Actual provider injection
 
-Pi 0.86 represents prompts as structured system messages, with tools declared in
+Pi 0.87.1 represents prompts as structured system messages, with tools declared in
 `toolsAdded`. `agent.state.systemPrompt` is a read-only replayed getter.
 The wrapper chains `agent.transformContext` after the SDK's existing projection
 and adds the instructions as a named section of the leading system message.
