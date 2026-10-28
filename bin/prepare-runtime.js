@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 "use strict";
+/* eslint-disable @typescript-eslint/no-require-imports -- npm lifecycle runs as CommonJS. */
 
 // The SDK publishes its own shrinkwrap, which npm can prefer over our root
 // overrides. Use the same locked, audited dependency shipped at the app root.

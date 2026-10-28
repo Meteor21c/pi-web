@@ -9,6 +9,8 @@ const eslintConfig = [
       "react-hooks/immutability": "off",
       "react-hooks/refs": "off",
       "react-hooks/set-state-in-effect": "off",
+      // The app does not enable React Compiler; retain its existing manual hooks.
+      "react-hooks/preserve-manual-memoization": "off",
     },
   },
 ];
