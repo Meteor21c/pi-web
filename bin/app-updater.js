@@ -82,10 +82,23 @@ function packBackup() {
   log(`backup: ${backupPath}`);
 }
 
+function managedLaunchAgentPid() {
+  const domain = `gui/${process.getuid()}`;
+  const result = spawnSync("launchctl", ["print", `${domain}/fun.meteor21c.webagent`], { encoding: "utf8" });
+  if (result.status !== 0) return undefined;
+  const pid = Number(result.stdout?.match(/^\s*pid = (\d+)\s*$/m)?.[1]);
+  return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
+}
+
 function unloadLaunchAgent() {
   if (process.platform !== "darwin") return;
   const plist = join(homedir(), "Library", "LaunchAgents", "fun.meteor21c.webagent.plist");
   if (!existsSync(plist)) return;
+  const currentPid = managedLaunchAgentPid();
+  if (!currentPid || (currentPid !== payload.launcherPid && currentPid !== startedLauncherPid)) {
+    log("launchd job belongs to another installation; leaving it running");
+    return;
+  }
   const domain = `gui/${process.getuid()}`;
   const result = spawnSync("launchctl", ["bootout", domain, plist], { encoding: "utf8" });
   if (result.status === 0) launchdWasUnloaded = true;
@@ -209,6 +222,7 @@ function restartService() {
     log(`launchd bootstrap: ${bootstrap.status}`);
     if (bootstrap.status === 0) {
       spawnSync("launchctl", ["kickstart", "-k", `${domain}/fun.meteor21c.webagent`], { encoding: "utf8" });
+      startedLauncherPid = managedLaunchAgentPid();
       return;
     }
   }
@@ -255,6 +269,9 @@ function unlinkIfPresent(path) {
 }
 
 async function main() {
+  // npm replaces packageRoot during install. Keep the helper outside that tree
+  // so a restart or rollback never inherits a deleted working directory.
+  process.chdir(backupDirectory);
   log(`starting update to ${payload.targetVersion}`);
   const previousVersion = installedVersion();
   if (!previousVersion) throw new Error("Could not determine the installed MeteorAgent version");
