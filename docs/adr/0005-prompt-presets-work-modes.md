@@ -1,6 +1,6 @@
 # Prompt presets and work modes
 
-Date: 2026-10-28. Status: complete system-prompt replacement is prepared for v0.1.18; publication is pending. The additive preset implementation shipped in v0.1.17 and was superseded by the full-prompt design.
+Date: 2026-10-28. Status: shipped in v0.1.18. The additive preset implementation shipped in v0.1.17 and was superseded by the full-prompt design.
 
 ## User experience
 
