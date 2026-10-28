@@ -88,6 +88,12 @@ updater validates stable versions only, so beta builds do not discover beta or
 stable updates automatically; beta testers must install later releases from
 their versioned GitHub assets. Share those URLs directly with beta testers.
 
+Stable release deployment updates `/webagent/latest.json`; this makes stable
+clients discover a release in-app. Keep versioned tarballs immutable, publish
+the GitHub Release first, then deploy the verified stable manifest and matching
+artifacts to the download origin. Never place a beta manifest at the stable
+update URL.
+
 ## 5. Publish
 
 Create a GitHub Release in `Meteor21c/pi-web` and attach every file from the clean customer directory. Then deploy the same main tarball, manifest, download page, and the two launcher ZIPs to `dl.meteor21c.fun`.
