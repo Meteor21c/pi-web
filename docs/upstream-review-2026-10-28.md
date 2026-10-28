@@ -28,12 +28,17 @@ activation controls and relay adapters. These features are not advertised as
 part of v0.1.16. No blanket upstream branch merge is performed.
 
 The SDK's published shrinkwrap pins its own undici and brace-expansion releases.
-The root customer lock explicitly refreshes those nested records to audited
-undici 8.12.3 and brace-expansion 5.0.12. Fresh npm ci and installed resolution
-must confirm these versions; an override alone did not refresh the nested lock.
+The root customer lock pins undici 8.12.3 and brace-expansion 5.0.12. Because
+npm ci can still install the SDK shrinkwrap versions despite the override and
+root lock, the package postinstall prepares those two nested dependencies from
+the exact audited root copies. Replaced directories are moved to a local backup,
+not deleted. Preparation is idempotent and rejects unexpected root versions.
+Fresh npm ci and actual SDK module resolution must confirm these versions.
 
-The brand build exports the clean Git commit with git archive, keeping ignored
-browser logs, caches and developer files out of the release source snapshot.
+The brand build copies only Git-tracked files from the verified clean checkout,
+keeping ignored browser logs, caches and developer files out of the release
+source snapshot. A local independent clone may be supplied with
+METEOR_SOURCE_DIR when the main checkout has cloud-offloaded Git metadata.
 
 ## Sources
 
