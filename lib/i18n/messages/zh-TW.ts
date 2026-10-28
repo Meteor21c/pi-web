@@ -15,6 +15,7 @@ export const zhTWLocale: LocalePlugin = {
     "presets.systemPrompt": "新對話使用",
     "presets.magentDefault": "MeteorAgent 預設提示詞",
     "presets.magentDefaultCustom": "MeteorAgent 預設提示詞（已自訂）",
+    "presets.none": "不使用預設",
     "presets.editDefault": "編輯預設提示詞",
     "presets.defaultPromptHelp": "這裡編輯完整的預設系統提示詞。儲存後套用於新對話；既有對話保留開始時的提示詞。自訂提示詞會取代自動產生的角色、工具和專案規則；工具權限仍由介面控制。",
     "presets.defaultPromptPlaceholder": "完整系統提示詞……",
