@@ -21,6 +21,7 @@ import { computeSessionStats } from "@/lib/session-stats";
 import type { SessionEntry } from "@/lib/types";
 import { readSubagentRun, readSubagentSessionResources, SUBAGENT_META_TYPE } from "@/lib/subagents";
 import { readSessionToolSelection } from "@/lib/session-tool-selection";
+import { readSessionPromptSelection } from "@/lib/prompt-presets";
 import { jsonResponse } from "@/lib/json-response";
 
 export async function GET(
@@ -106,6 +107,7 @@ export async function GET(
         context,
         stats,
         totalActiveMs,
+        workMode: readSessionPromptSelection(entries as unknown as SessionEntry[])?.mode ?? "auto",
         ...(toolNames !== undefined ? { toolNames } : {}),
       },
     );

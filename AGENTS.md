@@ -70,6 +70,7 @@ app/api/
   models-config/discover/route.ts POST fetch a configured provider's upstream model list
   models-config/test/route.ts     POST test a configured model/provider
   plugins/route.ts                GET/POST package plugin management
+  prompt-presets/route.ts         GET/POST local prompt preset CRUD and new-conversation defaults
   skills/route.ts                 GET/PATCH loaded skills and disable-model-invocation
   skills/install/route.ts         POST install skills through npx skills add
   skills/search/route.ts          GET/POST skills.sh search
@@ -89,6 +90,8 @@ lib/
   subagent-settings.ts  read/write ~/.pi/agent/agents/settings.json
   tool-presets.ts     PRESET_NONE/READ_ONLY/DEFAULT/FULL + getPresetFromTools()
   tool-preset-preference.ts  browser-persisted default for fresh sessions
+  prompt-presets.ts    prompt snapshots, work modes, and additive instruction composition
+  prompt-preset-store.ts  private local prompt preset settings and atomic per-action updates
   types.ts            shared TypeScript types
   normalize.ts        normalizeToolCalls() — field name mismatch between file format and our types
   worktree.ts         project/worktree resolution and git worktree operations
@@ -105,6 +108,7 @@ components/
   ModelsConfig.tsx    modal for editing models.json (opened from sidebar bottom)
   AgentsConfig.tsx    built-in subagent toggle + agent profile editor
   PluginsConfig.tsx   modal for installed package plugins
+  PromptPresetsConfig.tsx  saved additional instructions and defaults for new conversations
   SkillsConfig.tsx    modal for loaded/search/installable skills
   FileExplorer.tsx    file tree inside sidebar, including confirmed regular-file deletion
   FileIcons.tsx       file icon helpers
@@ -150,6 +154,13 @@ The last preset explicitly selected by the user is stored in browser `localStora
 
 ### Model defaults for new sessions
 `GET /api/models` returns `defaultModel` read from `~/.pi/agent/settings.json`. `ChatWindow` pre-selects this on mount for new sessions. Explicit browser model/thinking selections are applied atomically during AgentSession construction, then `lib/startup-preferences.ts` persists their effective values without replaying `set_model`/`set_thinking_level`; implicit `enabledModels` fallbacks and thinking pins are not persisted.
+
+### Prompt presets and work modes
+- Local presets and the next-conversation selection live in `meteoragent-prompt-presets.json` under `getAgentDir()`, written atomically with private permissions. Settings offers CRUD; the top Assistant rules panel selects an additional prompt. Auto/Plan/Goal is a separate control below the chat composer, before the model selector; started conversations display their persisted mode.
+- New main sessions persist a `meteoragent:prompt-selection` custom-entry snapshot, including an explicit Auto/no-preset value. An empty provisional session refreshes that snapshot before the first prompt; after a user/assistant message exists, editing, selecting, or deleting global presets cannot change it. Legacy sessions without metadata stay unchanged; subagent profile prompts remain separate.
+- Pi 0.86 sends structured system messages. The wrapper appends a named section through `agent.transformContext` after the SDK projection, on the first and all subsequent provider calls. Never assign the read-only `agent.state.systemPrompt`, replace the base tool/project rules, or inject only through `prepareNextTurnWithContext` (that misses the first request).
+- Plan mode limits the active tool selection to built-in read/grep/find/ls, removes other tools from projected definitions, and blocks non-read-only calls via `beforeToolCall`. Manual shell and slash commands are rejected. Installed extensions still have their normal local-code privileges; this is not an OS sandbox. Goal mode provides single-task persistence and completion guidance, without scheduling or automatic future turns.
+- See `docs/adr/0005-prompt-presets-work-modes.md` for storage, lifecycle, and verification boundaries.
 
 ### `enabledModels` scoping
 The `enabledModels` setting uses pi's `--models` syntax: minimatch globs against `provider/modelId` or a bare `modelId`, fuzzy matching for non-glob patterns, and an optional `:thinkingLevel` suffix. Never compare those patterns as literal strings — `lib/model-scope.ts` delegates to the SDK's `resolveModelScopeWithDiagnostics()` so pi-web and the TUI agree on the visible model list, and falls back to all available models when patterns resolve to nothing. `startRpcSession()` resolves that scope before creating an AgentSession and passes the selected initial model, thinking pin, and SDK-native `scopedModels` atomically; `GET /api/models` reuses the helper only for selector data, `thinkingLevelPins`, and `modelScopeWarnings` display.

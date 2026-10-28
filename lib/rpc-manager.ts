@@ -53,6 +53,11 @@ import { createSessionScopedSettingsManager } from "./plugin-activation";
 import { withRelayImageGenerationSession } from "./relay-image-generation";
 import { appendRelayImageBillingEntries } from "./relay-image-billing";
 import { installRelayResponseRepair } from "./relay-responses";
+import { readPromptPresetSettings } from "./prompt-preset-store";
+import {
+  appendSessionPromptSelection, composeSessionSystemPrompt, PLAN_TOOL_NAMES,
+  promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection,
+} from "./prompt-presets";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -123,6 +128,7 @@ type ExtensionCommandContextActionsLike = {
 
 type AgentSessionWrapperOptions = {
   exactSystemPrompt?: () => string;
+  promptSelection?: SessionPromptSelection;
   chatOnly?: boolean;
   onAgentRunComplete?: AgentRunCompleteListener;
   suppressCompletionNotifications?: boolean;
@@ -161,6 +167,7 @@ const SESSION_IDLE_TIMEOUT_MS = resolveSessionIdleTimeoutMs();
 const SESSION_REPLACEMENT_COMMAND_TYPES = new Set(["fork", "clone"]);
 const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = new Set([
   "get_state",
+  "get_prompt_selection",
   "get_session_stats",
   "get_last_assistant_text",
   "get_tools",
@@ -246,6 +253,7 @@ export class AgentSessionWrapper {
   private extensionBindingPromise: Promise<void> | null = null;
   private extensionBindingError: unknown = null;
   private readonly exactSystemPrompt?: () => string;
+  private promptSelection?: SessionPromptSelection;
   private readonly chatOnly: boolean;
   private readonly onAgentRunComplete?: AgentRunCompleteListener;
   private readonly suppressCompletionNotifications: boolean;
@@ -262,10 +270,12 @@ export class AgentSessionWrapper {
     options: AgentSessionWrapperOptions = {},
   ) {
     this.exactSystemPrompt = options.exactSystemPrompt;
+    this.promptSelection = options.promptSelection;
     this.chatOnly = options.chatOnly ?? false;
     this.onAgentRunComplete = options.onAgentRunComplete;
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
     this.installExactSystemPromptContinuation();
+    this.installPromptPresetProjection();
   }
 
   get sessionId(): string {
@@ -464,8 +474,52 @@ export class AgentSessionWrapper {
     };
   }
 
+  private installPromptPresetProjection(): void {
+    if (!this.promptSelection) return;
+    const previousTransform = this.inner.agent.transformContext;
+    this.inner.agent.transformContext = async (messages, signal) => {
+      const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
+      const selection = this.promptSelection!;
+      const extra = composeSessionSystemPrompt("", selection);
+      if (!extra) return transformed;
+      // Pi 0.86 carries prompts in structured system messages. Project a named
+      // section on EVERY provider call, including the first and post-compaction
+      // continuations. Do not mutate the transcript or the SDK's read-only getter.
+      const head = transformed[0]?.role === "system" ? transformed[0] : undefined;
+      const projected = {
+        ...(head ?? { role: "system" as const, content: "", timestamp: Date.now() }),
+        sections: { ...head?.sections, meteoragentUserInstructions: extra },
+      };
+      return [projected, ...transformed.slice(head ? 1 : 0)].map((message) => {
+        if (selection.mode !== "plan" || message.role !== "system") return message;
+        return { ...message, toolsAdded: message.toolsAdded?.filter((tool) => PLAN_TOOL_NAMES.has(tool.name)) };
+      });
+    };
+    const previousBeforeTool = this.inner.agent.beforeToolCall;
+    this.inner.agent.beforeToolCall = async (context, signal) => {
+      if (this.promptSelection?.mode === "plan" && !PLAN_TOOL_NAMES.has(context.toolCall.name)) {
+        return { block: true, reason: "计划模式仅允许读取和搜索文件，请在新对话中选择自动或目标模式以执行操作。" };
+      }
+      return previousBeforeTool?.(context, signal);
+    };
+  }
+
+  private refreshUnstartedPromptSelection(): void {
+    if (!this.promptSelection || this.isRunning()) return;
+    const entries = this.inner.sessionManager.getEntries() as unknown as SessionEntry[];
+    if (entries.some((entry) => entry.type === "message"
+      && (entry.message.role === "user" || entry.message.role === "assistant"))) return;
+    const next = promptSelectionFromSettings(readPromptPresetSettings());
+    if (JSON.stringify(next) === JSON.stringify(this.promptSelection)) return;
+    this.promptSelection = next;
+    appendSessionPromptSelection(this.inner.sessionManager, next);
+    this.setActiveToolSelection(readSessionToolSelection(entries) ?? ["read", "bash", "edit", "write"]);
+  }
+
   setActiveToolSelection(toolNames: string[]): void {
-    this.inner.setActiveToolsByName(withExtensionTools(this.inner, toolNames));
+    this.inner.setActiveToolsByName(this.promptSelection?.mode === "plan"
+      ? toolNames.filter((name) => PLAN_TOOL_NAMES.has(name))
+      : withExtensionTools(this.inner, toolNames));
   }
 
   private emit(event: AgentEvent): void {
@@ -603,12 +657,20 @@ export class AgentSessionWrapper {
       }
 
       switch (type) {
+      case "get_prompt_selection": {
+        this.refreshUnstartedPromptSelection();
+        return this.promptSelection ?? null;
+      }
       case "prompt": {
         // Serialize only admission. Once the preceding prompt has either
         // passed or failed preflight, the SDK can atomically decide whether
         // this submission starts a run or joins its streaming queue.
         const releaseAdmission = await this.acquirePromptAdmission();
         try {
+          this.refreshUnstartedPromptSelection();
+          if (this.promptSelection?.mode === "plan" && /^\s*\//.test(String(command.message ?? ""))) {
+            throw new Error("计划模式不运行插件命令。请直接描述要分析的任务，或在新对话中选择自动或目标模式。");
+          }
           if (this.inner.isBashRunning) {
             throw new Error("Cannot send a prompt while a shell command is running");
           }
@@ -710,6 +772,7 @@ export class AgentSessionWrapper {
         }
 
       case "get_state": {
+        this.refreshUnstartedPromptSelection();
         const model = this.inner.model;
         const contextUsage = this.inner.getContextUsage();
         const currentSystemPrompt = this.inner.agent.state?.systemPrompt ?? "";
@@ -734,7 +797,8 @@ export class AgentSessionWrapper {
           contextUsage: contextUsage
             ? { percent: contextUsage.percent, contextWindow: contextUsage.contextWindow, tokens: contextUsage.tokens }
             : null,
-          systemPrompt: visibleSystemPrompt,
+          systemPrompt: composeSessionSystemPrompt(visibleSystemPrompt, this.promptSelection),
+          promptSelection: this.promptSelection ?? null,
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),
@@ -781,6 +845,7 @@ export class AgentSessionWrapper {
               parentSession: currentSessionFile,
             });
             newSessionFile = forkedManager.getSessionFile() as string;
+            if (this.promptSelection) appendSessionPromptSelection(forkedManager, this.promptSelection);
           } else {
             // Fork after some history: copy path up to (but not including) the fork point
             forkedManager = SessionManager.open(currentSessionFile, sessionDir);
@@ -932,6 +997,7 @@ export class AgentSessionWrapper {
       }
 
       case "get_tools": {
+        this.refreshUnstartedPromptSelection();
         const all: ToolInfo[] = this.inner.getAllTools();
         const active = new Set<string>(this.inner.getActiveToolNames());
         return all.map((t) => ({
@@ -942,7 +1008,7 @@ export class AgentSessionWrapper {
 
       case "get_commands": {
         const commands: SlashCommandInfo[] = [];
-        for (const registered of this.inner.extensionRunner.getRegisteredCommands()) {
+        for (const registered of this.promptSelection?.mode === "plan" ? [] : this.inner.extensionRunner.getRegisteredCommands()) {
           commands.push({
             name: registered.invocationName,
             description: registered.description,
@@ -1020,6 +1086,7 @@ export class AgentSessionWrapper {
       }
 
       case "bash": {
+        if (this.promptSelection?.mode === "plan") throw new Error("计划模式不执行命令，请在新对话中选择自动或目标模式。");
         if (this.pendingPromptCount > 0 || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning) {
           throw new Error("Cannot run a shell command while the session is busy");
         }
@@ -2015,6 +2082,10 @@ export async function startRpcSession(
         sessionManager.getEntries() as unknown as SessionEntry[],
       )
     : null;
+  const promptSelection = subagentResources ? undefined : sessionFile
+    ? readSessionPromptSelection(sessionManager.getEntries() as unknown as SessionEntry[])
+    : promptSelectionFromSettings(readPromptPresetSettings());
+  if (!sessionFile && promptSelection) appendSessionPromptSelection(sessionManager, promptSelection);
   const persistedToolNames = subagentResources
     ? undefined
     : readSessionToolSelection(sessionManager.getEntries() as unknown as SessionEntry[]);
@@ -2195,6 +2266,7 @@ export async function startRpcSession(
         : undefined;
     const wrapper = new AgentSessionWrapper(inner, {
       exactSystemPrompt,
+      promptSelection,
       chatOnly,
       onAgentRunComplete: (completedSessionId) => {
         void notifySessionComplete(completedSessionId).catch((error) => {
@@ -2203,6 +2275,7 @@ export async function startRpcSession(
       },
       suppressCompletionNotifications: Boolean(subagentResources),
     });
+    if (promptSelection?.mode === "plan") wrapper.setActiveToolSelection(selectedToolNames ?? ["read", "grep", "find", "ls"]);
     const realSessionId = inner.sessionId as string;
     registerRpcWrapper(wrapper);
 

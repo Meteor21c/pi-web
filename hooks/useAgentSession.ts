@@ -35,6 +35,7 @@ import {
 } from "@/lib/streaming-message";
 
 export interface SessionData {
+  workMode?: import("@/lib/prompt-presets").WorkMode;
   sessionId: string;
   filePath: string;
   totalActiveMs: number;

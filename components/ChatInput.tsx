@@ -29,6 +29,8 @@ import { useI18n } from "@/hooks/useI18n";
 import { useChatAppearance } from "@/hooks/useChatAppearance";
 import { PRESET_FULL, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
+import { WorkModeSelector } from "./WorkModeSelector";
+import type { WorkMode } from "@/lib/prompt-presets";
 
 export { filterModelOptions } from "./ModelSelector";
 
@@ -72,6 +74,9 @@ interface Props {
   compactError?: string | null;
   compactResult?: CompactResultInfo | null;
   toolPreset?: ToolPreset;
+  workMode?: WorkMode;
+  workModeEditable?: boolean;
+  onWorkModeChanged?: () => Promise<void>;
   onToolPresetChange?: (preset: ToolPreset) => void;
   thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   onThinkingLevelChange?: (level: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") => void;
@@ -703,6 +708,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
+  workMode, workModeEditable, onWorkModeChanged,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
   slashCommands, slashCommandsLoading, availableTools, onLoadSlashCommands,
@@ -2735,7 +2741,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }}>
 
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
-          <div style={{ flex: isMobile ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
+          <div style={{ flex: isMobile ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
             <button
               onClick={() => fileInputRef.current?.click()}
               title={t("chat.attachFiles")}
@@ -2782,6 +2788,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             >
               @
             </button>
+            {onWorkModeChanged && <WorkModeSelector mode={workMode ?? "auto"} editable={workModeEditable === true} disabled={isStreaming} onChanged={onWorkModeChanged} />}
             {/* Model selector - visible always, disabled while the session or switch is busy */}
             {(modelOptions.length > 0 || model || modelError) && onModelChange && (
               <ModelSelector

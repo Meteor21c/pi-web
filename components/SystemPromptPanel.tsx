@@ -1,12 +1,46 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { usePromptPresets } from "@/hooks/usePromptPresets";
+import { sendAgentCommand } from "@/lib/agent-client";
+import type { SessionPromptSelection } from "@/lib/prompt-presets";
+
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 interface Props {
   loading: boolean;
   prompt: string | null;
   translate: Translate;
+  sessionId: string | null;
+  onManagePresets: () => void;
+  onSelectionChanged: () => Promise<void>;
 }
 
-export function SystemPromptPanel({ loading, prompt, translate }: Props) {
+export function SystemPromptPanel({ loading, prompt, translate, sessionId, onManagePresets, onSelectionChanged }: Props) {
+  const { settings, busy, error, update, reload } = usePromptPresets();
+  const [applied, setApplied] = useState<SessionPromptSelection | null>(null);
+  const [appliedLoaded, setAppliedLoaded] = useState(false);
+  const [appliedError, setAppliedError] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setAppliedLoaded(false);
+    setAppliedError(false);
+    if (!sessionId) return;
+    void sendAgentCommand<SessionPromptSelection | null>(sessionId, { type: "get_prompt_selection" })
+      .then((selection) => {
+        if (!cancelled) { setApplied(selection); setAppliedLoaded(true); }
+      }).catch(() => { if (!cancelled) setAppliedError(true); });
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
+  const select = async (action: Record<string, unknown>) => {
+    if (await update({ type: "select", ...action })) {
+      // Refresh preview for a still-empty composer. Started conversations keep
+      // their persisted selection even when the next-conversation default changes.
+      await onSelectionChanged().catch(() => {});
+    }
+  };
+
   return (
     <section className="system-prompt-panel ui-glass-menu" aria-label={translate("system.prompt")}>
       <header className="system-prompt-heading">
@@ -22,9 +56,29 @@ export function SystemPromptPanel({ loading, prompt, translate }: Props) {
           <strong>{translate("system.label")}</strong>
           <small>{translate("system.description")}</small>
         </div>
-        <span className="system-prompt-readonly top-panel-heading-badge">{translate("system.readOnly")}</span>
       </header>
       <div className="system-prompt-scroll">
+        <div className="system-prompt-presets">
+          <div className="system-prompt-preset-title"><strong>{translate("presets.forNew")}</strong>
+            <button type="button" onClick={onManagePresets}>{translate("presets.manage")}</button>
+          </div>
+          <label className="system-prompt-preset-picker">{translate("presets.additional")}
+            <select value={settings?.selectedPresetId ?? ""} disabled={!settings || busy}
+              onChange={(event) => void select({ selectedPresetId: event.target.value || null })}>
+              <option value="">{translate("presets.none")}</option>
+              {settings?.presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+            </select>
+          </label>
+          <p className="system-prompt-hint" role="status">{busy ? translate("presets.saving") : translate("presets.nextOnly")}</p>
+          {error && <p role="alert" className="settings-general-error">{translate("presets.failed")} {error} <button type="button" onClick={() => void reload()}>{translate("presets.retry")}</button></p>}
+          {sessionId && <div className="system-prompt-applied">
+            <strong>{translate("presets.current")}</strong>
+            <span>{appliedError ? translate("presets.failed") : !appliedLoaded ? translate("presets.loading")
+              : applied?.preset?.name ?? translate("presets.none")}</span>
+            {applied?.preset && <details><summary>{translate("presets.viewApplied")}</summary><div className="system-prompt-text">{applied.preset.content}</div></details>}
+          </div>}
+        </div>
+        <details className="system-prompt-full"><summary>{translate("presets.fullRules")} <span>{translate("system.readOnly")}</span></summary>
         {prompt ? (
           <div className="system-prompt-text">{prompt}</div>
         ) : (
@@ -36,6 +90,7 @@ export function SystemPromptPanel({ loading, prompt, translate }: Props) {
                 : translate("system.load")}
           </div>
         )}
+        </details>
       </div>
 
       <style>{`
@@ -61,6 +116,21 @@ export function SystemPromptPanel({ loading, prompt, translate }: Props) {
           overflow: auto;
           padding: 12px 16px;
         }
+        .system-prompt-presets { display: grid; gap: 10px; margin-bottom: 18px; }
+        .system-prompt-preset-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .system-prompt-preset-title strong { font-size: 13px; }
+        .system-prompt-preset-title button { color: var(--accent); cursor: pointer; font-size: 12px; }
+        .system-prompt-preset-picker select:disabled { cursor: wait; opacity: .6; }
+        .system-prompt-hint { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+        .system-prompt-preset-picker { display: grid; gap: 6px; font-size: 12px; color: var(--text-muted); }
+        .system-prompt-preset-picker select { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); color: var(--text); font-size: 13px; }
+        .system-prompt-applied { display: grid; gap: 6px; padding: 12px; border-radius: 10px; background: var(--bg-hover); font-size: 12px; overflow-wrap: anywhere; }
+        .system-prompt-applied strong { color: var(--text-muted); font-weight: 500; }
+        .system-prompt-applied summary { cursor: pointer; color: var(--accent); padding-top: 4px; }
+        .system-prompt-applied .system-prompt-text { padding-top: 8px; }
+        .system-prompt-full { border-top: 1px solid var(--border); padding-top: 12px; }
+        .system-prompt-full > summary { cursor: pointer; font-size: 12px; color: var(--text-muted); padding: 4px 0 12px; }
+        .system-prompt-full > summary span { margin-left: 6px; font-size: 11px; opacity: .7; }
         .system-prompt-text {
           color: var(--text-muted);
           font-family: var(--font-mono);

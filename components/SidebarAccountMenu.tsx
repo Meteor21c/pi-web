@@ -11,7 +11,7 @@ import styles from "./SidebarAccountMenu.module.css";
 
 const MENU_SECTIONS: Array<{
   id: SettingsSection;
-  labelKey: "settings.general" | "common.models" | "common.skills" | "common.agents" | "common.plugins";
+  labelKey: "settings.general" | "common.models" | "common.skills" | "common.agents" | "common.plugins" | "presets.title";
   requiresProject: boolean;
 }> = [
   { id: "general", labelKey: "settings.general", requiresProject: false },
@@ -19,6 +19,7 @@ const MENU_SECTIONS: Array<{
   { id: "skills", labelKey: "common.skills", requiresProject: true },
   { id: "agents", labelKey: "common.agents", requiresProject: true },
   { id: "plugins", labelKey: "common.plugins", requiresProject: true },
+  { id: "prompts", labelKey: "presets.title", requiresProject: false },
 ];
 
 type UpdateCheckPhase = "idle" | "checking" | "latest" | "found" | "error";

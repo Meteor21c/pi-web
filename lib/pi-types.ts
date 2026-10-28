@@ -10,6 +10,8 @@ import type {
   AgentLoopTurnUpdate,
   AgentMessage as PiAgentMessage,
   PrepareNextTurnContext,
+  BeforeToolCallContext,
+  BeforeToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 
@@ -142,6 +144,8 @@ export interface AgentSessionLike {
   readonly sessionManager: SessionManager;
   readonly settingsManager: SettingsManager;
   readonly agent: {
+    transformContext?: (messages: PiAgentMessage[], signal?: AbortSignal) => Promise<PiAgentMessage[]>;
+    beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
     state?: {
       systemPrompt?: string;
       thinkingLevel?: string;

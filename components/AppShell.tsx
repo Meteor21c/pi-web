@@ -2138,6 +2138,12 @@ export function AppShell() {
                   loading={systemInfoLoading}
                   prompt={systemPrompt}
                   translate={translate}
+                  sessionId={selectedSession?.id ?? null}
+                  onManagePresets={() => {
+                    setActiveTopPanel(null);
+                    setSettingsSection("prompts");
+                  }}
+                  onSelectionChanged={async () => { await systemInfoLoaderRef.current?.(); }}
                 />
               )}
               {activeTopPanel === "tools" && (

@@ -1,6 +1,6 @@
 {
   "name": "@meteor21c/webagent",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "MeteorAgent — AI coding agent for meteor21c relay customers",
   "homepage": "https://github.com/Meteor21c/pi-web#readme",
   "repository": {
@@ -47,26 +47,26 @@
     "release": "npm run build && npm pack"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.86.0",
-    "@earendil-works/pi-ai": "0.86.0",
-    "@earendil-works/pi-coding-agent": "0.86.0",
-    "@earendil-works/pi-tui": "0.86.0",
+    "@earendil-works/pi-agent-core": "0.87.1",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "ansi_up": "^6.0.6",
     "js-yaml": "^5.2.3",
-    "next": "16.3.5",
+    "next": "16.4.3",
     "node-pty": "1.2.0-beta.15",
     "proper-lockfile": "4.1.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "remark-frontmatter": "^5.0.0",
     "semver": "7.8.0",
-    "undici": "8.10.2",
+    "undici": "8.12.3",
     "web-push": "^3.6.7"
   },
   "overrides": {
-    "undici": "8.10.2"
+    "undici": "8.12.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",
@@ -79,7 +79,7 @@
     "@types/semver": "7.8.0",
     "@types/web-push": "^3.6.4",
     "eslint": "^9",
-    "eslint-config-next": "16.3.5",
+    "eslint-config-next": "16.4.3",
     "jiti": "^2.7.0",
     "katex": "^0.16.47",
     "mammoth": "^1.12.0",

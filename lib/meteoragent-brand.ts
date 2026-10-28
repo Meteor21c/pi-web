@@ -32,6 +32,11 @@ export function rebrandMeteorAgentState<T>(state: T): T {
   if (!state || typeof state !== "object" || Array.isArray(state)) return state;
   const record = state as Record<string, unknown>;
   if (typeof record.systemPrompt !== "string") return state;
+  // New wrappers brand the base prompt before appending the user's verbatim
+  // preset. Rebranding the combined result would alter words inside that preset.
+  // Wrappers created before a hot reload have no selection field and still need
+  // the legacy sanitation below.
+  if (Object.prototype.hasOwnProperty.call(record, "promptSelection")) return state;
   const systemPrompt = rebrandMeteorAgentSystemPrompt(record.systemPrompt);
   if (systemPrompt === record.systemPrompt) return state;
   return { ...record, systemPrompt } as T;

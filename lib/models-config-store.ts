@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -127,6 +127,15 @@ export function writeModelsConfig(
     normalizeModelsConfigCosts(sanitizeModelsConfig(data)),
     modelsPath,
   );
-  writePrivateFileAtomicSync(modelsPath, JSON.stringify(normalized, null, 2));
+  // Keep a user's dotfiles link intact when performing the atomic rename.
+  let writePath = modelsPath;
+  if (lstatSync(modelsPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    try {
+      writePath = realpathSync(modelsPath);
+    } catch {
+      throw new Error("Cannot save models.json: dangling symbolic link");
+    }
+  }
+  writePrivateFileAtomicSync(writePath, JSON.stringify(normalized, null, 2));
   invalidateModelsCache();
 }
