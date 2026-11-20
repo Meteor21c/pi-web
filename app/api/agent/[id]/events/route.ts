@@ -18,6 +18,10 @@ export async function GET(
   if (session?.isAlive()) {
     sessionPromise = Promise.resolve(session);
   } else {
+    // The side panel observes an existing child without reopening its runtime.
+    if (new URL(req.url).searchParams.get("observe") === "1") {
+      return new Response("Session is idle", { status: 404 });
+    }
     const filePath = await resolveSessionPath(id);
     if (!filePath) {
       return new Response("Session not found", { status: 404 });

@@ -1,6 +1,7 @@
 /** Account-scoped relay key synchronization. Full API keys never leave this server module. */
 import { getRelayBaseUrl } from "./relay-config";
 import { resolveMixedRelayModels } from "./relay-models";
+import { loadOptionalModelCapabilityCatalog, modelCapabilitiesNeedCatalog } from "./model-capability-catalog";
 import {
   applyPlazaContextWindows,
   contextWindowsForModels,
@@ -11,7 +12,6 @@ import {
 import { readModelsConfig } from "./models-config-store";
 import {
   persistRelayProvider,
-  preserveRelayProtocolSelections,
   removeRelayProvider,
   removeRelayProviderConfig,
   dominantFamily,
@@ -224,6 +224,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
 
   const initial = providersNow();
   const initialIndex = readRelayGroups();
+  const previousGroups = new Map(initialIndex.map((group) => [group.providerId, group]));
   const gathered: Array<{
     key: RelayKey & { id: number | string };
     providerId: string;
@@ -234,6 +235,7 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
     failure?: string;
   }> = [];
   let cursor = 0;
+  let capabilityCatalog: ReturnType<typeof loadOptionalModelCapabilityCatalog> | undefined;
   await Promise.all(Array.from({ length: Math.min(4, keys.length) }, async () => {
     while (cursor < keys.length) {
       if (epoch !== relayOperationEpoch()) return;
@@ -243,8 +245,20 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       const partition = test.ok
         ? partitionRelayModelIds(test.modelIds ?? [])
         : { chatModelIds: [], imageModelIds: [] };
-      const resolved = test.ok ? resolveMixedRelayModels(partition.chatModelIds, getRelayBaseUrl()) : [];
-      const contextWindows = contextWindowsForModels(plaza, key.group_id, resolved.map((model) => model.id));
+      const catalog = partition.chatModelIds.some((id) => modelCapabilitiesNeedCatalog({ id }, test.capabilitiesByModelId?.get(id) ?? {}))
+        ? await (capabilityCatalog ??= loadOptionalModelCapabilityCatalog()) : [];
+      const resolved = test.ok ? resolveMixedRelayModels(partition.chatModelIds, getRelayBaseUrl(), test.capabilitiesByModelId, catalog) : [];
+      const resolvedIds = resolved.map((model) => model.id);
+      const previousGroup = previousGroups.get(providerId);
+      // A missing plaza entry should not silently raise a previously capped window.
+      const sameGroup = key.group_id !== undefined && String(previousGroup?.groupId) === String(key.group_id);
+      const plazaGroup = plaza?.groups.find((group) => String(group.id) === String(key.group_id));
+      const previousWindows = sameGroup && plazaGroup?.long_context_pricing_enabled !== false
+        ? previousGroup?.contextWindows : undefined;
+      const contextWindows = {
+        ...Object.fromEntries(Object.entries(previousWindows ?? {}).filter(([id]) => resolvedIds.includes(id))),
+        ...contextWindowsForModels(plaza, key.group_id, resolvedIds),
+      };
       const officialCosts = officialCostsForModels(plaza, key.group_id, resolved.map((model) => model.id));
       const models = applyPlazaContextWindows(resolved, contextWindows, officialCosts);
       gathered.push({
@@ -319,13 +333,12 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
         }
         const family = dominantFamily(models.map((model) => model.id));
         if (models.length) {
-          const modelsWithProtocolPreferences = preserveRelayProtocolSelections(models, initial[providerId]);
           await persistRelayProvider({
             providerId,
             displayName: displayNameFor(key),
             apiKey: key.key,
             ...protocolFor(family),
-            models: modelsWithProtocolPreferences,
+            models,
           });
         } else {
           // Image-only groups still need a credential, but must never appear as

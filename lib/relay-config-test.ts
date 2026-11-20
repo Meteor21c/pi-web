@@ -7,6 +7,7 @@
  */
 import { getRelayBaseUrl, RELAY_MODELS_ENDPOINT } from "./relay-config";
 import { sanitizeBaseUrlOverride } from "./relay-config-save";
+import { readUpstreamModelCapabilities, type ModelCapabilities } from "./model-capabilities";
 
 const GPT_RE = /gpt|codex/i;
 const CLAUDE_RE = /claude/i;
@@ -20,6 +21,7 @@ export interface RelayTestResult {
   claudeCount?: number;
   /** 该 key 实际可见的模型 id 列表（200 时返回）。 */
   modelIds?: string[];
+  capabilitiesByModelId?: ReadonlyMap<string, ModelCapabilities>;
   reason?: RelayTestReason;
   message?: string;
 }
@@ -53,7 +55,7 @@ export async function testRelayConnection(
     });
 
     if (res.status === 200) {
-      const json = (await res.json().catch(() => null)) as { data?: Array<{ id?: string }> } | null;
+      const json: unknown = await res.json().catch(() => null);
       let ids: string[];
       try { ids = parseRelayModelIds(json); } catch { return { ok: false, reason: "relay-error", message: "Invalid model catalog" }; }
       if (!ids.length) return { ok: false, reason: "relay-error", message: "No visible models" };
@@ -63,7 +65,10 @@ export async function testRelayConnection(
         if (GPT_RE.test(id)) gptCount++;
         if (CLAUDE_RE.test(id)) claudeCount++;
       }
-      return { ok: true, modelCount: ids.length, gptCount, claudeCount, modelIds: ids };
+      // parseRelayModelIds has already validated the exact authorized IDs.
+      const entries = (json as { data: Array<Record<string, unknown> & { id: string }> }).data;
+      const capabilitiesByModelId = new Map(entries.map((entry) => [entry.id.trim(), readUpstreamModelCapabilities(entry)]));
+      return { ok: true, modelCount: ids.length, gptCount, claudeCount, modelIds: ids, capabilitiesByModelId };
     }
 
     if (res.status === 401 || res.status === 403) {

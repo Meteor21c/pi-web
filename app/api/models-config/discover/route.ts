@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { resolveModelDiscoveryAuth } from "@/lib/model-discovery-auth";
 import { buildModelsListUrl, parseDiscoveredModels } from "@/lib/model-discovery";
 import { readRelayGroups } from "@/lib/relay-group-store";
+import { loadOptionalModelCapabilityCatalog, modelCapabilitiesNeedCatalog, resolveModelCapabilities } from "@/lib/model-capability-catalog";
 
 export const dynamic = "force-dynamic";
 
@@ -96,7 +97,13 @@ export async function POST(req: Request) {
       }, { status: relayGroup ? 409 : 502 });
     }
 
-    return NextResponse.json({ models, endpoint: endpoint.toString() });
+    const lookup = (id: string) => ({ id, provider: providerName, baseUrl, api: relayGroup ? undefined : api });
+    const catalog = models.some((model) => modelCapabilitiesNeedCatalog(lookup(model.id), model))
+      ? await loadOptionalModelCapabilityCatalog() : [];
+    return NextResponse.json({
+      models: models.map((model) => ({ ...model, ...resolveModelCapabilities(lookup(model.id), model, catalog) })),
+      endpoint: endpoint.toString(),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = error instanceof DOMException && error.name === "TimeoutError" ? 504 : 500;

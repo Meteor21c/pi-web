@@ -12,6 +12,8 @@ import type {
   PrepareNextTurnContext,
   BeforeToolCallContext,
   BeforeToolCallResult,
+  AfterToolCallContext,
+  AfterToolCallResult,
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 
@@ -146,6 +148,7 @@ export interface AgentSessionLike {
   readonly agent: {
     transformContext?: (messages: PiAgentMessage[], signal?: AbortSignal) => Promise<PiAgentMessage[]>;
     beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
+    afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
     state?: {
       systemPrompt?: string;
       thinkingLevel?: string;

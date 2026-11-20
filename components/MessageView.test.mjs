@@ -134,7 +134,7 @@ test("matches response model aliases and otherwise includes the provider", () =>
   assert.equal(getModelDisplayName("gateway", "unknown-model", names), "gateway/unknown-model");
 });
 
-test("previews the first thinking line and reveals the full text with the saved default", () => {
+test("keeps the reasoning content closed even if an older preference enabled auto expansion", () => {
   const previousWindow = globalThis.window;
   try {
     for (const expanded of [false, true]) {
@@ -148,10 +148,9 @@ test("previews the first thinking line and reveals the full text with the saved 
           duration: 3,
         }),
       ));
-      assert.match(html, new RegExp(`aria-expanded="${expanded}"`));
-      assert.equal((html.match(/>[^<]*Independent reasoning[^<]*</g) ?? []).length, 1);
-      assert.equal(html.includes("Detailed second line."), expanded);
-      assert.match(html, /aria-label="Thinking: /);
+      assert.match(html, /aria-expanded="false"/);
+      assert.doesNotMatch(html, /Independent reasoning|Detailed second line\./);
+      assert.match(html, /Thinking content/);
       assert.match(html, /3s/);
     }
   } finally {
@@ -160,12 +159,12 @@ test("previews the first thinking line and reveals the full text with the saved 
   }
 });
 
-test("shows deferred thinking previews without loading the full content", () => {
+test("keeps deferred thinking previews behind the disclosure", () => {
   const html = renderMessage({
     role: "assistant",
     content: [{ type: "thinking", thinking: "Historical first line", deferred: true }],
   });
-  assert.match(html, />Historical first line<\/span>/);
+  assert.doesNotMatch(html, /Historical first line/);
   assert.match(html, /aria-expanded="false"/);
 });
 
@@ -407,7 +406,7 @@ test("renders assistant images instead of dropping the image content block", () 
   assert.match(html, /max-height:320px/);
 });
 
-test("renders pi-image-gen detail images inline and expands the result", () => {
+test("renders pi-image-gen detail images inline with tool details closed", () => {
   const block = {
     type: "toolCall",
     toolCallId: "image-call-1",
@@ -431,8 +430,9 @@ test("renders pi-image-gen detail images inline and expands the result", () => {
     }]]),
   });
 
-  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /aria-expanded="false"/);
   assert.match(html, /aria-label="Preview image"/);
+  assert.doesNotMatch(html, /a golden hamster/);
   assert.match(html, /src="\/api\/files\/tmp\/project\/\.pi\/images\/hamster\.png\?type=read&amp;sessionId=session-1"/);
   assert.doesNotMatch(html, /Generated 1 image\(s\): \/tmp\/project\/\.pi\/images\/hamster\.png/);
 });

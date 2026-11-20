@@ -109,8 +109,8 @@ export function NewSessionWelcome({ isMobile, chatInputRef }: { isMobile: boolea
   };
 
   return (
-    <div className="w-full" style={{ paddingLeft: 16, paddingRight: isMobile ? 16 : 52 }}>
-      <div style={{ position: "relative", maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
+    <div className="w-full">
+      <div className="chat-reading-column" style={{ position: "relative" }}>
         {/* 装饰性呼吸光晕 */}
         <div
           className="ui-welcome-glow"

@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { SubagentProfilesResponse, SubagentSettingsResponse } from "@/lib/api-types";
 import { sendAgentCommand } from "@/lib/agent-client";
 import type { ModelsData } from "@/lib/models-cache";
 import { isSubagentProfileOverridden } from "@/lib/subagent-profile-precedence";
+import { DEFAULT_SUBAGENT_MAX_CONCURRENT, MAX_SUBAGENT_MAX_CONCURRENT } from "@/lib/subagent-mode";
 import type { SubagentProfile, SubagentScope, SubagentWritableScope } from "@/lib/subagents";
 import {
   getLastSettingsSelection,
@@ -167,7 +168,9 @@ export function AgentsConfig({
   const [toggling, setToggling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [builtInEnabled, setBuiltInEnabled] = useState(false);
-  const [maxConcurrent, setMaxConcurrent] = useState(10);
+  const [maxConcurrent, setMaxConcurrent] = useState(DEFAULT_SUBAGENT_MAX_CONCURRENT);
+  const savedConcurrentRef = useRef(DEFAULT_SUBAGENT_MAX_CONCURRENT);
+  const [showProfiles, setShowProfiles] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -214,8 +217,8 @@ export function AgentsConfig({
   }, [cwd]);
 
   useEffect(() => {
-    void loadProfiles();
-  }, [loadProfiles]);
+    if (showProfiles) void loadProfiles();
+  }, [loadProfiles, showProfiles]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -232,7 +235,10 @@ export function AgentsConfig({
           throw new Error(data.error ?? `HTTP ${response.status}`);
         }
         setBuiltInEnabled(data.enabled);
-        if (typeof data.maxConcurrent === "number") setMaxConcurrent(data.maxConcurrent);
+        if (typeof data.maxConcurrent === "number") {
+          savedConcurrentRef.current = data.maxConcurrent;
+          setMaxConcurrent(data.maxConcurrent);
+        }
       } catch (cause) {
         if (controller.signal.aborted) return;
         setSettingsError(cause instanceof Error ? cause.message : String(cause));
@@ -248,6 +254,7 @@ export function AgentsConfig({
   }, [cwd, selectedKey]);
 
   useEffect(() => {
+    if (!showProfiles) return;
     const controller = new AbortController();
     setModelsLoading(true);
     setModelsError(null);
@@ -266,7 +273,7 @@ export function AgentsConfig({
       }
     })();
     return () => controller.abort();
-  }, [cwd]);
+  }, [cwd, showProfiles]);
 
   const selectProfile = (profile: SubagentProfile) => {
     setSelectedKey(profileKey(profile));
@@ -424,7 +431,12 @@ export function AgentsConfig({
   };
 
   const updateMaxConcurrent = async (value: number) => {
-    setMaxConcurrent(value);
+    if (!Number.isInteger(value) || value < 1 || value > MAX_SUBAGENT_MAX_CONCURRENT) {
+      setMaxConcurrent(savedConcurrentRef.current);
+      return;
+    }
+    if (value === savedConcurrentRef.current) return;
+    setSettingsSaving(true);
     setSettingsError(null);
     try {
       const response = await fetch("/api/subagents/settings", {
@@ -434,9 +446,13 @@ export function AgentsConfig({
       });
       const data = await response.json() as Partial<SubagentSettingsResponse> & { error?: string };
       if (!response.ok || data.error || typeof data.maxConcurrent !== "number") throw new Error(data.error ?? `HTTP ${response.status}`);
+      savedConcurrentRef.current = data.maxConcurrent;
       setMaxConcurrent(data.maxConcurrent);
     } catch (cause) {
+      setMaxConcurrent(savedConcurrentRef.current);
       setSettingsError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSettingsSaving(false);
     }
   };
 
@@ -459,6 +475,31 @@ export function AgentsConfig({
     <ConfigPanelShell embedded={embedded} title={t("common.agents")} subtitle={shortenPath(cwd)} closeLabel={t("agents.close")} onClose={onClose}>
       <div className="agents-feature-setting">
         <div className="agents-feature-copy">
+          <strong>{t("agents.maxConcurrent")}</strong>
+          <span>{t("agents.maxConcurrentDescription")}</span>
+        </div>
+        <div className="agents-feature-actions">
+
+          <label className="agents-concurrency-control" title={t("agents.maxConcurrentDescription")}>
+            <input
+              aria-label={t("agents.maxConcurrent")}
+              type="number"
+              min={1}
+              max={MAX_SUBAGENT_MAX_CONCURRENT}
+              value={maxConcurrent}
+              disabled={settingsLoading || settingsSaving}
+              onChange={(event) => setMaxConcurrent(Number(event.target.value))}
+              onBlur={() => void updateMaxConcurrent(maxConcurrent)}
+            />
+          </label>
+          <ConfigButton size="small" onClick={() => setShowProfiles((current) => !current)} aria-expanded={showProfiles}>
+            {t(showProfiles ? "agents.hideAdvanced" : "agents.showAdvanced")}
+          </ConfigButton>
+        </div>
+      </div>
+      {showProfiles && <>
+      <div className="agents-feature-setting">
+        <div className="agents-feature-copy">
           <strong>{t("agents.builtInTitle")}</strong>
           <span>{t("agents.builtInDescription")}</span>
           {reloadNeeded && <span role="status" className="agents-feature-reload-notice">{t("agents.reloadRequired")}</span>}
@@ -469,19 +510,6 @@ export function AgentsConfig({
               {reloading ? t("agents.reloading") : t("agents.reloadSession")}
             </ConfigButton>
           )}
-          <label className="agents-concurrency-control" title={t("agents.maxConcurrentDescription")}>
-            <span>{t("agents.maxConcurrent")}</span>
-            <input
-              aria-label={t("agents.maxConcurrent")}
-              type="number"
-              min={1}
-              max={32}
-              value={maxConcurrent}
-              disabled={settingsLoading || settingsSaving}
-              onChange={(event) => setMaxConcurrent(Number(event.target.value))}
-              onBlur={() => void updateMaxConcurrent(maxConcurrent)}
-            />
-          </label>
           <ConfigSwitch
             checked={builtInEnabled}
             disabled={settingsLoading || reloading}
@@ -643,8 +671,9 @@ export function AgentsConfig({
           </ConfigDetailStack>
         </ConfigDetail>
       </ConfigSplitView>
+      </>}
       <ConfigFooter status={(settingsError || error) && <span role="alert" style={{ color: "#ef4444" }}>{settingsError || error}</span>}>
-        {editing && (
+        {showProfiles && editing && (
           <ConfigButton
             variant="primary"
             onClick={() => void save()}

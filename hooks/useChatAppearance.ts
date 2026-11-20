@@ -45,12 +45,8 @@ function readStoredPreference(key: string): string | null {
 
 function applyAppearance({ width, fontSize }: ChatAppearance): void {
   if (typeof document === "undefined") return;
-  // 宽度乘以界面缩放系数：大屏（高 zoom 档）下内容列随之变宽，
-  // 避免"字放大了、内容区域占比反而显小"。字号由根 zoom 自然放大。
-  document.documentElement.style.setProperty(
-    "--chat-content-max-width",
-    `calc(${width}px * var(--ui-scale, 1))`,
-  );
+  // The document zoom already scales the reading column and its text together.
+  document.documentElement.style.setProperty("--chat-content-max-width", `${width}px`);
   document.documentElement.style.setProperty("--chat-content-font-size", `${fontSize}px`);
 }
 

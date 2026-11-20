@@ -29,6 +29,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useChatAppearance } from "@/hooks/useChatAppearance";
 import { PRESET_FULL, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
+import { DEFAULT_SUBAGENT_MODE, SUBAGENT_MODES, type SubagentMode } from "@/lib/subagent-mode";
 import { WorkModeSelector } from "./WorkModeSelector";
 import type { WorkMode } from "@/lib/prompt-presets";
 
@@ -75,6 +76,10 @@ interface Props {
   compactResult?: CompactResultInfo | null;
   toolPreset?: ToolPreset;
   workMode?: WorkMode;
+  onResolvedWorkMode?: (mode: WorkMode) => void;
+  subagentMode?: SubagentMode;
+  onSubagentModeChange?: (mode: SubagentMode) => void;
+  subagentModeDisabled?: boolean;
   workModeEditable?: boolean;
   onWorkModeChanged?: () => Promise<void>;
   onToolPresetChange?: (preset: ToolPreset) => void;
@@ -708,7 +713,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
-  workMode, workModeEditable, onWorkModeChanged,
+  workMode, workModeEditable, onWorkModeChanged, onResolvedWorkMode, subagentMode, onSubagentModeChange, subagentModeDisabled,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
   slashCommands, slashCommandsLoading, availableTools, onLoadSlashCommands,
@@ -1854,9 +1859,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const compactResultText = compactResult
     ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatTokenCount(compactSavedTokens) })})`
     : null;
+  const effectiveThinkingLevel = availableThinkingLevels?.length === 0 ? "auto" : thinkingLevel ?? "auto";
   const thinkingDisplayLabel = (() => {
-    const lvl = thinkingLevel ?? "auto";
-    if (lvl === "auto" || !thinkingLevelMap) return lvl;
+    const lvl = effectiveThinkingLevel;
+    if (lvl === "auto") return t("chat.thinkingAuto");
+    if (!thinkingLevelMap) return lvl;
     return thinkingLevelMap[lvl] ?? lvl;
   })();
   const rawToolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? "default"))?.[0] ?? "default";
@@ -1898,8 +1905,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         margin: 0,
         border: 0,
         background: "transparent",
-        padding: compact ? 0 : "0 16px 8px",
-        paddingRight: compact ? 0 : isMobile ? 16 : 52, // desktop: 16px base + 36px for ChatMinimap alignment
+        padding: compact ? 0 : "0 0 8px",
         opacity: builtinCommandPending ? 0.5 : 1,
         transition: "opacity 0.15s",
       }}
@@ -1916,7 +1922,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           e.target.value = "";
         }}
       />}
-      <div style={{ maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
+      <div className={compact ? undefined : "chat-reading-column"}>
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
         {showImageUnsupportedWarning && (() => {
@@ -2736,12 +2742,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           marginTop: 8,
           display: isMobile ? "grid" : "flex",
           gridTemplateColumns: isMobile ? "minmax(0, 1fr) auto" : undefined,
+          flexWrap: "wrap",
           alignItems: "center",
           gap: 6,
         }}>
 
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
-          <div style={{ flex: isMobile ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
+          <div style={{ flex: "1 1 310px", minWidth: 0, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
             <button
               onClick={() => fileInputRef.current?.click()}
               title={t("chat.attachFiles")}
@@ -2788,7 +2795,24 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             >
               @
             </button>
-            {onWorkModeChanged && <WorkModeSelector mode={workMode ?? "auto"} editable={workModeEditable === true} disabled={isStreaming} onChanged={onWorkModeChanged} />}
+            {onWorkModeChanged && <WorkModeSelector mode={workMode ?? "auto"} editable={workModeEditable === true} disabled={isStreaming} onChanged={onWorkModeChanged} onResolvedMode={onResolvedWorkMode} />}
+            {onSubagentModeChange && (
+              <label className="chat-subagent-mode" title={t(subagentModeDisabled
+                ? "chat.subagentModeUnavailable"
+                : `chat.subagentModeHint.${subagentMode ?? DEFAULT_SUBAGENT_MODE}`)}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
+                </svg>
+                <select
+                  aria-label={t("chat.subagentMode")}
+                  disabled={subagentModeDisabled || isStreaming}
+                  value={subagentModeDisabled ? "off" : subagentMode ?? DEFAULT_SUBAGENT_MODE}
+                  onChange={(event) => onSubagentModeChange(event.target.value as SubagentMode)}
+                >
+                  {SUBAGENT_MODES.map((mode) => <option key={mode} value={mode}>{t(`chat.subagentMode.${mode}`)}</option>)}
+                </select>
+              </label>
+            )}
             {/* Model selector - visible always, disabled while the session or switch is busy */}
             {(modelOptions.length > 0 || model || modelError) && onModelChange && (
               <ModelSelector
@@ -2813,9 +2837,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               />
             )}
           </div>
-
-          {/* spacer */}
-          {!isMobile && <div style={{ flex: 1 }} />}
 
           {/* RIGHT: thinking + tools preset + compact + sound (idle) | Stop + sound (streaming) */}
           <div ref={controlsMenuRef} style={{
@@ -2941,10 +2962,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       if (lvl === "auto") return true;
                       return availableThinkingLevels.includes(lvl);
                     }).map((lvl) => {
-                      const isActive = (thinkingLevel ?? "auto") === lvl;
-                       const desc = t(THINKING_LEVEL_DESC_KEYS[lvl]);
+                      const isActive = effectiveThinkingLevel === lvl;
+                      const desc = t(lvl === "auto" && availableThinkingLevels?.length === 0 ? "models.reasoningModelAuto" : THINKING_LEVEL_DESC_KEYS[lvl]);
                       const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
-                      const displayLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
+                      const displayLabel = lvl === "auto" ? t("chat.thinkingAuto") : mappedVal ?? lvl;
                       const showOriginal = mappedVal != null && mappedVal !== lvl;
                       return (
                         <button

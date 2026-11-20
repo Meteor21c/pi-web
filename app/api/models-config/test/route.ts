@@ -6,6 +6,8 @@ import { completeSimple, type AssistantMessage } from "@earendil-works/pi-ai/com
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { readRelayGroups } from "@/lib/relay-group-store";
+import type { SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { withProviderDefaultThinking } from "@/lib/model-auto-reasoning";
 
 export const dynamic = "force-dynamic";
 
@@ -100,7 +102,7 @@ export async function POST(req: Request) {
           content: "Reply with OK only.",
           timestamp: Date.now(),
         }],
-      }, {
+      }, withProviderDefaultThinking<typeof model, SimpleStreamOptions>(model, {
         apiKey: resolved.auth.apiKey,
         headers: resolved.auth.headers,
         maxTokens: 16,
@@ -109,7 +111,7 @@ export async function POST(req: Request) {
         cacheRetention: "none",
         signal: controller.signal,
         onResponse: (response) => { status = response.status; },
-      });
+      }));
 
       const latencyMs = Date.now() - startedAt;
       if (message.stopReason === "error" || message.stopReason === "aborted") {

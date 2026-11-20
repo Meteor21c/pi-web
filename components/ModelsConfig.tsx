@@ -1,9 +1,17 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useId } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 import type { DiscoveredModel } from "@/lib/model-discovery";
+import {
+  AUTO_ONLY_THINKING_LEVEL_MAP,
+  MODEL_THINKING_LEVELS,
+  STANDARD_THINKING_LEVEL_MAP,
+  isAutoOnlyThinkingMap,
+  relayModelCapabilityCompat,
+  type ModelCapabilities,
+} from "@/lib/model-capabilities";
 import {
   getLastSettingsSelection,
   setLastSettingsSelection,
@@ -46,7 +54,12 @@ import { RelayKeyRefresh } from "./RelayKeyRefresh";
 import { RelayOnboarding } from "./RelayOnboarding";
 import { isRelayProviderId } from "@/lib/relay-config";
 import { useRelaySession } from "@/hooks/useRelaySession";
-import { clampRelayContextWindow, relayContextWindowLimit } from "@/lib/relay-model-policy";
+import {
+  readContextWindowTokens,
+  relayContextWindowCeiling,
+  relayContextWindowLimit,
+  resolveRelayContextWindow,
+} from "@/lib/relay-model-policy";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -87,8 +100,10 @@ interface ModelEntry {
   baseUrl?: string;
   reasoning?: boolean;
   thinkingLevelMap?: Record<string, string | null>;
+  meteorAgentCapabilityOverrides?: ModelCapabilities;
   input?: string[];
   contextWindow?: number;
+  meteorAgentContextWindowOverride?: number;
   maxTokens?: number;
   cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; tiers?: unknown };
   headers?: Record<string, string>;
@@ -108,6 +123,28 @@ interface ProviderEntry {
 
 interface ModelsJson {
   providers?: Record<string, ProviderEntry>;
+}
+
+function mergeSavedModelDefaults(draft: ModelsJson, submitted: ModelsJson, saved: ModelsJson): ModelsJson {
+  return { ...draft, providers: Object.fromEntries(Object.entries(draft.providers ?? {}).map(([id, provider]) => {
+    const before = submitted.providers?.[id]?.models;
+    const after = saved.providers?.[id]?.models;
+    if (!provider.models || !before || !after) return [id, provider];
+    const priorById = new Map(before.map((model) => [model.id, model]));
+    const savedById = new Map(after.map((model) => [model.id, model]));
+    return [id, { ...provider, models: provider.models.map((model) => {
+      const prior = priorById.get(model.id);
+      const persisted = savedById.get(model.id);
+      if (!prior || !persisted) return model;
+      return {
+        ...model,
+        reasoning: model.reasoning ?? (prior.reasoning === undefined ? persisted.reasoning : undefined),
+        input: model.input ?? (prior.input === undefined ? persisted.input : undefined),
+        thinkingLevelMap: model.thinkingLevelMap ?? (prior.thinkingLevelMap === undefined ? persisted.thinkingLevelMap : undefined),
+        contextWindow: model.contextWindow === prior.contextWindow ? persisted.contextWindow : model.contextWindow,
+      };
+    }) }];
+  })) };
 }
 
 /** Product-mode data returned by /api/relay-accounts. Keep this separate from
@@ -609,8 +646,7 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
 
 // ── ThinkingLevelMap editor ───────────────────────────────────────────────────
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-type ThinkingLevel = typeof THINKING_LEVELS[number];
+type ThinkingLevel = typeof MODEL_THINKING_LEVELS[number];
 
 const LEVEL_COLORS: Record<ThinkingLevel, string> = {
   off:     "var(--text-dim)",
@@ -643,7 +679,7 @@ function ThinkingLevelMapEditor({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      {THINKING_LEVELS.map((level) => {
+      {MODEL_THINKING_LEVELS.map((level) => {
         const raw = map[level];
         const state: "omit" | "null" | "string" =
           !(level in map) ? "omit" : raw === null ? "null" : "string";
@@ -838,12 +874,16 @@ function fillEmptyModelFields(
     next.name = preset.name;
     appliedCount += 1;
   }
-  if (model.reasoning === undefined && preset.reasoning === true) {
-    next.reasoning = true;
+  if (model.reasoning === undefined && preset.reasoning !== undefined) {
+    next.reasoning = preset.reasoning;
     appliedCount += 1;
   }
   if (!model.input?.length && preset.input?.length) {
     next.input = [...preset.input];
+    appliedCount += 1;
+  }
+  if (next.reasoning && model.thinkingLevelMap === undefined && preset.thinkingLevelMap) {
+    next.thinkingLevelMap = { ...preset.thinkingLevelMap };
     appliedCount += 1;
   }
   if (model.contextWindow === undefined && preset.contextWindow !== undefined) {
@@ -881,6 +921,7 @@ function ModelDetail({
   onDelete,
   relayMode = false,
   relayFirstTierContextWindow,
+  isNew = false,
 }: {
   providerName: string;
   provider: ProviderEntry;
@@ -891,9 +932,11 @@ function ModelDetail({
   relayMode?: boolean;
   /** Exact max_tokens returned for this group/model by the authenticated model plaza. */
   relayFirstTierContextWindow?: number;
+  isNew?: boolean;
 }) {
   const [testState, setTestState] = useState<ModelTestState>({ phase: "idle" });
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
+  const contextHelpId = useId();
   const [catalogState, setCatalogState] = useState<ModelCatalogState>({ phase: "idle" });
   const [costEditing, setCostEditing] = useState(false);
   const [costDraft, setCostDraft] = useState<ModelCostDraft>(() => modelCostToDraft(model.cost));
@@ -903,6 +946,15 @@ function ModelDetail({
   const catalogUndoRef = useRef<ModelEntry | null>(null);
   const costTemplateRef = useRef(model.cost);
   const set = <K extends keyof ModelEntry>(k: K, v: ModelEntry[K]) => onChange({ ...model, [k]: v });
+  const setCapabilities = (changes: ModelCapabilities) => onChange({
+    ...model,
+    ...changes,
+    ...(relayMode ? { meteorAgentCapabilityOverrides: { ...model.meteorAgentCapabilityOverrides, ...changes } } : {}),
+  });
+  const hasReasoning = model.reasoning ?? isNew;
+  const reasoningPreset = isAutoOnlyThinkingMap(model.thinkingLevelMap) ? "auto"
+    : MODEL_THINKING_LEVELS.every((level) => model.thinkingLevelMap?.[level] === STANDARD_THINKING_LEVEL_MAP[level])
+      ? "standard" : "model";
   const effectiveApi = model.api ?? provider.api ?? "openai-completions";
   const relayOpenAiProtocolSwitch = relayMode
     && RELAY_OPENAI_MODEL_ID.test(model.id.trim())
@@ -1012,7 +1064,7 @@ function ModelDetail({
     const requestId = ++catalogRequestIdRef.current;
     setCatalogState({ phase: "loading" });
     try {
-      const params = new URLSearchParams({ q: query, provider: providerName, limit: "50" });
+      const params = new URLSearchParams({ q: query, provider: providerName, api: effectiveApi, limit: "50" });
       if (provider.baseUrl?.trim()) params.set("baseUrl", provider.baseUrl.trim());
       const res = await fetch(`/api/models-config/catalog?${params}`);
       const data = await res.json() as { recommendation?: ModelCatalogRecommendation; error?: string };
@@ -1036,7 +1088,7 @@ function ModelDetail({
       if (requestId !== catalogRequestIdRef.current) return;
       setCatalogState({ phase: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [catalogState.phase, model, onChange, provider.baseUrl, providerName]);
+  }, [catalogState.phase, effectiveApi, model, onChange, provider.baseUrl, providerName]);
 
   const undoCatalogFill = () => {
     const previous = catalogUndoRef.current;
@@ -1106,14 +1158,36 @@ function ModelDetail({
     compatibilityOverrideCount
       ? t("models.compatSummary", { count: compatibilityOverrideCount })
       : null,
-    Object.keys(model.thinkingLevelMap ?? {}).length
-      ? t("models.thinkingSummary", { count: Object.keys(model.thinkingLevelMap ?? {}).length })
+    reasoningPreset === "auto" ? t("models.reasoningModelAuto") : Object.keys(model.thinkingLevelMap ?? {}).length
+      ? t("models.thinkingSummary", { count: Object.values(model.thinkingLevelMap ?? {}).filter((level) => level !== null).length })
       : null,
   ].filter((part): part is string => Boolean(part));
   const advancedSummary = advancedSummaryParts.length
     ? advancedSummaryParts.join(" · ")
     : t("models.providerDefaults");
-  const relayContextLimit = relayMode ? relayContextWindowLimit(model.id, relayFirstTierContextWindow) : undefined;
+  const relayContextPolicy = relayMode || isRelayProviderId(providerName);
+  const customContextWindow = readContextWindowTokens(
+    relayContextPolicy ? model.meteorAgentContextWindowOverride : model.contextWindow,
+  );
+  const defaultContextWindow = relayContextPolicy ? relayContextWindowLimit(model.id, relayFirstTierContextWindow) : 128_000;
+  const contextCeiling = relayContextPolicy ? relayContextWindowCeiling(model.id, relayFirstTierContextWindow) : undefined;
+  const effectiveContextWindow = relayContextPolicy
+    ? resolveRelayContextWindow(model.id, customContextWindow, relayFirstTierContextWindow)
+    : customContextWindow ?? defaultContextWindow;
+  const setContextWindow = (text: string) => {
+    const normalized = text.replace(/[\s,，]/g, "");
+    const next = /^\d+$/.test(normalized) ? readContextWindowTokens(Number(normalized)) : undefined;
+    if (normalized && next === undefined) return;
+    if (relayContextPolicy) {
+      onChange({
+        ...model,
+        meteorAgentContextWindowOverride: next,
+        contextWindow: resolveRelayContextWindow(model.id, next, relayFirstTierContextWindow),
+      });
+    } else {
+      set("contextWindow", next);
+    }
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1266,10 +1340,29 @@ function ModelDetail({
       <div>
         <SectionTitle>{t("models.capabilities")}</SectionTitle>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
-          <Check label={t("models.reasoning")} checked={model.reasoning ?? false} onChange={(v) => set("reasoning", v)} />
-          <Check label={t("models.imageInput")} checked={model.input?.includes("image") ?? false}
-            onChange={(v) => set("input", v ? ["text", "image"] : ["text"])} />
+          <Check label={t("models.reasoning")} checked={hasReasoning} onChange={(v) => setCapabilities({ reasoning: v })} />
+          <Check label={t("models.imageInput")} checked={model.input?.includes("image") ?? isNew}
+            onChange={(v) => setCapabilities({ input: v ? ["text", "image"] : ["text"] })} />
         </div>
+        {hasReasoning && (
+          <div style={{ marginTop: 12, maxWidth: 320 }}>
+            <Field label={t("models.reasoningLevels")}>
+              <select
+                aria-label={t("models.reasoningLevels")}
+                style={inputStyle}
+                value={reasoningPreset}
+                onChange={(event) => setCapabilities({ thinkingLevelMap: {
+                  ...(event.target.value === "auto" ? AUTO_ONLY_THINKING_LEVEL_MAP : STANDARD_THINKING_LEVEL_MAP),
+                } })}
+              >
+                {reasoningPreset === "model" && <option value="model" disabled>{t("models.reasoningModelCustom")}</option>}
+                <option value="auto">{t("models.reasoningModelAuto")}</option>
+                <option value="standard">{t("models.reasoningModelStandard")}</option>
+              </select>
+              {reasoningPreset === "auto" && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{t("models.reasoningModelAutoHint")}</span>}
+            </Field>
+          </div>
+        )}
       </div>
 
       <section>
@@ -1286,25 +1379,27 @@ function ModelDetail({
         </div>
 
         <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
-          <Field label={relayMode ? "上下文窗口（首阶计费范围）" : t("models.contextWindow")}>
-            {relayMode ? (
-              <div style={{ ...inputStyle, display: "flex", alignItems: "center", background: "var(--bg-subtle)", color: "var(--text)" }}>
-                {(model.contextWindow ?? relayContextLimit ?? 128_000).toLocaleString()} tokens
-              </div>
-            ) : (
-              <NumInput
-                value={model.contextWindow !== undefined ? String(model.contextWindow) : ""}
-                onChange={(v) => set("contextWindow", v ? parseInt(v) : undefined)}
-                placeholder="128000"
-              />
-            )}
-            {relayMode && relayContextLimit && (
-              <span style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 10 }}>
-                {relayFirstTierContextWindow
-                  ? `已从流星 API 同步：首档上限 ${relayContextLimit.toLocaleString()} tokens；Magent 会提前预留输出空间并自动压缩。`
-                  : `模型广场暂未返回该分组模型，当前使用 ${relayContextLimit.toLocaleString()} tokens 的保守上限。`}
-              </span>
-            )}
+          <Field label={t("models.contextWindow")}>
+            <input
+              inputMode="numeric"
+              aria-label={t("models.contextWindow")}
+              aria-describedby={contextHelpId}
+              value={customContextWindow === undefined ? "" : String(customContextWindow)}
+              onChange={(event) => setContextWindow(event.target.value)}
+              placeholder={t("models.contextWindowDefault", { count: defaultContextWindow.toLocaleString(locale) })}
+              style={inputStyle}
+            />
+            <span id={contextHelpId} style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 10 }}>
+              {contextCeiling !== undefined
+                ? t("models.contextWindowFirstTier", { count: contextCeiling.toLocaleString(locale) })
+                : t("models.contextWindowBlank")}
+              {customContextWindow !== undefined && effectiveContextWindow !== customContextWindow && (
+                <> {t("models.contextWindowClamped", { count: effectiveContextWindow.toLocaleString(locale) })}</>
+              )}
+              {relayContextPolicy && contextCeiling === undefined && customContextWindow !== undefined && customContextWindow > defaultContextWindow && (
+                <> {t("models.contextWindowUnverified")}</>
+              )}
+            </span>
           </Field>
           <Field label={t("models.maxOutputTokens")}>
             <NumInput value={model.maxTokens !== undefined ? String(model.maxTokens) : ""}
@@ -1398,7 +1493,7 @@ function ModelDetail({
               </span>
             </Field>
 
-            {model.reasoning && (
+            {hasReasoning && (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <SectionTitle>{t("models.compatibility")}</SectionTitle>
                 <Check
@@ -2584,8 +2679,7 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
           const claude = /claude/i.test(id);
           const gpt = /gpt|codex/i.test(id);
           models.push({
-            id,
-            name: discoveredModel.name,
+            ...discoveredModel,
             contextWindow: relayContextWindowLimit(
               id,
               relayGroups.find((group) => group.providerId === providerName)?.contextWindows?.[id],
@@ -2593,9 +2687,10 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
             maxTokens: 16_384,
             api: claude ? "anthropic-messages" : gpt ? "openai-responses" : "openai-completions",
             baseUrl: claude ? relayRoot : `${relayRoot}/v1`,
+            compat: relayModelCapabilityCompat(id),
           });
         } else {
-          models.push({ id: discoveredModel.id, name: discoveredModel.name });
+          models.push(discoveredModel);
         }
       }
       return { ...prev, providers: { ...(prev.providers ?? {}), [providerName]: { ...provider, models } } };
@@ -2657,19 +2752,23 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
     setSaveError(null);
     setSavedOk(false);
     try {
+      const submitted = JSON.stringify(config);
       const res = await fetch("/api/models-config", {
         method: "PUT",
         headers: { "Content-Type": "application/json", "If-Match": revision },
-        body: JSON.stringify(config),
+        body: submitted,
       });
-      const d = await res.json() as { success?: boolean; error?: string };
+      const d = await res.json() as { success?: boolean; error?: string; config?: ModelsJson };
       if (!res.ok || d.error) {
         if (res.status === 409 || res.status === 428) setConflicted(true);
         setSaveError(d.error ?? `HTTP ${res.status}`);
       } else {
-        baseConfigRef.current = JSON.stringify(config);
+        const saved = d.config ?? config;
+        baseConfigRef.current = JSON.stringify(saved);
+        setConfig((current) => JSON.stringify(current) === submitted ? saved : mergeSavedModelDefaults(current, config, saved));
         setRevision(res.headers.get("etag"));
         setSavedOk(true); setTimeout(() => setSavedOk(false), 2000);
+        window.dispatchEvent(new Event("models-config-updated"));
       }
     } catch (e) {
       setSaveError(String(e));
@@ -2753,6 +2852,8 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
         providerName={selection.providerName}
         provider={provider}
         model={model}
+        relayFirstTierContextWindow={relayGroups.find((group) => group.providerId === selection.providerName)?.contextWindows?.[model.id]}
+        isNew={!(JSON.parse(baseConfigRef.current) as ModelsJson).providers?.[selection.providerName]?.models?.some((saved) => saved.id === model.id)}
         onChange={(m) => updateModel(selection.providerName, selection.index, m)}
         onDelete={() => removeModel(selection.providerName, selection.index)}
       />
@@ -2805,10 +2906,7 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
       model={model}
       relayMode
       relayFirstTierContextWindow={group.contextWindows?.[model.id]}
-      onChange={(next) => updateModel(group.providerId, index, {
-        ...next,
-        contextWindow: clampRelayContextWindow(next.id, next.contextWindow, group.contextWindows?.[next.id]),
-      })}
+      onChange={(next) => updateModel(group.providerId, index, next)}
       onDelete={() => {
         removeModel(group.providerId, index);
         setRelaySelection({

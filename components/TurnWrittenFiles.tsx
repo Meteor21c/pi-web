@@ -1,52 +1,52 @@
 "use client";
 
 import { useI18n } from "@/hooks/useI18n";
-import { getFileName } from "@/lib/file-paths";
+import { getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { getFileIcon } from "./FileIcons";
 
-/**
- * Lists the files a turn actually wrote, as buttons that open each one in the
- * preview pane. Entries come from the turn's successful `write`/`edit` tool
- * calls — the reply text is never scanned for paths.
- */
-export function TurnWrittenFiles({ files, onOpenFile }: {
+export function TurnWrittenFiles({ files, cwd, onOpenFile }: {
   files: WrittenFile[];
+  cwd?: string;
   onOpenFile?: (filePath: string) => void;
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   if (files.length === 0) return null;
+  const heading = t("chat.filesWritten", { count: files.length.toLocaleString(locale) });
 
   return (
-    <div aria-label={t("chat.filesWritten")} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 6 }}>
-      {files.map(({ filePath }) => {
-        const name = getFileName(filePath);
-        return (
-          <button
-            key={filePath}
-            type="button"
-            title={filePath}
-            aria-label={t("chat.openWrittenFile", { name })}
-            onClick={() => onOpenFile?.(filePath)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              padding: "2px 8px",
-              fontSize: 12,
-              fontFamily: "var(--font-mono)",
-              color: "var(--text)",
-              background: "var(--bg-subtle)",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              cursor: "pointer",
-            }}
-          >
-            {getFileIcon(name, 12)}
-            <span>{name}</span>
-          </button>
-        );
-      })}
-    </div>
+    <section className="turn-files-card" aria-label={heading}>
+      <div className="turn-files-heading">{heading}</div>
+      <ul className="turn-files-list">
+        {files.map(({ filePath, change }) => {
+          const filename = getFileName(filePath);
+          const displayPath = getRelativeFilePath(filePath, cwd);
+          const directory = displayPath.slice(0, displayPath.length - filename.length);
+          const contents = (
+            <>
+              <span className="turn-files-icon" aria-hidden="true">{getFileIcon(filename, 14)}</span>
+              <span className="turn-files-path">
+                {directory && <span className="turn-files-directory">{directory}</span>}{filename}
+              </span>
+              {change && <span className="turn-files-change" data-change={change}>{t(`chat.fileChange.${change}`)}</span>}
+              {onOpenFile && <span className="turn-files-open" aria-hidden="true">›</span>}
+            </>
+          );
+          return (
+            <li key={filePath}>
+              {onOpenFile ? (
+                <button
+                  type="button"
+                  className="turn-files-row"
+                  title={displayPath}
+                  aria-label={t("chat.openWrittenFile", { name: displayPath })}
+                  onClick={() => onOpenFile(filePath)}
+                >{contents}</button>
+              ) : <div className="turn-files-row" title={displayPath}>{contents}</div>}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

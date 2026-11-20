@@ -60,3 +60,26 @@ export function splitFinalAssistantBlocks(
 export function countToolCallBlocks(blocks: AssistantContentBlock[]): number {
   return blocks.filter((block): block is ToolCallContent => block.type === "toolCall").length;
 }
+
+export interface AssistantTimelineSegment {
+  kind: "activity" | "output";
+  blockIndices: number[];
+}
+
+/** Keep stage text in order and retain stored indices for deferred thinking. */
+export function getAssistantTimelineSegments(
+  message: AssistantMessage,
+  options: DisplayOptions & { isVisibleToolResult?: (block: ToolCallContent) => boolean } = {},
+): AssistantTimelineSegment[] {
+  const segments: AssistantTimelineSegment[] = [];
+  message.content.forEach((block, index) => {
+    if (isEmptyThinkingBlock(block, options) || (block.type === "text" && !block.text.trim())) return;
+    const kind = block.type === "text" || block.type === "image"
+      || (block.type === "toolCall" && options.isVisibleToolResult?.(block))
+      ? "output" : "activity";
+    const previous = segments.at(-1);
+    if (previous?.kind === kind) previous.blockIndices.push(index);
+    else segments.push({ kind, blockIndices: [index] });
+  });
+  return segments;
+}

@@ -11,7 +11,9 @@
  */
 
 import { getRelayBaseUrl, getRelayResponsesBaseUrl } from "./relay-config";
-import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
+import { resolveModelCapabilities } from "./model-capability-catalog";
+import { relayModelCapabilityCompat, type ModelCapabilities } from "./model-capabilities";
+import type { ModelCatalogEntry } from "./model-catalog";
 import {
   RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
   RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW,
@@ -20,17 +22,17 @@ import {
 } from "./relay-model-policy";
 import { isRelayImageGenerationModel } from "./relay-image-generation";
 
-export interface RelayModelDef {
+export interface RelayModelDef extends ModelCapabilities {
   id: string;
   name?: string;
-  reasoning?: boolean;
-  input?: Array<"text" | "image">;
   cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow?: number;
+  /** Explicit user preference, before applying the group's first-tier ceiling. */
+  meteorAgentContextWindowOverride?: number;
   maxTokens?: number;
   api?: string;
   baseUrl?: string;
-  thinkingLevelMap?: Record<string, string | null>;
+  meteorAgentCapabilityOverrides?: ModelCapabilities;
   compat?: Record<string, unknown>;
 }
 
@@ -87,123 +89,56 @@ const TABLE_BY_FAMILY: Record<"gpt" | "claude", Map<string, RelayModelDef>> = {
   claude: new Map(CLAUDE_MODELS.map((x) => [x.id, x])),
 };
 
-type RelayModelCapabilities = Pick<RelayModelDef, "reasoning" | "input" | "thinkingLevelMap">;
-
-/**
- * Only enrich exact IDs from well-known upstream catalogs. An unknown or
- * relay-specific alias must keep the existing conservative fallback so that a
- * similar-looking name never enables a request feature the relay cannot use.
- */
-const BUILTIN_CAPABILITIES = new Map<string, RelayModelCapabilities>(
-  (["openai", "anthropic", "xai", "google", "deepseek"] as const).flatMap((provider) => (
-    getBuiltinModels(provider).map((model) => [model.id.toLocaleLowerCase(), {
-      reasoning: model.reasoning,
-      input: model.input.filter((value): value is "text" | "image" => value === "text" || value === "image"),
-      thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
-    }] as const)
-  )),
-);
-
-// This relay vision alias existed in the previous SDK catalog and remains
-// available upstream, although the newer catalog no longer lists it.
-BUILTIN_CAPABILITIES.set("deepseek-v4-flash-vision-exp", {
-  reasoning: true,
-  input: ["text", "image"],
-  thinkingLevelMap: { minimal: null, low: "low", medium: null, high: "high", max: "max" },
-});
-
-// The relay has exposed Fable 5.1 with both a dotted and a hyphenated ID.
-// pi-ai currently uses the hyphenated spelling, so explicitly share its
-// authoritative capabilities with the relay's dotted alias as well.
-const fable51Capabilities = BUILTIN_CAPABILITIES.get("claude-fable-5-1");
-if (fable51Capabilities) {
-  BUILTIN_CAPABILITIES.set("claude-fable-5.1", fable51Capabilities);
-}
-
 const FALLBACK: RelayModelDef = {
   id: "",
-  reasoning: false,
-  input: ["text"],
   contextWindow: RELAY_OTHER_DEFAULT_CONTEXT_WINDOW,
   maxTokens: 16_384,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
 
-/**
- * 用内置元数据补全远端 /v1/models 返回的模型 id 列表。
- * family:
- *  - "gpt" / "claude"：内置表命中取元数据，未命中走保守 FALLBACK；无远端列表时返回内置全表（离线兜底）
- *  - "other"：远端目录中不属于 gpt/claude 家族的其余模型；精确命中常见上游目录时补全能力，未知模型保持 FALLBACK
- */
-export function resolveRelayModels(
-  family: "gpt" | "claude" | "other",
-  remoteIds?: string[],
-): RelayModelDef[] {
-  if (family === "other") {
-    if (!remoteIds || remoteIds.length === 0) return [];
-    return remoteIds
-      .filter((id) => !GPT_MATCH.test(id) && !CLAUDE_MATCH.test(id))
-      .map((id) => withCommonCapabilities({ ...FALLBACK, id, name: id }));
-  }
-
-  const table = TABLE_BY_FAMILY[family];
-  const match = family === "gpt" ? GPT_MATCH : CLAUDE_MATCH;
-  if (!remoteIds || remoteIds.length === 0) {
-    return [...table.values()].map(withKnownCapabilities);
-  }
-  return remoteIds
-    .filter((id) => match.test(id))
-    .map((id) => ({
-      ...(table.has(id)
-        ? withKnownCapabilities(table.get(id)!)
-        : {
-            ...FALLBACK,
-            contextWindow: family === "gpt"
-              ? RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW
-              : RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
-          }),
-      id,
-      name: id,
-    }));
-}
-
-// Exact SDK IDs inherit the authoritative capability map. Relay-only aliases
-// fall back to documented family behavior; unverified review/spark/fable-like
-// aliases remain conservative rather than receiving capabilities by name.
-function withKnownCapabilities(model: RelayModelDef): RelayModelDef {
-  const capabilities = BUILTIN_CAPABILITIES.get(model.id.toLocaleLowerCase());
-  if (capabilities) return withCapabilities(model, capabilities);
-  const conservative = /fable|auto-review|spark/.test(model.id);
-  return { ...model, reasoning: !conservative, input: conservative ? ["text"] : ["text", "image"] };
-}
-
-function withCommonCapabilities(model: RelayModelDef): RelayModelDef {
-  const capabilities = BUILTIN_CAPABILITIES.get(model.id.toLocaleLowerCase());
-  if (!capabilities) return model;
-  return withCapabilities(model, capabilities);
-}
-
-function withCapabilities(model: RelayModelDef, capabilities: RelayModelCapabilities): RelayModelDef {
-  return {
-    ...model,
-    reasoning: capabilities.reasoning,
-    input: capabilities.input ? [...capabilities.input] : model.input,
-    thinkingLevelMap: capabilities.thinkingLevelMap ? { ...capabilities.thinkingLevelMap } : undefined,
+/** Resolve local context and price fallbacks independently of capabilities. */
+function relayModelFallback(family: "gpt" | "claude" | "other", id: string): RelayModelDef {
+  if (family === "other") return { ...FALLBACK, id };
+  return TABLE_BY_FAMILY[family].get(id) ?? {
+    ...FALLBACK,
+    id,
+    contextWindow: family === "gpt" ? RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW : RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
   };
 }
 
+export function resolveRelayModels(family: "gpt" | "claude" | "other", remoteIds?: string[]): RelayModelDef[] {
+  const ids = remoteIds?.length ? remoteIds : family === "other" ? [] : [...TABLE_BY_FAMILY[family].keys()];
+  return ids.filter((id) => family === "claude" ? CLAUDE_MATCH.test(id)
+    : family === "gpt" ? GPT_MATCH.test(id)
+      : !CLAUDE_MATCH.test(id) && !GPT_MATCH.test(id)).map((id) => ({
+    ...relayModelFallback(family, id),
+    name: id,
+    ...resolveModelCapabilities({ id }),
+  }));
+}
+
 /** SDK supports per-model api/baseUrl; preserve all families under one key. */
-export function resolveMixedRelayModels(ids: string[], base = getRelayBaseUrl()): RelayModelDef[] {
+export function resolveMixedRelayModels(
+  ids: readonly string[],
+  base = getRelayBaseUrl(),
+  upstream: ReadonlyMap<string, ModelCapabilities> = new Map(),
+  catalog: readonly ModelCatalogEntry[] = [],
+): RelayModelDef[] {
   return [...new Set(ids)].flatMap((id) => {
     // Non-chat endpoints must not be advertised as conversational models.
     if (isRelayImageGenerationModel(id) || /embedding|whisper|tts|sora|rerank/i.test(id)) return [];
     const family = CLAUDE_MATCH.test(id) ? "claude" : GPT_MATCH.test(id) ? "gpt" : "other";
-    return resolveRelayModels(family, [id]).map((model) => ({
+    const api = family === "claude" ? "anthropic-messages" : family === "gpt" ? "openai-responses" : "openai-completions";
+    const model = relayModelFallback(family, id);
+    const compat = relayModelCapabilityCompat(id);
+    return [{
       ...model,
+      ...resolveModelCapabilities({ id, api }, upstream.get(id), catalog),
+      name: id,
       contextWindow: clampRelayContextWindow(id, model.contextWindow),
-      api: family === "claude" ? "anthropic-messages" : family === "gpt" ? "openai-responses" : "openai-completions",
+      api,
       baseUrl: family === "claude" ? base : `${base}/v1`,
-    }));
+      ...(compat ? { compat } : {}),
+    }];
   });
 }
 

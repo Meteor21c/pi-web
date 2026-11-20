@@ -1,4 +1,6 @@
-export interface DiscoveredModel {
+import { readUpstreamModelCapabilities, type ModelCapabilities } from "./model-capabilities";
+
+export interface DiscoveredModel extends ModelCapabilities {
   id: string;
   name?: string;
 }
@@ -25,7 +27,7 @@ function modelFromValue(value: unknown): DiscoveredModel | null {
   const name = cleanString(value.display_name)
     ?? cleanString(value.displayName)
     ?? (cleanString(value.id) || cleanString(value.model) ? cleanString(value.name) : undefined);
-  return name && name !== id ? { id, name } : { id };
+  return { id, ...(name && name !== id ? { name } : {}), ...readUpstreamModelCapabilities(value) };
 }
 
 function listFromResponse(value: unknown): unknown[] {

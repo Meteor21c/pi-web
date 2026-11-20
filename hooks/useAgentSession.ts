@@ -18,6 +18,9 @@ import { AgentCommandError, isPromptRejectedError, sendAgentCommand } from "@/li
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
+import { useI18n } from "@/hooks/useI18n";
+import type { SubagentMode } from "@/lib/subagent-mode";
+import type { SubagentToolDetails } from "@/lib/subagent-extension";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
 import { userMessageKey } from "@/lib/prompt-recovery";
@@ -160,6 +163,9 @@ export interface UseAgentSessionOptions {
   onSessionStatsPanelOpen?: () => void;
   setToolPreset?: (preset: ToolPreset) => void;
   deferInitialScroll?: boolean;
+  subagentMode?: SubagentMode;
+  composerWorkMode?: SessionData["workMode"];
+  previewOnly?: boolean;
 }
 
 export type ThinkingLevelOption = "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -276,6 +282,8 @@ type SlashCommandsResponse = {
 };
 
 export function useAgentSession(opts: UseAgentSessionOptions) {
+  const { t } = useI18n();
+  const { subagentMode, composerWorkMode, previewOnly } = opts;
   const {
     session, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
@@ -288,6 +296,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [error, setError] = useState<string | null>(null);
   const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [liveSubagents, setLiveSubagents] = useState<Map<string, SubagentToolDetails>>(() => new Map());
   const [activeToolResults, setActiveToolResults] = useState<Map<string, ToolResultMessage>>(new Map());
   const [entryIds, setEntryIds] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
@@ -305,6 +314,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(null);
   const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
   const [toolPreset, setToolPreset] = useState<ToolPreset>("default");
+  const subagentModeUnavailable = toolPreset === "none" || toolPreset === "read-only" || (data?.workMode ?? composerWorkMode) === "plan";
+  const effectiveSubagentMode = subagentMode && subagentModeUnavailable ? "off" : subagentMode;
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
@@ -365,7 +376,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   if (!eventConnectionRef.current) {
     eventConnectionRef.current = new AgentEventConnection({
-      createSource: (sid) => new EventSource(`/api/agent/${encodeURIComponent(sid)}/events`),
+      createSource: (sid) => new EventSource(`/api/agent/${encodeURIComponent(sid)}/events${previewOnly ? "?observe=1" : ""}`),
       onEvent: (event) => handleAgentEventRef.current?.(event as AgentEvent),
       shouldMaintain: (sid) => (
         sessionHookMountedRef.current
@@ -734,20 +745,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionRef.current!.maintain(sid);
   }, []);
 
-  // Keep the selected session warm even while its agent is idle. The SSE lease
-  // is renewed separately below and expires if the browser disappears.
+  // Keep the selected chat warm. A side preview only observes an active child.
+  const observeSession = !previewOnly || opts.sessionRunning === true;
   useEffect(() => {
     const sid = session?.id;
-    if (!sid) return;
+    if (!sid || !observeSession) return;
     maintainEventsConnected(sid);
     return () => {
       if (sessionIdRef.current === sid) eventConnectionRef.current?.close();
     };
-  }, [maintainEventsConnected, session?.id]);
+  }, [maintainEventsConnected, observeSession, session?.id]);
 
   useEffect(() => {
     const sid = session?.id;
-    if (!sid) return;
+    if (!sid || previewOnly) return;
     let disposed = false;
     let renewing = false;
 
@@ -787,7 +798,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [closeEvents, maintainEventsConnected, session?.id]);
+  }, [closeEvents, maintainEventsConnected, previewOnly, session?.id]);
 
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,
@@ -897,6 +908,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     dispatch({ type: "end" });
     return wasRunning;
   }, []);
+
+  const wasObservingPreview = useRef(false);
+  useEffect(() => {
+    if (!previewOnly || !session?.id) return;
+    if (wasObservingPreview.current && !observeSession) {
+      sdkAgentActiveRef.current = false;
+      rpcPromptPendingRef.current = false;
+      settleUiStage();
+      void loadSession(session.id);
+    }
+    wasObservingPreview.current = observeSession;
+  }, [loadSession, observeSession, previewOnly, session?.id, settleUiStage]);
 
   const notifyPromptStage = useCallback((runId: number) => {
     if (notifiedPromptRunIdRef.current === runId) return false;
@@ -1272,6 +1295,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setAgentPhase({ kind: "waiting_model" });
         break;
       }
+      case "subagent_status": {
+        const details = event.subagent as SubagentToolDetails | undefined;
+        if (typeof event.toolCallId === "string" && details?.kind === "pi-web-subagent") {
+          const id = event.toolCallId;
+          setLiveSubagents((previous) => new Map(previous).set(id, details));
+        }
+        break;
+      }
+      case "subagent_required_unmet":
+        addNotice({ type: "warning", message: t("chat.subagentRequiredUnmet") });
+        break;
       case "tool_execution_start": {
         const id = event.toolCallId as string;
         const name = event.toolName as string;
@@ -1369,7 +1403,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setExtensionDialog((current) => current?.id === event.id ? null : current);
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
@@ -1438,6 +1472,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(sid, {
           type: "prompt",
           message,
+          ...(effectiveSubagentMode ? { subagentMode: effectiveSubagentMode } : {}),
           ...(piImages?.length ? { images: piImages } : {}),
         });
         promoteNewSession(1, message);
@@ -1448,6 +1483,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(session.id, {
           type: "prompt",
           message,
+          ...(effectiveSubagentMode ? { subagentMode: effectiveSubagentMode } : {}),
           ...(piImages?.length ? { images: piImages } : {}),
         });
       } else {
@@ -1489,7 +1525,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission, effectiveSubagentMode]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -2025,7 +2061,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       sessionIdRef.current = session.id;
       loadSession(session.id, true, true).then((agentState) => {
         if (agentState?.running) {
-          loadTools(session.id);
+          if (!previewOnly) loadTools(session.id);
           if (agentState.state?.isStreaming || agentState.state?.isPromptRunning) {
             sdkAgentActiveRef.current = Boolean(agentState.state.isStreaming);
             rpcPromptPendingRef.current = Boolean(agentState.state.isPromptRunning);
@@ -2119,17 +2155,21 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
 
   useEffect(() => {
+    if (previewOnly) return;
     const controller = new AbortController();
     const updated = () => { void loadModels(controller.signal).catch(() => {}); };
     window.addEventListener("relay-config-updated", updated);
+    window.addEventListener("models-config-updated", updated);
     return () => {
       controller.abort();
       window.removeEventListener("relay-config-updated", updated);
+      window.removeEventListener("models-config-updated", updated);
     };
-  }, [loadModels]);
+  }, [loadModels, previewOnly]);
 
   // Load the model list with bounded retries; loadModels exposes each failure.
   useEffect(() => {
+    if (previewOnly) return;
     const controller = new AbortController();
     (async () => {
       for (let attempt = 0; ; attempt++) {
@@ -2146,7 +2186,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     })();
     return () => controller.abort();
-  }, [loadModels, modelsRefreshKey]);
+  }, [loadModels, modelsRefreshKey, previewOnly]);
 
   useEffect(() => {
     if (!compactResult) return;
@@ -2204,8 +2244,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   return {
     // State
-    data, loading, error, activeLeafId, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, streamState,
-    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
+    data, loading, error, activeLeafId, messages, activeToolResults, liveSubagents, entryIds, historyCursor, hasEarlierMessages, streamState,
+    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel, subagentModeUnavailable,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, availableTools, queuedMessages,

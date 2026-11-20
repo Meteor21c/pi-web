@@ -24,6 +24,7 @@ export interface ModelCatalogEntry {
 export interface ModelCatalogPreset {
   name?: string;
   reasoning?: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
   input?: string[];
   contextWindow?: number;
   maxTokens?: number;

@@ -357,6 +357,11 @@ export function resolveSubagentProfile(cwd: string, name: string): SubagentProfi
   return listSubagentProfiles(cwd).find((profile) => profile.name.toLowerCase() === name.trim().toLowerCase() && profile.enabled);
 }
 
+export function defaultSubagentProfile(): SubagentProfile {
+  const profile = BUILTIN_PROFILES.find(({ name }) => name === "general-purpose")!;
+  return { ...profile, tools: [...profile.tools] };
+}
+
 function assertProfileName(name: string): string {
   const normalized = name.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(normalized)) {

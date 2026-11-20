@@ -1,23 +1,28 @@
 # Built-in sub-agent activation and extension precedence
 
-Pi Web's integrated sub-agent implementation is an inline, hidden extension.
-It is disabled by default and controlled by the global
-`~/.pi/agent/agents/settings.json` setting `builtInEnabled`.
+MeteorAgent registers its integrated delegation tools for ordinary main sessions.
+The composer supplies `subagentMode` on each new prompt. `auto` lets the parent
+decide, `off` hides and blocks delegation tools, and `on` instructs the parent to
+delegate at least one focused task and check the result. Steered and queued
+messages share the running prompt's choice. Chat only, Plan, read-only mode, and
+child sessions cannot delegate. Requests without a mode still use the legacy `builtInEnabled`
+setting in `~/.pi/agent/agents/settings.json`.
 
-The inline extension factory remains installed in every ordinary, non-Chat-only
-resource loader so an AgentSession reload can enable or disable its tools without
-recreating the wrapper. When disabled, the factory registers no tools. A runtime
-guard also rejects stale `Agent` calls after the setting is turned off but before
-the parent session is reloaded.
+An ordinary delegation can omit its profile. The built-in general-purpose
+profile uses the parent's model by default and has access only to tools the
+parent can use. Read-only parents cannot delegate write tools or create an
+isolated worktree. Required delegation runs child calls in the foreground so
+their results reach the parent before it continues. If the model completes
+without delegating, the parent emits `subagent_required_unmet`. No extra request
+is made to retry delegation.
 
-When the integrated extension is enabled, it takes precedence over an enabled
-legacy `pi-subagents` extension. A legacy extension is suppressed when its package
-source or path identifies it as `pi-subagents` and it registers any of the reserved
-tool names: `Agent`, `get_subagent_result`, or `steer_subagent`. Unrelated extensions
-are never removed solely because they use one of those names; the SDK reports those
-collisions normally.
+The queue enforces the configured running limit per parent and an absolute
+shared limit of 20. Extra jobs wait for a slot. Completed jobs do not consume
+slots. Each child is saved immediately and the parent emits `subagent_status`
+events when it queues, starts, and finishes. Reconnecting clients receive the
+current state for active children.
 
-When the integrated extension is disabled, Pi Web does not suppress the legacy
-package, so users can continue to manage and use that implementation through the
-Plugins settings. Existing child sessions remain readable, and already-running
-children are not aborted when the setting changes.
+The integrated tools take precedence over a recognized legacy `pi-subagents`
+extension that registers `Agent`, `get_subagent_result`, or `steer_subagent`.
+Unrelated extensions remain loaded. Existing child sessions remain readable
+and already-running children can finish when a later prompt turns delegation off.

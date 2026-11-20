@@ -12,12 +12,12 @@ const chatAppearanceHook = await readFile(new URL("../hooks/useChatAppearance.ts
 const jiti = createJiti(import.meta.url);
 const { clampChatContentWidth, clampChatContentFontSize } = await jiti.import("../hooks/useChatAppearance.ts");
 
-const widthVariable = /var\(--chat-content-max-width, 820px\)/g;
-
-test("chat content keeps the existing 820px default behind one shared variable", () => {
-  assert.equal((chatWindow.match(widthVariable) ?? []).length, 1);
-  assert.equal((newSessionWelcome.match(widthVariable) ?? []).length, 1);
-  assert.equal((chatInput.match(widthVariable) ?? []).length, 1);
+test("chat content uses a shared reading width and adaptive gutters", () => {
+  assert.match(chatWindow, /className="chat-reading-column"/);
+  assert.match(newSessionWelcome, /className="chat-reading-column"/);
+  assert.match(chatInput, /className=\{compact \? undefined : "chat-reading-column"\}/);
+  assert.match(globals, /\.chat-reading-column \{[^}]*max-width: var\(--chat-content-max-width, 820px\)/);
+  assert.match(globals, /\.chat-column-inset \{[^}]*padding-inline: var\(--chat-side-gutter/);
   assert.match(globals, /--chat-content-max-width: 820px;/);
   assert.doesNotMatch(chatWindow, /max-w-\[820px\]|maxWidth: 820/);
   assert.doesNotMatch(newSessionWelcome, /max-w-\[820px\]|maxWidth: 820/);

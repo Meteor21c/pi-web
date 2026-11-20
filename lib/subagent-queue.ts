@@ -1,6 +1,7 @@
 export type SubagentQueueState = "queued" | "running";
 
 interface QueueItem<T> {
+  parentId: string;
   run: () => Promise<T>;
   onState: (state: SubagentQueueState) => void;
   onCancel?: () => void | Promise<void>;
@@ -10,10 +11,9 @@ interface QueueItem<T> {
   cancelled: boolean;
 }
 
-type ParentQueue<T> = {
+type ParentQueue = {
   limit: number;
   active: number;
-  items: QueueItem<T>[];
 };
 
 export interface EnqueuedSubagent<T> {
@@ -21,9 +21,16 @@ export interface EnqueuedSubagent<T> {
   cancel(): boolean;
 }
 
-/** FIFO per parent session; separate parents do not block one another. */
+/** FIFO across eligible jobs, with both per-parent and shared running limits. */
 export class SubagentQueue<T> {
-  private readonly parents = new Map<string, ParentQueue<T>>();
+  private readonly parents = new Map<string, ParentQueue>();
+  private readonly pending: QueueItem<T>[] = [];
+  private active = 0;
+
+  constructor(
+    private readonly maxConcurrent = Infinity,
+    private readonly currentParentLimit?: () => number | undefined,
+  ) {}
 
   enqueue(
     parentId: string,
@@ -32,42 +39,77 @@ export class SubagentQueue<T> {
     onState: (state: SubagentQueueState) => void,
     onCancel?: () => void,
   ): EnqueuedSubagent<T> {
-    const parent = this.parents.get(parentId) ?? { limit: 1, active: 0, items: [] };
+    const parent = this.parents.get(parentId) ?? { limit: 1, active: 0 };
     parent.limit = Math.max(1, Math.floor(limit) || 1);
     let item!: QueueItem<T>;
     const promise = new Promise<T>((resolve, reject) => {
-      item = { run, onState, onCancel, resolve, reject, state: "queued", cancelled: false };
+      item = { parentId, run, onState, onCancel, resolve, reject, state: "queued", cancelled: false };
     });
-    parent.items.push(item);
+    this.pending.push(item);
     this.parents.set(parentId, parent);
-    onState("queued");
-    this.pump(parentId, parent);
+    try {
+      onState("queued");
+      this.pump();
+    } catch (error) {
+      item.cancelled = true;
+      const index = this.pending.indexOf(item);
+      if (index !== -1) this.pending.splice(index, 1);
+      this.removeIdleParent(parentId, parent);
+      item.reject(error);
+    }
     return {
       promise,
       cancel: () => {
         if (item.state !== "queued" || item.cancelled) return false;
         item.cancelled = true;
-        Promise.resolve(item.onCancel?.()).then(
-          () => item.resolve(undefined as T),
-          (error) => item.reject(error),
-        );
-        this.pump(parentId, parent);
+        const index = this.pending.indexOf(item);
+        if (index !== -1) this.pending.splice(index, 1);
+        try {
+          Promise.resolve(item.onCancel?.()).then(
+            () => item.resolve(undefined as T),
+            (error) => item.reject(error),
+          );
+        } catch (error) {
+          item.reject(error);
+        }
+        this.removeIdleParent(parentId, parent);
+        this.pump();
         return true;
       },
     };
   }
 
-  private pump(parentId: string, parent: ParentQueue<T>): void {
-    while (parent.active < parent.limit && parent.items.length > 0) {
-      const item = parent.items.shift()!;
-      if (item.cancelled) continue;
+  private removeIdleParent(parentId: string, parent: ParentQueue): void {
+    if (parent.active === 0 && !this.pending.some((item) => item.parentId === parentId)) {
+      this.parents.delete(parentId);
+    }
+  }
+
+  private pump(): void {
+    const currentLimit = this.currentParentLimit?.();
+    while (this.active < this.maxConcurrent) {
+      const index = this.pending.findIndex((item) => {
+        const parent = this.parents.get(item.parentId)!;
+        return parent.active < (currentLimit ?? parent.limit);
+      });
+      if (index === -1) return;
+      const [item] = this.pending.splice(index, 1);
+      const parent = this.parents.get(item.parentId)!;
       item.state = "running";
-      item.onState("running");
       parent.active += 1;
-      void item.run().then(item.resolve, item.reject).finally(() => {
+      this.active += 1;
+      let result: Promise<T>;
+      try {
+        item.onState("running");
+        result = item.run();
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+      void result.then(item.resolve, item.reject).finally(() => {
         parent.active -= 1;
-        this.pump(parentId, parent);
-        if (parent.active === 0 && parent.items.length === 0) this.parents.delete(parentId);
+        this.active -= 1;
+        this.removeIdleParent(item.parentId, parent);
+        this.pump();
       });
     }
   }

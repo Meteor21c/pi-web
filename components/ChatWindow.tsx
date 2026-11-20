@@ -2,13 +2,15 @@
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
+import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, getThinkingPreview, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { getAssistantErrorMessage, getAssistantTimelineSegments, isMessageGroupAnchor } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
-import { getModelDisplayName, MessageView, type ImageBillingSummary } from "./MessageView";
+import { getModelDisplayName, getToolResultImages, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
+import type { WorkMode } from "@/lib/prompt-presets";
+import { DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
 import { NewSessionWelcome } from "./NewSessionWelcome";
 import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
@@ -59,6 +61,8 @@ interface Props {
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onOpenFile?: (filePath: string) => void;
   onOpenSession?: (sessionId: string) => void;
+  subagentStatuses?: ReadonlyMap<string, SubagentSessionStatus>;
+  previewOnly?: boolean;
   onAskInNewChat?: (prompt: string, sourceSessionId: string, sourceEntryId: string) => Promise<void>;
   quoteSelectionEnabled?: boolean;
   initialPrompt?: string;
@@ -124,40 +128,16 @@ function AgentActivityCard({ phase, streamingStage, t }: {
   return (
     <div role="status" className="ui-agent-activity" style={{
       display: "flex", alignItems: "center", gap: 10, width: "fit-content", maxWidth: "100%",
-      margin: "8px 0 16px", padding: "10px 13px", borderRadius: 12,
-      border: "1px solid color-mix(in srgb, var(--accent) 24%, var(--border))",
-      background: "color-mix(in srgb, var(--accent) 5%, var(--bg))",
-      boxShadow: "0 5px 18px -14px rgba(0,0,0,.35)",
+      margin: "4px 0 14px", padding: "3px 0", color: "var(--text-muted)",
     }}>
       <span aria-hidden="true" style={{ width: 9, height: 9, flexShrink: 0, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent)", animation: "pulse 1.5s ease-in-out infinite" }} />
-      <div style={{ minWidth: 0, fontSize: 12, lineHeight: 1.45 }}>
-        <div style={{ color: "var(--text)", fontWeight: 600 }}>{t("chat.activityTitle")}</div>
-        <div style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>{step}</div>
-      </div>
+      <span style={{ minWidth: 0, fontSize: 12, lineHeight: 1.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{step}</span>
       {elapsedSeconds > 0 && <span aria-hidden="true" style={{ marginLeft: 5, alignSelf: "flex-start", color: "var(--text-dim)", fontSize: 11, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{elapsedSeconds}s</span>}
     </div>
   );
 }
 
 const CHAT_MINIMAP_WIDTH = 36;
-const CHAT_COLUMN_PADDING = 16;
-
-function hasFinalAssistantAnswer(message: AgentMessage): boolean {
-  if (message.role !== "assistant") return false;
-  return splitFinalAssistantBlocks(message as AssistantMessage).answerBlocks.some((block) => (
-    block.type === "image" || (block.type === "text" && block.text.trim().length > 0)
-  ));
-}
-
-function findFinalAssistantIndex(messages: AgentMessage[], userIdx: number, endIdx: number): number {
-  for (let candidateIdx = endIdx - 1; candidateIdx > userIdx; candidateIdx--) {
-    if (hasFinalAssistantAnswer(messages[candidateIdx])) return candidateIdx;
-  }
-  for (let candidateIdx = endIdx - 1; candidateIdx > userIdx; candidateIdx--) {
-    if (messages[candidateIdx]?.role === "assistant") return candidateIdx;
-  }
-  return -1;
-}
 
 function getUserInputText(message: AgentMessage): string | null {
   if (message.role !== "user") return null;
@@ -171,16 +151,6 @@ function getUserInputText(message: AgentMessage): string | null {
     .join("\n")
     .trim();
   return text.length > 0 ? text : null;
-}
-
-function withAssistantBlocks(
-  message: AssistantMessage,
-  content: AssistantContentBlock[],
-  options: { omitUsage?: boolean } = {},
-): AssistantMessage {
-  const next = { ...message, content };
-  if (options.omitUsage) next.usage = undefined;
-  return next;
 }
 
 function aggregateTurnUsage(messages: AgentMessage[], start: number, end: number): AgentUsage | undefined {
@@ -220,53 +190,48 @@ function aggregateTurnActualCost(
   return usageEntries.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 }
 
-function ProcessDetailsGroup({ messageCount, toolCallCount, thinkingPreview, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; thinkingPreview?: string; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  useLayoutEffect(() => {
-    if (reveal) setExpanded(true);
-  }, [reveal]);
-  const parts = [t("chat.processDetails"), `${messageCount} ${t(messageCount === 1 ? "chat.message" : "chat.messages")}`];
-  if (toolCallCount > 0) parts.push(`${toolCallCount} ${t(toolCallCount === 1 ? "chat.toolCall" : "chat.toolCalls")}`);
+function activitySummary(blocks: AssistantContentBlock[], commandCount: number, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const counts = new Map<string, number>();
+  for (const block of blocks) {
+    if (block.type !== "toolCall") continue;
+    const name = block.toolName.toLowerCase();
+    const key = /^(read|grep|find|ls)$/.test(name) ? "chat.activityReadSummary"
+      : /^(write|edit)$/.test(name) ? "chat.activityEditSummary"
+      : /^(bash|powershell)$/.test(name) ? "chat.activityCommandSummary"
+      : /^(web_search|get_search_content)$/.test(name) ? "chat.activitySearchSummary"
+      : "chat.activityToolSummary";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  if (commandCount > 0) counts.set("chat.activityCommandSummary", (counts.get("chat.activityCommandSummary") ?? 0) + commandCount);
+  return [...counts].map(([key, count]) => t(key, { count })).join(" · ") || t("chat.activityThoughtSummary");
+}
 
+function ProcessDetailsGroup({ summary, activeLabel, failureCount = 0, children, t }: {
+  summary: string;
+  activeLabel?: string | null;
+  failureCount?: number;
+  children: ReactNode;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  const [open, setOpen] = useState(false);
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div data-process-group style={{ minWidth: 0, margin: "4px 0 14px" }}>
       <button
         type="button"
-        aria-expanded={expanded || reveal}
-        onClick={() => setExpanded((v) => !v)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          width: "auto",
-          minHeight: 24,
-          padding: "2px 0",
-          border: "none",
-          background: "transparent",
-          color: "var(--text-muted)",
-          cursor: "pointer",
-          fontSize: 12,
-          textAlign: "left",
-        }}
-        title={expanded ? t("chat.collapseProcess") : t("chat.expandProcess")}
+        aria-expanded={open}
+        aria-label={(open ? t("chat.collapseProcess") : t("chat.expandProcess")) + ": " + summary}
+        onClick={() => setOpen((value) => !value)}
+        title={open ? t("chat.collapseProcess") : t("chat.expandProcess")}
+        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0, minHeight: 28, padding: "3px 0", border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
-          <polyline points="4 2.5 7.5 6 4 9.5" />
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: activeLabel ? "var(--accent)" : undefined, animation: activeLabel ? "pulse 1.5s ease-in-out infinite" : undefined }}>
+          <rect x="3" y="4" width="18" height="16" rx="3" /><path d="m7 9 3 3-3 3m6 0h4" />
         </svg>
-        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {parts.join(" · ")}
-        </span>
-        {!expanded && !reveal && thinkingPreview && (
-          <span style={{ minWidth: 0, maxWidth: "min(36vw, 320px)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)" }}>
-            · {thinkingPreview}
-          </span>
-        )}
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeLabel ? activeLabel + " · " + summary : summary}</span>
+        {failureCount > 0 && <span style={{ flexShrink: 0, color: "var(--error, #ef4444)", fontSize: 11 }}>{t("chat.activityFailureSummary", { count: failureCount })}</span>}
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
       </button>
-      {(expanded || reveal) && (
-        <div style={{ marginTop: 8 }}>
-          {children}
-        </div>
-      )}
+      {open && <div style={{ minWidth: 0, margin: "6px 0 0 6px", paddingLeft: 14, borderLeft: "1px solid var(--border)" }}>{children}</div>}
     </div>
   );
 }
@@ -285,10 +250,13 @@ function TurnModelLabel({ message, modelNames }: { message: AssistantMessage; mo
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
-  const completionNotificationsEnabled = session?.relation?.kind !== "subagent";
+  const showMinimapRail = !previewOnly && !isMobile;
+  const completionNotificationsEnabled = !previewOnly && session?.relation?.kind !== "subagent";
+  const [subagentMode, setSubagentMode] = useState<SubagentMode>(DEFAULT_SUBAGENT_MODE);
+  const [composerWorkMode, setComposerWorkMode] = useState<WorkMode>("auto");
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -319,7 +287,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
   const {
-    data, loading, error, messages, activeToolResults, entryIds, historyCursor, hasEarlierMessages, streamState,
+    data, loading, error, messages, activeToolResults, liveSubagents, entryIds, historyCursor, hasEarlierMessages, streamState, subagentModeUnavailable,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -340,6 +308,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
     deferInitialScroll: Boolean(pendingScrollRestore),
+    subagentMode: previewOnly || session?.relation?.kind === "subagent" ? undefined : subagentMode,
+    previewOnly,
+    composerWorkMode,
   });
   const persistedSessionId = session?.id ?? sessionIdRef.current ?? undefined;
   const [imageGeneration, setImageGeneration] = useState<{
@@ -360,11 +331,12 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     }
   }, [persistedSessionId]);
   useEffect(() => {
+    if (previewOnly) return;
     void loadImageGeneration();
     const refresh = () => void loadImageGeneration();
     window.addEventListener("relay-config-updated", refresh);
     return () => window.removeEventListener("relay-config-updated", refresh);
-  }, [loadImageGeneration, modelsRefreshKey]);
+  }, [loadImageGeneration, modelsRefreshKey, previewOnly]);
   const hasRelayMessages = messages.some((message) => (
     message.role === "assistant" && isRelayProviderId((message as AssistantMessage).provider)
   ));
@@ -713,7 +685,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     const content = messageContentRef.current;
     if (!position || !content || searchTarget) return;
     const element = Array.from(content.children).find((candidate) => (
-      candidate instanceof HTMLElement && candidate.dataset.entryId === position.anchorEntryId
+      candidate instanceof HTMLElement && (candidate.dataset.entryId === position.anchorEntryId
+        || candidate.dataset.processEntryIds?.split(" ").includes(position.anchorEntryId))
     ));
     if (element instanceof HTMLElement) {
       scrollToMessage(element, position.anchorOffset);
@@ -757,7 +730,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   useLayoutEffect(() => {
     if (!pendingSearchScroll || pendingSearchScroll !== searchTarget) return;
     const selector = `[data-entry-id="${CSS.escape(pendingSearchScroll.entryId)}"]`;
-    const element = scrollContainerRef.current?.querySelector<HTMLElement>(searchMessage?.role === "user" ? selector : `${selector} [data-search-target]`);
+    const container = scrollContainerRef.current;
+    const processSelector = `[data-process-entry-ids~="${CSS.escape(pendingSearchScroll.entryId)}"]`;
+    const element = container?.querySelector<HTMLElement>(`${selector} [data-search-target]`)
+      ?? container?.querySelector<HTMLElement>(selector)
+      ?? container?.querySelector<HTMLElement>(processSelector);
     if (element) {
       scrollToMessage(element);
       element.animate([
@@ -767,7 +744,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     }
     setPendingSearchScroll(null);
     onSearchTargetHandled?.(pendingSearchScroll);
-  }, [pendingSearchScroll, searchTarget, searchMessage, scrollContainerRef, scrollToMessage, onSearchTargetHandled]);
+  }, [pendingSearchScroll, searchTarget, scrollContainerRef, scrollToMessage, onSearchTargetHandled]);
 
   // IntersectionObserver on the sentinel div at the top of the message list.
   // When it becomes visible, load the next page of older messages.
@@ -871,8 +848,27 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         map.set((msg as ToolResultMessage).toolCallId, msg as ToolResultMessage);
       }
     }
+    for (const [toolCallId, details] of liveSubagents) {
+      const previous = map.get(toolCallId);
+      map.set(toolCallId, {
+        role: "toolResult",
+        toolCallId,
+        toolName: "Agent",
+        content: [],
+        ...previous,
+        details,
+      });
+    }
+    for (const [id, result] of map) {
+      if (result.toolName !== "Agent" || !isSubagentToolDetails(result.details)) continue;
+      const { sessionId, status } = result.details;
+      const catalogStatus = subagentStatuses?.get(sessionId);
+      if (!catalogStatus || catalogStatus === status || status === "completed" || status === "failed" || status === "aborted") continue;
+      if (catalogStatus === "starting" || (catalogStatus === "queued" && status === "running")) continue;
+      map.set(id, { ...result, details: { ...result.details, status: catalogStatus } });
+    }
     return map;
-  }, [activeToolResults, messages]);
+  }, [activeToolResults, liveSubagents, messages, subagentStatuses]);
   const inputHistory = useMemo(() => {
     const seen = new Set<string>();
     const history: string[] = [];
@@ -1032,7 +1028,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       compactResult={compactResult}
       toolPreset={toolPreset}
       workMode={data?.workMode ?? "auto"}
+      onResolvedWorkMode={setComposerWorkMode}
       workModeEditable={isNew && messages.length === 0}
+      subagentMode={subagentMode}
+      onSubagentModeChange={session?.relation?.kind === "subagent" ? undefined : setSubagentMode}
+      subagentModeDisabled={subagentModeUnavailable}
       onWorkModeChanged={async () => {
         const sid = sessionIdRef.current;
         if (sid) await loadTools(sid);
@@ -1078,6 +1078,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   return (
     <div
       className="chat-content relative flex h-full min-w-0 flex-col overflow-hidden"
+      data-chat-preview={previewOnly || undefined}
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
@@ -1117,16 +1118,16 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       )}
 
       <div
+        className="chat-column-inset"
         style={{
           position: "absolute",
           top: 12,
           left: 0,
-          right: isMobile ? 0 : CHAT_MINIMAP_WIDTH,
+          right: showMinimapRail ? CHAT_MINIMAP_WIDTH : 0,
           zIndex: 40,
           display: "flex",
           // Toasts live in the top-right corner
           justifyContent: "flex-end",
-          padding: `0 ${CHAT_COLUMN_PADDING}px`,
           pointerEvents: "none",
         }}
       >
@@ -1146,12 +1147,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
           className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]"
           style={{ visibility: pendingScrollRestore ? "hidden" : undefined }}
         >
-          <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div ref={messageContentRef} onPointerUp={captureQuotedSelection} style={{ width: "100%", minWidth: 0, maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
+          <div className="chat-column-inset">
+            <div ref={messageContentRef} onPointerUp={captureQuotedSelection} className="chat-reading-column">
             {(() => {
+              const timelineMessages: AgentMessage[] = streamState.isStreaming && hasStreamingContent && streamState.streamingMessage
+                ? [...messages, streamState.streamingMessage as AgentMessage]
+                : messages;
               let lastUserIdx = -1;
-              for (let i = messages.length - 1; i >= 0; i--) {
-                if (messages[i].role === "user") { lastUserIdx = i; break; }
+              for (let i = timelineMessages.length - 1; i >= 0; i--) {
+                if (timelineMessages[i].role === "user") { lastUserIdx = i; break; }
               }
               // Anchor for live-tail detection: the last user message, or a
               // compaction summary when compaction has replaced it mid-turn.
@@ -1159,13 +1163,13 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               // scroll-to-user ref) because a compaction summary can sit after
               // the last user message and anchor the still-streaming segment.
               let lastAnchorIdx = -1;
-              for (let i = messages.length - 1; i >= 0; i--) {
-                if (isMessageGroupAnchor(messages[i])) { lastAnchorIdx = i; break; }
+              for (let i = timelineMessages.length - 1; i >= 0; i--) {
+                if (isMessageGroupAnchor(timelineMessages[i])) { lastAnchorIdx = i; break; }
               }
 
               const visibleRefIndexByMessage = new Map<number, number>();
               let refIdx = 0;
-              messages.forEach((msg, idx) => {
+              timelineMessages.forEach((msg, idx) => {
                 if (isMessageGroupAnchor(msg) || msg.role === "assistant") {
                   visibleRefIndexByMessage.set(idx, refIdx++);
                 }
@@ -1178,6 +1182,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
               const renderMessage = (idx: number, options: {
                 attachRef?: boolean;
+                blockIndices?: number[];
+                hideMetadata?: boolean;
                 keyPrefix?: string;
                 messageOverride?: AgentMessage;
                 showTimestamp?: boolean;
@@ -1185,9 +1191,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 compactUsage?: boolean;
                 usageOverride?: AgentUsage;
                 actualCost?: number;
+                imageBilling?: ImageBillingSummary;
                 writtenFiles?: WrittenFile[];
               } = {}): ReactNode => {
-                const msg = options.messageOverride ?? messages[idx];
+                const msg = options.messageOverride ?? timelineMessages[idx];
                 const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
                 const currentRefIdx = visibleRefIndexByMessage.get(idx);
                 const keyPrefix = options.keyPrefix ?? "message";
@@ -1195,13 +1202,13 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 let showTimestamp = false;
                 if (msg.role === "assistant") {
                   showTimestamp = true;
-                  for (let j = idx + 1; j < messages.length; j++) {
-                    const r = messages[j].role;
+                  for (let j = idx + 1; j < timelineMessages.length; j++) {
+                    const r = timelineMessages[j].role;
                     if (r === "user") break;
                     if (r === "assistant") { showTimestamp = false; break; }
                   }
                   // Hide on the currently-streaming tail (the streaming bubble owns the live timestamp)
-                  if (showTimestamp && streamState.isStreaming && idx === messages.length - 1) {
+                  if (showTimestamp && streamState.isStreaming && idx === timelineMessages.length - 1) {
                     showTimestamp = false;
                   }
                 }
@@ -1210,6 +1217,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   <MessageView
                     key={`${keyPrefix}-view-${messageKey}`}
                     message={msg}
+                    isStreaming={streamState.isStreaming && idx === messages.length}
+                    blockIndices={options.blockIndices}
+                    hideMetadata={options.hideMetadata}
                     toolResults={toolResultsMap}
                     modelNames={modelNames}
                     cwd={messageCwd}
@@ -1217,18 +1227,18 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     onOpenSession={onOpenSession}
                     entryId={entryIds[idx]}
                     searchBlock={entryIds[idx] === pendingSearchScroll?.entryId ? searchBlock : undefined}
-                    onFork={sessionBusy || isNew ? undefined : handleFork}
+                    onFork={previewOnly || sessionBusy || isNew ? undefined : handleFork}
                     forking={forkingEntryId === entryIds[idx]}
-                    onNavigate={sessionBusy ? undefined : handleNavigate}
-                    onEditContent={handleEditContent}
+                    onNavigate={previewOnly || sessionBusy ? undefined : handleNavigate}
+                    onEditContent={previewOnly ? undefined : handleEditContent}
                     showTimestamp={showTimestamp}
-                    prevTimestamp={idx > 0 ? (messages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
+                    prevTimestamp={idx > 0 ? (timelineMessages[idx - 1] as AgentMessage & { timestamp?: number }).timestamp : undefined}
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
-                    actualCost={options.actualCost ?? (entryIds[idx] ? relayActualCosts.costs[entryIds[idx]]?.actualCost : undefined)}
+                    actualCost={"actualCost" in options ? options.actualCost : (entryIds[idx] ? relayActualCosts.costs[entryIds[idx]]?.actualCost : undefined)}
                     usageOverride={options.usageOverride}
                     showModel={options.showModel}
                     compactUsage={options.compactUsage}
-                    imageBilling={entryIds[idx] ? imageBillingByAnchor.get(entryIds[idx]) : undefined}
+                    imageBilling={options.imageBilling ?? (entryIds[idx] ? imageBillingByAnchor.get(entryIds[idx]) : undefined)}
                     writtenFiles={options.writtenFiles}
                   />
                 );
@@ -1241,160 +1251,126 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               };
 
               const rendered: ReactNode[] = [];
-              for (let idx = 0; idx < messages.length;) {
-                const msg = messages[idx];
-                if (!isMessageGroupAnchor(msg)) {
-                  rendered.push(renderMessage(idx));
-                  idx += 1;
-                  continue;
+              let tailHasActivityGroup = false;
+              for (let idx = 0; idx < timelineMessages.length;) {
+                // A lazily loaded history page may start halfway through a turn.
+                const hasAnchor = isMessageGroupAnchor(timelineMessages[idx]);
+                const userIdx = hasAnchor ? idx : idx - 1;
+                let endIdx = hasAnchor ? idx + 1 : idx;
+                while (endIdx < timelineMessages.length && !isMessageGroupAnchor(timelineMessages[endIdx])) endIdx += 1;
+                const isLiveTail = (sessionBusy || streamState.isStreaming) && endIdx === timelineMessages.length && userIdx === lastAnchorIdx;
+                if (hasAnchor) rendered.push(renderMessage(userIdx));
+
+                const turnMessages = timelineMessages.slice(userIdx + 1, endIdx);
+                const turnModel = turnMessages.find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
+                if (turnModel) rendered.push(<TurnModelLabel key={"turn-model-" + (entryIds[userIdx] ?? userIdx)} message={turnModel} modelNames={modelNames} />);
+                let finalAssistantIdx = -1;
+                for (let i = endIdx - 1; i > userIdx; i--) {
+                  if (timelineMessages[i].role === "assistant") { finalAssistantIdx = i; break; }
                 }
 
-                const userIdx = idx;
-                let endIdx = userIdx + 1;
-                while (endIdx < messages.length && !isMessageGroupAnchor(messages[endIdx])) endIdx += 1;
-
-                const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
-
-                if (finalAssistantIdx === -1) {
-                  for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-                    rendered.push(renderMessage(renderIdx));
-                  }
-                  idx = endIdx;
-                  continue;
-                }
-
-                const isLiveTail = (sessionBusy || streamState.isStreaming) && endIdx === messages.length && userIdx === lastAnchorIdx;
-                if (isLiveTail) {
-                  const liveModelMessage = messages.slice(userIdx + 1, endIdx)
-                    .find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
-                  if (liveModelMessage) {
-                    rendered.push(
-                      <TurnModelLabel
-                        key={`turn-model-live-${entryIds[userIdx] ?? userIdx}`}
-                        message={liveModelMessage}
-                        modelNames={modelNames}
-                      />,
-                    );
-                  }
-                  for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
-                    const liveMessage = messages[renderIdx];
-                    rendered.push(renderMessage(renderIdx, {
-                      showModel: liveMessage.role === "user" ? undefined : false,
-                      compactUsage: liveMessage.role === "assistant",
-                    }));
-                  }
-                  idx = endIdx;
-                  continue;
-                }
-
-                rendered.push(renderMessage(userIdx));
-
-                const finalAssistant = messages[finalAssistantIdx] as AssistantMessage;
-                const turnModelMessage = messages.slice(userIdx + 1, endIdx)
-                  .find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
-                const turnUsage = aggregateTurnUsage(messages, userIdx + 1, finalAssistantIdx);
-                const turnActualCost = aggregateTurnActualCost(
-                  messages,
-                  entryIds,
-                  userIdx + 1,
-                  finalAssistantIdx,
-                  relayActualCosts.costs,
-                );
-                if (turnModelMessage) {
+                let processViews: ReactNode[] = [];
+                let processBlocks: AssistantContentBlock[] = [];
+                let processCommands = 0;
+                let processFailures = 0;
+                let processKey = "";
+                let processEntryId: string | undefined;
+                let processEntryIds = new Set<string>();
+                let processRefIndices = new Set<number>();
+                const flushProcess = (active = false) => {
+                  if (processViews.length === 0) return;
+                  const refIndices = processRefIndices;
                   rendered.push(
-                    <TurnModelLabel
-                      key={`turn-model-${entryIds[userIdx] ?? userIdx}`}
-                      message={turnModelMessage}
-                      modelNames={modelNames}
-                    />,
-                  );
-                }
-                const finalSplit = splitFinalAssistantBlocks(finalAssistant);
-                const finalAnswerMessage = finalSplit.answerBlocks.length > 0 || getAssistantErrorMessage(finalAssistant)
-                  ? withAssistantBlocks(finalAssistant, finalSplit.answerBlocks)
-                  : null;
-
-                const finalProcessEnd = finalAssistant.content.indexOf(finalSplit.answerBlocks[0]);
-                // Keep the original prefix so deferred thinking retains its stored block indices.
-                const finalProcessBlocks = finalAssistant.content.slice(0, finalProcessEnd < 0 ? undefined : finalProcessEnd);
-
-                const processViews: ReactNode[] = [];
-                let processToolCount = 0;
-                let thinkingPreview: string | undefined;
-                let processRefIdx: number | undefined;
-                let revealProcess = false;
-
-                for (let processIdx = userIdx + 1; processIdx <= finalAssistantIdx; processIdx++) {
-                  const processMessage = messages[processIdx];
-                  if (processMessage.role === "custom") {
-                    revealProcess ||= Boolean(pendingSearchScroll && pendingSearchScroll.entryId === entryIds[processIdx]);
-                    processViews.push(renderMessage(processIdx, { attachRef: false, keyPrefix: "process" }));
-                    continue;
-                  }
-                  if (processMessage.role !== "assistant") continue;
-                  const message = processIdx === finalAssistantIdx
-                    ? withAssistantBlocks(processMessage, finalProcessBlocks, { omitUsage: Boolean(finalAnswerMessage) })
-                    : processMessage;
-                  const blocks = getDisplayableAssistantBlocks(message);
-                  if (blocks.length === 0) continue;
-                  if (!thinkingPreview) {
-                    const thinkingBlock = blocks.find((block) => block.type === "thinking" && block.thinking.trim());
-                    if (thinkingBlock?.type === "thinking") {
-                      thinkingPreview = getThinkingPreview(thinkingBlock.thinking)
-                        .replace(/^(?:[#>*-]\s*)+/u, "")
-                        .replace(/\*\*(.*?)\*\*/gu, "$1")
-                        .slice(0, 120);
-                    }
-                  }
-                  processRefIdx ??= visibleRefIndexByMessage.get(processIdx);
-                  processToolCount += countToolCallBlocks(blocks);
-                  revealProcess ||= Boolean(pendingSearchScroll && entryIds[processIdx] === pendingSearchScroll.entryId && (!searchBlock || blocks.includes(searchBlock)));
-                  processViews.push(renderMessage(processIdx, {
-                    attachRef: false,
-                    keyPrefix: "process",
-                    messageOverride: message,
-                    showTimestamp: false,
-                    showModel: false,
-                    compactUsage: true,
-                  }));
-                }
-
-                if (processViews.length > 0) {
-                  rendered.push(
-                    <div
-                      key={`process-group-${entryIds[userIdx] ?? userIdx}`}
-                      ref={processRefIdx === undefined ? undefined : (el) => { messageRefs.current[processRefIdx] = el; }}
-                    >
-                      <ProcessDetailsGroup messageCount={processViews.length} toolCallCount={processToolCount} thinkingPreview={thinkingPreview} defaultExpanded={!finalAnswerMessage} reveal={revealProcess} t={t}>
-                        {processViews}
-                      </ProcessDetailsGroup>
+                    <div key={"process-" + processKey} data-entry-id={processEntryId} data-process-entry-ids={[...processEntryIds].join(" ")} ref={(el) => { for (const refIndex of refIndices) messageRefs.current[refIndex] = el; }}>
+                      <ProcessDetailsGroup
+                        summary={activitySummary(processBlocks, processCommands, t)}
+                        activeLabel={active ? phaseLabel(agentPhase, t) ?? t("chat.thinking") : undefined}
+                        failureCount={processFailures}
+                        t={t}
+                      >{processViews}</ProcessDetailsGroup>
                     </div>,
                   );
-                }
-
-                if (finalAnswerMessage) {
-                  // Each tool call is stored as its own assistant entry, so the
-                  // final answer alone carries no record of what the turn wrote.
-                  // Gather the turn's assistant blocks and derive the file list
-                  // from the write/edit calls among them.
-                  const turnContent: AssistantContentBlock[] = [];
-                  for (let i = userIdx + 1; i <= finalAssistantIdx; i++) {
-                    const m = messages[i];
-                    if (m?.role === "assistant") {
-                      for (const b of (m as AssistantMessage).content ?? []) turnContent.push(b);
+                  if (active) tailHasActivityGroup = true;
+                  processViews = [];
+                  processBlocks = [];
+                  processCommands = 0;
+                  processFailures = 0;
+                  processEntryIds = new Set();
+                  processRefIndices = new Set();
+                };
+                for (let messageIdx = userIdx + 1; messageIdx < endIdx; messageIdx++) {
+                  const message = timelineMessages[messageIdx];
+                  if (message.role === "toolResult") continue;
+                  if (message.role === "bashExecution") {
+                    if (processViews.length === 0) {
+                      processKey = String(entryIds[messageIdx] ?? messageIdx);
+                      processEntryId = entryIds[messageIdx];
                     }
+                    if (entryIds[messageIdx]) processEntryIds.add(entryIds[messageIdx]);
+                    processCommands++;
+                    if (message.cancelled || (message.exitCode !== undefined && message.exitCode !== 0)) processFailures++;
+                    processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix: "process-command" }));
+                    continue;
                   }
-                  const writtenFiles = extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd);
-                  rendered.push(renderMessage(finalAssistantIdx, {
-                  messageOverride: finalAnswerMessage,
-                  showModel: false,
-                  usageOverride: turnUsage,
-                  actualCost: turnActualCost,
-                  writtenFiles,
-                }));
+                  if (message.role !== "assistant") {
+                    flushProcess();
+                    rendered.push(renderMessage(messageIdx));
+                    continue;
+                  }
+                  const isStreamingMessage = streamState.isStreaming && messageIdx === messages.length;
+                  const segments = getAssistantTimelineSegments(message, {
+                    isStreaming: isStreamingMessage,
+                    isVisibleToolResult: (block) => {
+                      const result = toolResultsMap.get(block.toolCallId);
+                      if (onOpenSession && block.toolName === "Agent" && isSubagentToolDetails(result?.details)) return true;
+                      return !result?.isError && getToolResultImages(result, block.toolName, messageCwd, persistedSessionId ?? undefined).length > 0;
+                    },
+                  });
+                  for (const segment of segments) {
+                    const keyPrefix = segment.kind + "-" + segment.blockIndices[0];
+                    if (segment.kind === "output") {
+                      flushProcess();
+                      rendered.push(renderMessage(messageIdx, { keyPrefix, blockIndices: segment.blockIndices, hideMetadata: true, showModel: false, showTimestamp: false }));
+                      continue;
+                    }
+                    if (processViews.length === 0) {
+                      processKey = String(entryIds[messageIdx] ?? messageIdx) + "-" + segment.blockIndices[0];
+                      processEntryId = entryIds[messageIdx];
+                    }
+                    const blocks = segment.blockIndices.map((index) => message.content[index]);
+                    processBlocks.push(...blocks);
+                    processFailures += blocks.filter((block) => block.type === "toolCall" && toolResultsMap.get(block.toolCallId)?.isError).length;
+                    if (entryIds[messageIdx]) processEntryIds.add(entryIds[messageIdx]);
+                    const refIndex = visibleRefIndexByMessage.get(messageIdx);
+                    if (refIndex !== undefined) processRefIndices.add(refIndex);
+                    processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix, blockIndices: segment.blockIndices, hideMetadata: true, showModel: false, showTimestamp: false }));
+                  }
+                  // Provider failures must be visible even with the process folded.
+                  if (messageIdx !== finalAssistantIdx && getAssistantErrorMessage(message)) {
+                    flushProcess();
+                    rendered.push(renderMessage(messageIdx, { keyPrefix: "error", blockIndices: [], showModel: false, compactUsage: true }));
+                  }
                 }
-                for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
-                  rendered.push(renderMessage(renderIdx));
+                flushProcess(isLiveTail);
+                if (!isLiveTail && finalAssistantIdx !== -1) {
+                  const turnContent = turnMessages.flatMap((message) => message.role === "assistant" ? message.content : []);
+                  const imageCharges = entryIds.slice(userIdx + 1, endIdx).flatMap((entryId) => imageBillingByAnchor.get(entryId) ?? []);
+                  const turnImageBilling = imageCharges.length === 0 ? undefined : imageCharges.reduce((total, charge) => ({
+                    imageCount: total.imageCount + charge.imageCount,
+                    chargeCount: total.chargeCount + charge.chargeCount,
+                    matchedChargeCount: total.matchedChargeCount + charge.matchedChargeCount,
+                    actualCost: total.actualCost + charge.actualCost,
+                  }), { imageCount: 0, chargeCount: 0, matchedChargeCount: 0, actualCost: 0 });
+                  rendered.push(renderMessage(finalAssistantIdx, {
+                    keyPrefix: "turn-summary",
+                    attachRef: false,
+                    blockIndices: [],
+                    showModel: false,
+                    usageOverride: aggregateTurnUsage(timelineMessages, userIdx + 1, finalAssistantIdx),
+                    actualCost: aggregateTurnActualCost(timelineMessages, entryIds, userIdx + 1, finalAssistantIdx, relayActualCosts.costs),
+                    imageBilling: turnImageBilling,
+                    writtenFiles: extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd),
+                  }));
                 }
                 idx = endIdx;
               }
@@ -1408,17 +1384,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     </div>
                   )}
                   {rendered.slice(startIndex)}
+                  {agentRunning && !bashRunning && !tailHasActivityGroup && <AgentActivityCard phase={agentPhase} streamingStage={streamState.streamingMessage?.content.at(-1)?.type} t={t} />}
                 </>
               );
             })()}
-            {streamState.isStreaming && hasStreamingContent && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} toolResults={toolResultsMap} isStreaming modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
-            )}
-
-            {agentRunning && !bashRunning && (
-              <AgentActivityCard phase={agentPhase} streamingStage={streamState.streamingMessage?.content.at(-1)?.type} t={t} />
-            )}
-
             {bashRunning && !pendingBash && (
               <div className="py-2 text-[13px] text-text-muted">
                  <span className="animate-[pulse_1.5s_infinite]">{t("chat.runningCommand")}</span>
@@ -1426,23 +1395,30 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
             )}
 
             {pendingBash && (
-              <MessageView
-                message={{
-                  role: "bashExecution",
-                  command: pendingBash.command,
-                  output: "",
-                  excludeFromContext: pendingBash.excludeFromContext,
-                } as BashExecutionMessage}
-                sessionId={session?.id ?? sessionIdRef.current ?? undefined}
-                onOpenSession={onOpenSession}
-              />
+              <ProcessDetailsGroup
+                summary={t("chat.activityCommandSummary", { count: 1 })}
+                activeLabel={t("chat.runningCommand")}
+                t={t}
+              >
+                <MessageView
+                  message={{
+                    role: "bashExecution",
+                    command: pendingBash.command,
+                    output: "",
+                    excludeFromContext: pendingBash.excludeFromContext,
+                  } as BashExecutionMessage}
+                  sessionId={session?.id ?? sessionIdRef.current ?? undefined}
+                />
+              </ProcessDetailsGroup>
             )}
 
             <div ref={promptAnchorSpacerRef} aria-hidden="true" />
             </div>
           </div>
         </div>
-        {isMobile || pendingScrollRestore ? null : (
+        {showMinimapRail && (pendingScrollRestore ? (
+          <div aria-hidden="true" style={{ flex: `0 0 ${CHAT_MINIMAP_WIDTH}px` }} />
+        ) : (
           <ChatMinimap
             messages={messages}
             streamingMessage={streamState.streamingMessage}
@@ -1450,7 +1426,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
             messageRefs={messageRefs}
             onRevealHistory={revealHistoryForMinimap}
           />
-        )}
+        ))}
         </>}
       </div>
 
@@ -1534,8 +1510,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       )}
 
       <div className="relative shrink-0">
-        {isEmptyNew && <NewSessionWelcome isMobile={isMobile} chatInputRef={chatInputRef} />}
-        {chatInputElement}
+        {!previewOnly && (
+          <div style={{ paddingInlineEnd: showMinimapRail ? CHAT_MINIMAP_WIDTH : 0 }}>
+            <div className="chat-column-inset">
+              {isEmptyNew && <NewSessionWelcome isMobile={isMobile} chatInputRef={chatInputRef} />}
+              {chatInputElement}
+            </div>
+          </div>
+        )}
         <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />
       </div>
       {isEmptyNew && <div className="min-h-0 flex-1" />}

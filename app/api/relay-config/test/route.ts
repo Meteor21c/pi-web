@@ -28,5 +28,5 @@ export async function POST(request: Request) {
     apiKey,
     typeof body.baseUrl === "string" ? body.baseUrl : undefined,
   );
-  return NextResponse.json(result);
+  return NextResponse.json({ ...result, capabilitiesByModelId: undefined });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { usePromptPresets } from "@/hooks/usePromptPresets";
 import { WORK_MODES, type WorkMode } from "@/lib/prompt-presets";
@@ -10,14 +10,16 @@ interface Props {
   editable: boolean;
   disabled: boolean;
   onChanged: () => Promise<void>;
+  onResolvedMode?: (mode: WorkMode) => void;
 }
 
 /** Composer control: new chats use the default; started chats show their snapshot. */
-export function WorkModeSelector({ mode, editable, disabled, onChanged }: Props) {
+export function WorkModeSelector({ mode, editable, disabled, onChanged, onResolvedMode }: Props) {
   const { t } = useI18n();
   const { settings, busy, error, update } = usePromptPresets();
   const [syncing, setSyncing] = useState(false);
   const selected = editable ? settings?.mode ?? "auto" : mode;
+  useEffect(() => onResolvedMode?.(selected), [onResolvedMode, selected]);
   const hint = editable ? t(`presets.modeHelp.${selected}`) : t("presets.modeLocked");
 
   const change = async (next: string) => {

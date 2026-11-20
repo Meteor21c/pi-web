@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
+import { DEFAULT_SUBAGENT_MAX_CONCURRENT, MAX_SUBAGENT_MAX_CONCURRENT } from "./subagent-mode";
+
+export { DEFAULT_SUBAGENT_MAX_CONCURRENT, MAX_SUBAGENT_MAX_CONCURRENT } from "./subagent-mode";
 
 export interface SubagentSettings {
   builtInEnabled: boolean;
@@ -14,12 +17,9 @@ type StoredSubagentSettings = Record<string, unknown> & {
   maxConcurrent?: unknown;
 };
 
-export const DEFAULT_SUBAGENT_MAX_CONCURRENT = 10;
-export const MAX_SUBAGENT_MAX_CONCURRENT = 32;
-
 function readMaxConcurrent(value: unknown): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_SUBAGENT_MAX_CONCURRENT
-    ? value
+  return typeof value === "number" && Number.isInteger(value) && value >= 1
+    ? Math.min(value, MAX_SUBAGENT_MAX_CONCURRENT)
     : DEFAULT_SUBAGENT_MAX_CONCURRENT;
 }
 

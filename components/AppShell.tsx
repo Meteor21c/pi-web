@@ -56,7 +56,7 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from "@/lib/panel-layout";
-import type { BlockingExtensionUiRequest, SessionInfo, SessionTreeNode } from "@/lib/types";
+import type { BlockingExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus } from "@/lib/types";
 import type { BuiltinPluginsResponse, ProjectTrustStatus } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -249,6 +249,13 @@ export function AppShell() {
     [selectedSession?.id, sessionsWithSelection],
   );
   const hasSubagentSessions = Boolean(activeSessionFamily?.subagents.length);
+  const subagentStatuses = useMemo(() => {
+    const statuses = new Map<string, SubagentSessionStatus>();
+    for (const child of activeSessionFamily?.subagents ?? []) {
+      if (child.relation?.kind === "subagent") statuses.set(child.id, child.relation.status);
+    }
+    return statuses;
+  }, [activeSessionFamily]);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const handleRunningSessionIdsChange = useCallback((ids: Set<string>) => {
     setRunningSessionIds((previous) => {
@@ -568,7 +575,16 @@ export function AppShell() {
 
   // Files unmount when inactive; workspace terminals stay mounted until closed.
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
+  const [subagentPreview, setSubagentPreview] = useState<{ id: string; session?: SessionInfo; error?: string } | null>(null);
+  const subagentPreviewId = subagentPreview ? `agent-preview:${subagentPreview.id}` : null;
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
+  const subagentPreviewOpen = rightPanelOpen && subagentPreviewId !== null && activeFileTabId === subagentPreviewId;
+  const previewSession = subagentPreview?.session;
+  const previewRelation = previewSession?.relation?.kind === "subagent" ? previewSession.relation : null;
+  const catalogPreview = subagentPreview ? sessionCatalog.find((item) => item.id === subagentPreview.id) : undefined;
+  const previewStatus = subagentPreview && runningSessionIds.has(subagentPreview.id)
+    ? "running"
+    : catalogPreview?.relation?.kind === "subagent" ? catalogPreview.relation.status : previewRelation?.status;
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
   const panelTabs: Tab[] = [...fileTabs, ...terminalTabs.map((tab) => ({
@@ -577,7 +593,12 @@ export function AppShell() {
     filePath: tab.cwd,
     kind: "terminal" as const,
     closing: Boolean(tab.closing),
-  }))];
+  })), ...(subagentPreviewId ? [{
+    id: subagentPreviewId,
+    label: previewRelation?.description || previewSession?.name || translate("agentSwitcher.subagent"),
+    filePath: "",
+    kind: "subagent" as const,
+  }] : [])];
 
   useEffect(() => {
     try {
@@ -928,16 +949,34 @@ export function AppShell() {
       .catch(() => {});
   }, []);
 
-  const handleOpenSession = useCallback(async (sessionId: string) => {
-    try {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { cache: "no-store" });
-      const data = await response.json() as { info?: SessionInfo; error?: string };
-      if (!response.ok || !data.info) throw new Error(data.error ?? `HTTP ${response.status}`);
-      handleSelectSession(data.info);
-    } catch (error) {
-      console.error("[meteoragent] failed to open session:", error instanceof Error ? error.message : error);
-    }
-  }, [handleSelectSession]);
+  const handleOpenSubagent = useCallback((id: string) => {
+    setSubagentPreview((current) => current?.id === id && !current.error ? current : { id });
+    setActiveFileTabId(`agent-preview:${id}`);
+    setRightPanelOpen(true);
+    setActiveTopPanel(null);
+    setMobileToolbarMoreOpen(false);
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (!subagentPreview || subagentPreview.session || subagentPreview.error) return;
+    const { id } = subagentPreview;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(id)}?tail=1&deferThinking=1&deferMedia=1`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await response.json() as { info?: SessionInfo; error?: string };
+        if (!response.ok || data.info?.relation?.kind !== "subagent") throw new Error(data.error ?? translate("agentSwitcher.previewUnavailable"));
+        if (!controller.signal.aborted) setSubagentPreview({ id, session: data.info });
+      } catch (error) {
+        if (!controller.signal.aborted) setSubagentPreview({ id, error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
+    return () => controller.abort();
+  }, [subagentPreview, translate]);
 
   // Called by ChatWindow when a new session gets its real id from pi
   const handleSessionCreated = useCallback((session: SessionInfo, sourceDraftKey: string) => {
@@ -1156,26 +1195,33 @@ export function AppShell() {
     const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd) : null;
     const remaining = terminalTabs.filter((item) => item.id !== tab.id);
     setTerminalTabs((tabs) => tabs.flatMap((item) => item.id !== tab.id ? [item] : replacement ? [replacement] : []));
-    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? null);
-    if (!replacement && !remaining.length && !fileTabs.length) setRightPanelOpen(false);
+    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? subagentPreviewId ?? null);
+    if (!replacement && !remaining.length && !fileTabs.length && !subagentPreviewId) setRightPanelOpen(false);
   };
 
   const handleCloseFileTab = useCallback((tabId: string) => {
+    if (tabId === subagentPreviewId) {
+      setSubagentPreview(null);
+      const next = fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null;
+      setActiveFileTabId((current) => current === tabId ? next : current);
+      if (!next) setRightPanelOpen(false);
+      return;
+    }
     if (terminalTabs.some((tab) => tab.id === tabId)) {
       setTerminalTabs((tabs) => tabs.map((tab) => tab.id === tabId && !tab.closing ? { ...tab, closing: "close" } : tab));
       return;
     }
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0 && terminalTabs.length === 0) setRightPanelOpen(false);
+      if (next.length === 0 && terminalTabs.length === 0 && !subagentPreviewId) setRightPanelOpen(false);
       return next;
     });
     setActiveFileTabId((cur) => {
       if (cur !== tabId) return cur;
       const remaining = fileTabs.filter((t) => t.id !== tabId);
-      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null;
+      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? subagentPreviewId ?? null;
     });
-  }, [fileTabs, terminalTabs]);
+  }, [fileTabs, subagentPreviewId, terminalTabs]);
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
@@ -2129,7 +2175,10 @@ export function AppShell() {
                     subagents={activeSessionFamily.subagents}
                     selectedSessionId={selectedSession.id}
                     runningSessionIds={runningSessionIds}
-                    onSelectSession={handleSelectSession}
+                    onSelectSession={(session) => {
+                      if (session.relation?.kind === "subagent") handleOpenSubagent(session.id);
+                      else handleSelectSession(session);
+                    }}
                   />
                 </div>
               )}
@@ -2412,7 +2461,8 @@ export function AppShell() {
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onContextUsageChange={handleContextUsageChange}
               onOpenFile={handleOpenLinkedFile}
-              onOpenSession={handleOpenSession}
+              onOpenSession={handleOpenSubagent}
+              subagentStatuses={subagentStatuses}
               onAskInNewChat={handleAskInNewChat}
               quoteSelectionEnabled={quoteSelectionEnabled}
               initialPrompt={pendingQuotePrompt?.sessionId === selectedSession?.id ? pendingQuotePrompt?.text : undefined}
@@ -2536,7 +2586,36 @@ export function AppShell() {
 
         {/* Only the active viewer is mounted. Lightweight per-tab state is restored on activation. */}
         <div style={{ flex: 1, minHeight: 0, overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
-          {activeFileTab?.filePath ? (
+          {subagentPreviewId && activeFileTabId === subagentPreviewId ? (
+            subagentPreviewOpen && (
+              <section className="subagent-preview" aria-label={translate("agentSwitcher.previewTitle")}>
+                {previewSession && previewRelation ? (
+                  <>
+                    <div className="subagent-preview-heading">
+                      <strong>{previewRelation.description}</strong>
+                      {previewStatus && <span role="status">{translate(`agentSwitcher.status.${previewStatus}`)}</span>}
+                    </div>
+                    <div className="subagent-preview-content">
+                      <ChatWindow
+                        key={previewSession.id}
+                        session={previewSession}
+                        newSessionCwd={null}
+                        newSessionDraftKey={null}
+                        sessionRunning={previewStatus === "queued" || previewStatus === "starting" || previewStatus === "running"}
+                        previewOnly
+                        soundEnabled={false}
+                        onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: previewSession.id })}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="subagent-preview-empty" role={subagentPreview?.error ? "alert" : "status"}>
+                    {subagentPreview?.error ?? translate("agentSwitcher.previewLoading")}
+                  </div>
+                )}
+              </section>
+            )
+          ) : activeFileTab?.filePath ? (
             <FileViewer
               key={`${activeFileTab.id}:${activeFileTab.viewerRevision ?? 0}`}
               filePath={activeFileTab.filePath}

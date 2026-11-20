@@ -4,7 +4,9 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import { invalidateModelsCache } from "./models-cache";
-import { relayAuthorizedModelIdsByProvider } from "./relay-group-store";
+import { readRelayGroups, relayAuthorizedModelIdsByProvider } from "./relay-group-store";
+import { isRelayProviderId } from "./relay-config";
+import { readContextWindowTokens, resolveRelayContextWindow } from "./relay-model-policy";
 
 const MODEL_COST_KEYS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
@@ -57,6 +59,23 @@ function sanitizeModelsConfig(data: Record<string, unknown>): Record<string, unk
   }));
 
   return { ...data, providers };
+}
+
+/** Recalculate the effective relay context from the user's override and local billing metadata. */
+function normalizeRelayContextWindows(data: Record<string, unknown>, modelsPath: string): void {
+  if (!isRecord(data.providers)) return;
+  const groups = modelsPath === getModelsConfigPath() ? readRelayGroups() : [];
+  const groupsByProvider = new Map(groups.map((group) => [group.providerId, group]));
+  for (const [providerId, provider] of Object.entries(data.providers)) {
+    const group = groupsByProvider.get(providerId);
+    if ((!group && !isRelayProviderId(providerId)) || !isRecord(provider) || !Array.isArray(provider.models)) continue;
+    for (const model of provider.models) {
+      if (!isRecord(model) || typeof model.id !== "string") continue;
+      const override = readContextWindowTokens(model.meteorAgentContextWindowOverride);
+      model.contextWindow = resolveRelayContextWindow(model.id, override, group?.contextWindows?.[model.id]);
+      if (override === undefined) delete model.meteorAgentContextWindowOverride;
+    }
+  }
 }
 
 /**
@@ -127,6 +146,7 @@ export function writeModelsConfig(
     normalizeModelsConfigCosts(sanitizeModelsConfig(data)),
     modelsPath,
   );
+  normalizeRelayContextWindows(normalized, modelsPath);
   // Keep a user's dotfiles link intact when performing the atomic rename.
   let writePath = modelsPath;
   if (lstatSync(modelsPath, { throwIfNoEntry: false })?.isSymbolicLink()) {

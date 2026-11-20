@@ -1,17 +1,15 @@
 "use client";
 
 import { memo, useState, useRef, useEffect, useMemo } from "react";
-import ReactMarkdown from "react-markdown";
 import { MarkdownBody } from "./MarkdownBody";
 import { ImagePreview } from "./ImagePreview";
 import { ThinkingIcon } from "./ThinkingIcon";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
-import { getAssistantErrorMessage, getThinkingPreview, isEmptyThinkingBlock, isTruncatedResponseError } from "@/lib/message-display";
+import { getAssistantErrorMessage, isEmptyThinkingBlock, isTruncatedResponseError } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { isEditToolName } from "@/lib/tool-names";
-import { isThinkingExpandedByDefault, THINKING_EXPANDED_EVENT } from "@/lib/thinking-expansion-preference";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
@@ -198,6 +196,10 @@ interface Props {
   onOpenSession?: (sessionId: string) => void;
   entryId?: string;
   searchBlock?: AssistantContentBlock;
+  /** Filter display without renumbering persisted thinking block indices. */
+  blockIndices?: number[];
+  /** Segment views leave errors and the turn summary to the parent footer. */
+  hideMetadata?: boolean;
   onFork?: (entryId: string) => void;
   forking?: boolean;
   onNavigate?: (entryId: string) => Promise<boolean>;
@@ -296,12 +298,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, onFork, forking, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, blockIndices, hideMetadata, onFork, forking, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} blockIndices={blockIndices} hideMetadata={hideMetadata} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -327,6 +329,8 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.onOpenSession === next.onOpenSession
     && prev.entryId === next.entryId
     && prev.searchBlock === next.searchBlock
+    && prev.blockIndices?.join(",") === next.blockIndices?.join(",")
+    && prev.hideMetadata === next.hideMetadata
     && prev.onFork === next.onFork
     && prev.forking === next.forking
     && prev.onNavigate === next.onNavigate
@@ -638,6 +642,8 @@ function AssistantMessageView({
   sessionId,
   entryId,
   searchBlock,
+  blockIndices,
+  hideMetadata = false,
   actualCost,
   usageOverride,
   showModel = true,
@@ -657,6 +663,8 @@ function AssistantMessageView({
   sessionId?: string;
   entryId?: string;
   searchBlock?: AssistantContentBlock;
+  blockIndices?: number[];
+  hideMetadata?: boolean;
   actualCost?: number;
   usageOverride?: AgentUsage;
   showModel?: boolean;
@@ -668,9 +676,10 @@ function AssistantMessageView({
   const time = showTimestamp ? formatTime(message.timestamp) : null;
   const blockItems = useMemo(() => (message.content ?? [])
     .map((block, originalIndex) => ({ block, originalIndex }))
-    .filter(({ block }) => !isEmptyThinkingBlock(block, { isStreaming })), [message.content, isStreaming]);
+    .filter(({ block, originalIndex }) => (!blockIndices || blockIndices.includes(originalIndex))
+      && !isEmptyThinkingBlock(block, { isStreaming })), [message.content, isStreaming, blockIndices]);
   const blocks = useMemo(() => blockItems.map(({ block }) => block), [blockItems]);
-  const providerError = getAssistantErrorMessage(message, { isStreaming });
+  const providerError = hideMetadata ? null : getAssistantErrorMessage(message, { isStreaming });
   const providerErrorDisplay = isTruncatedResponseError(providerError)
     ? t("chat.responseInterrupted")
     : providerError;
@@ -728,7 +737,7 @@ function AssistantMessageView({
     return map;
   }, [toolResults, message.timestamp]);
 
-  const textContent = blocks
+  const textContent = (blockIndices?.length === 0 && !hideMetadata ? message.content : blocks)
     .filter((b): b is TextContent => b.type === "text")
     .map((b) => b.text)
     .join("\n");
@@ -791,7 +800,7 @@ function AssistantMessageView({
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  if (blocks.length === 0 && !isStreaming && !providerError) return null;
+  if (blocks.length === 0 && !isStreaming && !providerError && !usageOverride && !imageBilling && !writtenFiles?.length && !textContent) return null;
 
   return (
     <div
@@ -803,7 +812,7 @@ function AssistantMessageView({
       onMouseLeave={() => setHovered(false)}
     >
       {/* Model label */}
-      {(showModel && message.provider || isStreaming) && <div
+      {!hideMetadata && (showModel && message.provider || isStreaming) && <div
         style={{
           fontSize: 11,
           color: "var(--text-dim)",
@@ -877,10 +886,10 @@ function AssistantMessageView({
       )}
 
       {writtenFiles && writtenFiles.length > 0 && (
-        <TurnWrittenFiles files={writtenFiles} onOpenFile={onOpenFile} />
+        <TurnWrittenFiles files={writtenFiles} cwd={cwd} onOpenFile={onOpenFile} />
       )}
 
-      <div style={{
+      {!hideMetadata && <div style={{
         display: "flex", alignItems: "center", gap: 8, marginTop: 4,
       }}>
       {!isStreaming && (() => {
@@ -1002,7 +1011,7 @@ function AssistantMessageView({
         {time && !isStreaming && (
           <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: "auto" }}>{time}</span>
         )}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1066,20 +1075,12 @@ export function ThinkingBlock({ block, duration, isStreaming = false, sessionId,
   blockIndex: number;
 }) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(isThinkingExpandedByDefault);
+  const [expanded, setExpanded] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const tRef = useRef(t);
   tRef.current = t;
-  const preview = getThinkingPreview(block.thinking);
-
-  // Keep already-mounted blocks in sync when the preference changes.
-  useEffect(() => {
-    const onChange = () => setExpanded(isThinkingExpandedByDefault());
-    window.addEventListener(THINKING_EXPANDED_EVENT, onChange);
-    return () => window.removeEventListener(THINKING_EXPANDED_EVENT, onChange);
-  }, []);
 
   // Load deferred history content whenever the block is expanded.
   // loadThinkingContent() memoizes in-flight promises and drops failed ones
@@ -1126,7 +1127,6 @@ export function ThinkingBlock({ block, duration, isStreaming = false, sessionId,
       <button
         type="button"
         aria-expanded={expanded}
-        aria-label={`${t("i18n.thinking")}${preview ? `: ${preview}` : ""}`}
         title={t("chat.thinkingVisibilityHint")}
         onClick={() => setExpanded((v) => !v)}
         style={{
@@ -1147,9 +1147,9 @@ export function ThinkingBlock({ block, duration, isStreaming = false, sessionId,
       >
         <ThinkingIcon active={expanded || isStreaming} />
         <span style={{ flexShrink: 0, fontWeight: 600 }}>{t("chat.thinkingBlockTitle")}</span>
-        {!expanded && (
+        {!expanded && isStreaming && !block.thinking && (
           <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-muted)" }}>
-            {preview ? <ReactMarkdown allowedElements={[]} unwrapDisallowed skipHtml>{preview}</ReactMarkdown> : t("chat.thinkingPending")}
+            {t("chat.thinkingPending")}
           </span>
         )}
         {duration !== undefined && (
@@ -1180,10 +1180,42 @@ export function ThinkingBlock({ block, duration, isStreaming = false, sessionId,
   );
 }
 
-function isSubagentToolDetails(value: unknown): value is SubagentToolDetails {
+const SUBAGENT_RUN_STATUSES = new Set<string>(["queued", "starting", "running", "completed", "failed", "aborted", "interrupted"]);
+
+export function isSubagentToolDetails(value: unknown): value is SubagentToolDetails {
   if (!value || typeof value !== "object") return false;
   const details = value as Partial<SubagentToolDetails>;
-  return details.kind === "pi-web-subagent" && typeof details.sessionId === "string";
+  return details.kind === "pi-web-subagent" && typeof details.sessionId === "string" && Boolean(details.sessionId)
+    && typeof details.description === "string" && typeof details.profile === "string"
+    && typeof details.status === "string" && SUBAGENT_RUN_STATUSES.has(details.status);
+}
+
+function SubagentRunRow({ run, onOpenSession }: { run: SubagentToolDetails; onOpenSession: (sessionId: string) => void }) {
+  const { t } = useI18n();
+  const name = run.description.trim() || run.profile || t("agentSwitcher.subagent");
+  const status = t(`agentSwitcher.status.${run.status}`);
+  const active = run.status === "starting" || run.status === "running";
+  return (
+    <button
+      type="button"
+      className="ui-menu-item"
+      data-subagent-session={run.sessionId}
+      onClick={() => onOpenSession(run.sessionId)}
+      title={t("subagent.open")}
+      style={{
+        display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 8, minHeight: 28, maxWidth: "100%",
+        padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 7,
+        background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 12, cursor: "pointer",
+      }}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: active ? "var(--accent)" : undefined }}>
+        <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
+      </svg>
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>{name}</span>
+      <span style={{ flexShrink: 0, whiteSpace: "nowrap", fontSize: 11, color: run.status === "failed" ? "var(--error, #ef4444)" : undefined }}>{status}</span>
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" style={{ flexShrink: 0 }}><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
+    </button>
+  );
 }
 
 function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSession?: (sessionId: string) => void; cwd?: string; sessionId?: string }) {
@@ -1200,19 +1232,18 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
   const resultImages = getToolResultImages(result, block.toolName, cwd, sessionId);
   const isError = result?.isError ?? false;
   const hasGeneratedImages = !isError && block.toolName === "image_generate" && resultImages.length > 0;
+  const hasResultImages = !isError && resultImages.length > 0;
   // The plugin's text payload is a filesystem path intended for the CLI. Once
   // the browser has a real image URL, keep that implementation detail out of
   // the ordinary user's result pane.
   const resultText = hasGeneratedImages ? "" : rawResultText;
   const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
   const subagent = isSubagentToolDetails(result?.details) ? result.details : null;
-  // Image generation is a user-facing result, not a diagnostic tool call. Open
-  // it as soon as the plugin returns its image details (including after the
-  // initial render, when the live tool result arrives asynchronously).
-  const [expanded, setExpanded] = useState(hasGeneratedImages);
-  useEffect(() => {
-    if (hasGeneratedImages) setExpanded(true);
-  }, [hasGeneratedImages]);
+  const [expanded, setExpanded] = useState(false);
+
+  if (block.toolName === "Agent" && subagent && onOpenSession) {
+    return <SubagentRunRow run={subagent} onOpenSession={onOpenSession} />;
+  }
 
   return (
     <div
@@ -1249,7 +1280,7 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
             {block.toolName}
           </span>
           <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
-            {isStreamingInput ? t("chat.generatingToolInput") : getToolPreview(block)}
+            {isStreamingInput ? t("chat.generatingToolInput") : (!hasResultImages || expanded) && getToolPreview(block)}
           </span>
           {duration !== undefined && (
             <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
@@ -1291,21 +1322,17 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
         </pre>
       )}
 
-      {/* ── Paired result — only shown when expanded ── */}
-      {expanded && result && (
-        resultDiff ? (
-          <PairedDiffResult
-            diff={resultDiff}
-          />
-        ) : (
-          <PairedResult
-            text={resultText ?? ""}
-            images={resultImages}
-            isEmpty={resultIsEmpty}
-            isError={isError}
-          />
-        )
+      {/* Successful images are visible independently from command and tool details. */}
+      {(hasResultImages || (expanded && result && !resultDiff)) && (
+        <PairedResult
+          text={resultText ?? ""}
+          images={resultImages}
+          showText={expanded && !resultDiff && (!resultIsEmpty || resultImages.length === 0)}
+          isEmpty={resultIsEmpty}
+          isError={isError}
+        />
       )}
+      {expanded && resultDiff && <PairedDiffResult diff={resultDiff} />}
     </div>
   );
 }
@@ -1546,14 +1573,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function PairedResult({ text, images, isEmpty, isError }: {
+function PairedResult({ text, images, showText, isEmpty, isError }: {
   text: string;
   images: ImageContent[];
+  showText: boolean;
   isEmpty: boolean;
   isError: boolean;
 }) {
   const { t } = useI18n();
-  const showText = !isEmpty || images.length === 0;
   return (
     <div
       style={{
@@ -1875,13 +1902,13 @@ function getMessageImages(content: CustomMessage["content"] | UserMessage["conte
   return content.filter((b): b is ImageContent => b.type === "image");
 }
 
-function getToolResultImages(
+export function getToolResultImages(
   result: ToolResultMessage | undefined,
   toolName: string,
   cwd?: string,
   sessionId?: string,
 ): ImageContent[] {
-  const contentImages = getMessageImages(result?.content ?? []);
+  const contentImages = getMessageImages(result?.content ?? []).filter((image) => Boolean(imageSource(image)));
   if (!result || result.isError || toolName !== "image_generate" || !isRecord(result.details)) {
     return contentImages;
   }

@@ -35,7 +35,7 @@ export interface SubagentToolDetails {
 export interface StartSubagentRequest {
   parentContext: ExtensionContext;
   parentToolCallId: string;
-  profile: string;
+  profile?: string;
   task: string;
   inputFiles?: string[];
   description: string;
@@ -68,8 +68,8 @@ export interface SubagentExecution {
 export interface SubagentExtensionRuntime {
   start(request: StartSubagentRequest): Promise<SubagentExecution>;
   resume(request: ResumeSubagentRequest): Promise<SubagentExecution>;
-  get(sessionId: string): Promise<SubagentRunInfo | null>;
-  steer(sessionId: string, message: string): Promise<void>;
+  get(sessionId: string, parentSessionId?: string): Promise<SubagentRunInfo | null>;
+  steer(sessionId: string, message: string, parentSessionId?: string): Promise<void>;
   notifyParent(run: SubagentRunInfo): Promise<void>;
 }
 
@@ -104,7 +104,7 @@ export function subagentToolDetails(run: SubagentRunInfo): SubagentToolDetails {
 }
 
 export function subagentFinalText(run: SubagentRunInfo): string {
-  if (run.status === "starting" || run.status === "running") {
+  if (run.status === "starting" || run.status === "running" || run.status === "queued") {
     return `Subagent ${run.sessionId} is ${run.status}.`;
   }
   if (run.status === "completed") return run.result?.trim() || "Subagent completed without text output.";
@@ -129,16 +129,16 @@ export function createSubagentExtension(
       pi.registerTool(defineTool({
         name: "Agent",
         label: "Agent",
-        description: `Delegate a focused task to a configured subagent. Each subagent runs as a full, inspectable Pi session. Use background mode for independent work and foreground mode when the result is needed immediately.\n\nAvailable agent types:\n${agentTypeDescription(profiles)}`,
+        description: `Delegate a focused task to a subagent. Each subagent runs in a separate, inspectable session and defaults to the current model. Custom profiles are optional. Use background mode for independent work and foreground mode when you need the result immediately.\n\nAvailable agent types:\n${agentTypeDescription(profiles)}`,
         promptSnippet: "Delegate a focused task to an inspectable subagent session",
         promptGuidelines: [
-          "Use Agent for a focused task that benefits from an isolated context.",
-          "Use multiple background Agent calls in the same response for independent parallel work.",
+          "Use Agent for focused work that benefits from an isolated context. Handle straightforward tasks directly when the user leaves delegation on Auto.",
+          "Give each subagent a clear deliverable and acceptance criteria. Check its result before using it to complete the user's request.",
           "Do not duplicate work already delegated to a running subagent.",
         ],
         executionMode: "parallel",
         parameters: Type.Object({
-          subagent_type: Type.Optional(Type.String({ description: `Configured agent profile. Available types: ${availableTypes}. Default: general-purpose.` })),
+          subagent_type: Type.Optional(Type.String({ description: `Optional profile. Omit for the built-in general-purpose subagent. Available profiles: ${availableTypes}.` })),
           prompt: Type.String({ description: "The complete task for the subagent." }),
           resume: Type.Optional(Type.String({ description: "Existing subagent session ID to continue instead of creating a new session." })),
           input_files: Type.Optional(Type.Array(Type.String(), {
@@ -173,7 +173,7 @@ export function createSubagentExtension(
               : await runtime.start({
               parentContext: ctx,
               parentToolCallId: toolCallId,
-              profile: params.subagent_type ?? "general-purpose",
+              profile: params.subagent_type?.trim() || undefined,
               task: params.prompt,
               ...(params.input_files ? { inputFiles: params.input_files } : {}),
               description: params.description,
@@ -229,10 +229,11 @@ export function createSubagentExtension(
           agent_id: Type.String({ description: "Subagent session ID." }),
           wait: Type.Optional(Type.Boolean({ description: "Wait until the subagent finishes." })),
         }),
-        async execute(_toolCallId, params, signal) {
-          let run = await runtime.get(params.agent_id);
+        async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+          const parentId = ctx?.sessionManager.getSessionId();
+          let run = await runtime.get(params.agent_id, parentId);
           if (!run) return { content: [{ type: "text", text: `Subagent not found: ${params.agent_id}` }], details: undefined, isError: true };
-          while (params.wait && (run.status === "starting" || run.status === "running")) {
+          while (params.wait && (run.status === "starting" || run.status === "running" || run.status === "queued")) {
             await new Promise<void>((resolve, reject) => {
               const onAbort = () => {
                 clearTimeout(timer);
@@ -245,7 +246,7 @@ export function createSubagentExtension(
               if (signal?.aborted) onAbort();
               else signal?.addEventListener("abort", onAbort, { once: true });
             });
-            run = await runtime.get(params.agent_id);
+            run = await runtime.get(params.agent_id, parentId);
             if (!run) return { content: [{ type: "text", text: `Subagent not found: ${params.agent_id}` }], details: undefined, isError: true };
           }
           return {
@@ -264,9 +265,9 @@ export function createSubagentExtension(
           agent_id: Type.String({ description: "Subagent session ID." }),
           message: Type.String({ description: "Instruction to inject after the current tool execution." }),
         }),
-        async execute(_toolCallId, params) {
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
           try {
-            await runtime.steer(params.agent_id, params.message);
+            await runtime.steer(params.agent_id, params.message, ctx?.sessionManager.getSessionId());
             return { content: [{ type: "text", text: `Steering message sent to ${params.agent_id}.` }], details: undefined };
           } catch (error) {
             return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], details: undefined, isError: true };

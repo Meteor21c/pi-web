@@ -6,6 +6,8 @@ import type { RelayModelDef } from "./relay-models";
 import { getRelayBaseUrl } from "./relay-config";
 import { readModelsConfig, writeModelsConfig } from "./models-config-store";
 import { storeProviderCredential, removeStoredCredentialIfType } from "./provider-credential-store";
+import { readModelInput, readModelThinkingLevelMap } from "./model-capabilities";
+import { readContextWindowTokens } from "./relay-model-policy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,9 +56,9 @@ export function sessionAffinityCompat(api: string): Record<string, unknown> | un
 }
 
 /**
- * Keep a user's per-model Responses/Chat Completions fallback choice when an
- * account sync refreshes the relay catalog. Every other field still comes
- * from the authoritative catalog so pricing, limits and capabilities update.
+ * Preserve explicit transport, capability, and context choices during account sync.
+ * Configurations from older versions used false placeholders and did not mark
+ * capability edits. Refresh those unmarked values from the current catalog.
  */
 export function preserveRelayProtocolSelections(
   models: RelayModelDef[],
@@ -69,9 +71,31 @@ export function preserveRelayProtocolSelections(
   }
   const switchable = new Set(["openai-responses", "openai-completions"]);
   return models.map((model) => {
-    const previousApi = previousById.get(model.id)?.api;
-    if (typeof previousApi !== "string" || !switchable.has(previousApi) || !switchable.has(model.api ?? "")) return model;
-    return { ...model, api: previousApi };
+    const previous = previousById.get(model.id);
+    const previousApi = previous?.api;
+    const api = typeof previousApi === "string" && switchable.has(previousApi) && switchable.has(model.api ?? "")
+      ? previousApi : model.api;
+    const contextWindowOverride = readContextWindowTokens(previous?.meteorAgentContextWindowOverride);
+    const next = {
+      ...model,
+      api,
+      ...(contextWindowOverride === undefined ? {} : { meteorAgentContextWindowOverride: contextWindowOverride }),
+    };
+    const overrides = previous?.meteorAgentCapabilityOverrides;
+    if (!isRecord(overrides)) return next;
+    const reasoning = typeof overrides.reasoning === "boolean" ? overrides.reasoning : undefined;
+    const input = readModelInput(overrides.input);
+    const thinkingLevelMap = readModelThinkingLevelMap(overrides.thinkingLevelMap);
+    const manual = {
+      ...(reasoning !== undefined ? { reasoning } : {}),
+      ...(input ? { input } : {}),
+      ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+    };
+    return {
+      ...next,
+      ...manual,
+      ...(Object.keys(manual).length ? { meteorAgentCapabilityOverrides: manual } : {}),
+    };
   });
 }
 
@@ -92,7 +116,7 @@ export async function persistRelayProvider(opts: {
   const providers = isRecord(config.providers)
     ? { ...config.providers }
     : ({} as Record<string, unknown>);
-  const models = opts.models.map((model) => {
+  const models = preserveRelayProtocolSelections(opts.models, providers[opts.providerId]).map((model) => {
     const compat = sessionAffinityCompat(model.api ?? opts.api);
     return compat
       ? { ...model, compat: { ...compat, ...(model.compat ?? {}) } }

@@ -39,15 +39,20 @@ import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS, type HeadlessCust
 import {
   createSubagentExtension,
   preferPiWebSubagentExtension,
+  subagentToolDetails,
 } from "./subagent-extension";
 import {
   listSubagentProfiles,
   readSubagentRun,
   readSubagentSessionResources,
   SUBAGENT_CONTROL_TOOL_NAMES,
+  type SubagentRunInfo,
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
+import { isSubagentMode, type SubagentMode } from "./subagent-mode";
+import { getPresetFromToolNames } from "./tool-presets";
+import { installToolFileChangeTracking } from "./tool-file-change";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import { createSessionScopedSettingsManager } from "./plugin-activation";
@@ -214,6 +219,12 @@ class PlainTextTheme extends Theme {
 
 const PLAIN_TEXT_THEME = new PlainTextTheme();
 const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
+const SUBAGENT_CONTROL_TOOLS = new Set<string>(SUBAGENT_CONTROL_TOOL_NAMES);
+const REQUIRE_SUBAGENT_INSTRUCTIONS = "The user enabled required delegation for this task. Before giving the final answer, call Agent at least once with a focused subtask and clear acceptance criteria. Use only as many subagents as the task benefits from. Review their results and verify the work before summarizing the outcome to the user.";
+
+function subagentStatusEvent(run: SubagentRunInfo): AgentEvent {
+  return { type: "subagent_status", toolCallId: run.parentToolCallId, subagent: subagentToolDetails(run) };
+}
 
 function withExtensionTools(session: AgentSessionLike, toolNames: string[]): string[] {
   if (toolNames.length === 0) return [];
@@ -255,9 +266,12 @@ export class AgentSessionWrapper {
   private extensionBindingError: unknown = null;
   private readonly exactSystemPrompt?: () => string;
   private promptSelection?: SessionPromptSelection;
+  private subagentMode?: SubagentMode;
+  private subagentRequirement?: { delegated: boolean; sawFinalAssistant: boolean };
   private readonly chatOnly: boolean;
   private readonly onAgentRunComplete?: AgentRunCompleteListener;
   private readonly suppressCompletionNotifications: boolean;
+  private readonly clearToolFileChangeTracking: () => void;
   private unsubscribe: (() => void) | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private onDestroyCallback: (() => void) | null = null;
@@ -277,6 +291,7 @@ export class AgentSessionWrapper {
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
     this.installExactSystemPromptContinuation();
     this.installPromptPresetProjection();
+    this.clearToolFileChangeTracking = installToolFileChangeTracking(inner);
   }
 
   get sessionId(): string {
@@ -315,10 +330,32 @@ export class AgentSessionWrapper {
     return this.suppressCompletionNotifications;
   }
 
+  private subagentsBlocked(toolNames?: readonly string[]): boolean {
+    return this.chatOnly || this.suppressCompletionNotifications || this.promptSelection?.mode === "plan"
+      || getPresetFromToolNames(toolNames ?? this.inner.getActiveToolNames?.() ?? []) === "read-only";
+  }
+
+  effectiveSubagentMode(toolNames?: readonly string[]): SubagentMode {
+    if (this.subagentsBlocked(toolNames)) return "off";
+    return this.subagentMode ?? (isBuiltInSubagentsEnabled() ? "auto" : "off");
+  }
+
+  publishSubagentStatus(run: SubagentRunInfo): void {
+    if (this.subagentRequirement && run.status === "queued" && this.activeToolEvents.has(run.parentToolCallId)) {
+      this.subagentRequirement.delegated = true;
+    }
+    this.emit(subagentStatusEvent(run));
+  }
+
   start(): void {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
       if (event.type === "agent_start") this.agentRunNeedsCompletion = true;
+      if (event.type === "message_end" && this.subagentRequirement) {
+        const message = event.message as { role?: string; stopReason?: string } | undefined;
+        if (message?.role === "assistant") this.subagentRequirement.sawFinalAssistant = message.stopReason === "stop";
+      }
       if (event.type === "agent_end") {
+        this.clearToolFileChangeTracking();
         try {
           // pi-image-gen returns a successful image as a toolResult rather than
           // a normal assistant usage message. Persist a small, private billing
@@ -476,13 +513,12 @@ export class AgentSessionWrapper {
   }
 
   private installPromptPresetProjection(): void {
-    if (!this.promptSelection) return;
     const previousTransform = this.inner.agent.transformContext;
     this.inner.agent.transformContext = async (messages, signal) => {
       const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
-      const selection = this.promptSelection!;
+      const selection = this.promptSelection;
       let projectedMessages = transformed;
-      if (selection.version === 1) {
+      if (selection?.version === 1) {
         // Keep the original behavior for conversations that already have a v1
         // snapshot. New sessions store v2 full-prompt selections.
         const extra = composeSessionSystemPrompt("", selection);
@@ -494,7 +530,7 @@ export class AgentSessionWrapper {
           };
           projectedMessages = [projected, ...transformed.slice(head ? 1 : 0)];
         }
-      } else if (selection.preset) {
+      } else if (selection?.preset) {
         // A v2 preset is the complete provider-facing system prompt. Keep the
         // active tool declarations but remove the SDK and project prompt text.
         const current = getCurrentSystemMessage(transformed);
@@ -505,7 +541,7 @@ export class AgentSessionWrapper {
           timestamp: current?.timestamp ?? Date.now(),
         };
         projectedMessages = [projected, ...transformed.filter((message) => message.role !== "system")];
-      } else if (MODE_INSTRUCTIONS[selection.mode]) {
+      } else if (selection && MODE_INSTRUCTIONS[selection.mode]) {
         const head = transformed[0]?.role === "system" ? transformed[0] : undefined;
         const projected = {
           ...(head ?? { role: "system" as const, content: "", timestamp: Date.now() }),
@@ -513,15 +549,41 @@ export class AgentSessionWrapper {
         };
         projectedMessages = [projected, ...transformed.slice(head ? 1 : 0)];
       }
-      return projectedMessages.map((message) => {
-        if (selection.mode !== "plan" || message.role !== "system") return message;
-        return { ...message, toolsAdded: message.toolsAdded?.filter((tool) => PLAN_TOOL_NAMES.has(tool.name)) };
-      });
+      const mode = this.effectiveSubagentMode();
+      if (selection?.mode === "plan" || mode === "off") {
+        return projectedMessages.map((message) => {
+          if (message.role !== "system") return message;
+          const allowsTool = (tool: { name: string }) => selection?.mode === "plan"
+            ? PLAN_TOOL_NAMES.has(tool.name)
+            : !SUBAGENT_CONTROL_TOOLS.has(tool.name);
+          return {
+            ...message,
+            toolsAdded: message.toolsAdded?.filter(allowsTool),
+            toolsRemoved: message.toolsRemoved?.filter(allowsTool),
+          };
+        });
+      }
+      if (mode === "on" && this.subagentRequirement && !this.subagentRequirement.delegated) {
+        // Put the instruction after all existing prompt sections while keeping
+        // their tool changes in place. This projection is transient per request.
+        const index = projectedMessages.findLastIndex((message) => message.role === "system");
+        if (index === -1) return [
+          { role: "system", content: "", sections: { meteoragentDelegation: REQUIRE_SUBAGENT_INSTRUCTIONS }, timestamp: Date.now() },
+          ...projectedMessages,
+        ];
+        return projectedMessages.map((message, messageIndex) => messageIndex === index && message.role === "system"
+          ? { ...message, sections: { ...message.sections, meteoragentDelegation: REQUIRE_SUBAGENT_INSTRUCTIONS } }
+          : message);
+      }
+      return projectedMessages;
     };
     const previousBeforeTool = this.inner.agent.beforeToolCall;
     this.inner.agent.beforeToolCall = async (context, signal) => {
       if (this.promptSelection?.mode === "plan" && !PLAN_TOOL_NAMES.has(context.toolCall.name)) {
         return { block: true, reason: "计划模式仅允许读取和搜索文件，请在新对话中选择自动或目标模式以执行操作。" };
+      }
+      if (SUBAGENT_CONTROL_TOOLS.has(context.toolCall.name) && this.effectiveSubagentMode() === "off") {
+        return { block: true, reason: "Subagents are disabled for this task." };
       }
       return previousBeforeTool?.(context, signal);
     };
@@ -540,9 +602,12 @@ export class AgentSessionWrapper {
   }
 
   setActiveToolSelection(toolNames: string[]): void {
-    this.inner.setActiveToolsByName(this.promptSelection?.mode === "plan"
-      ? toolNames.filter((name) => PLAN_TOOL_NAMES.has(name))
-      : withExtensionTools(this.inner, toolNames));
+    const selected = this.suppressCompletionNotifications ? toolNames
+      : this.promptSelection?.mode === "plan" ? toolNames.filter((name) => PLAN_TOOL_NAMES.has(name))
+      : withExtensionTools(this.inner, toolNames);
+    this.inner.setActiveToolsByName(this.effectiveSubagentMode(selected) === "off"
+      ? selected.filter((name) => !SUBAGENT_CONTROL_TOOLS.has(name))
+      : selected);
   }
 
   private emit(event: AgentEvent): void {
@@ -612,6 +677,7 @@ export class AgentSessionWrapper {
     this.listeners.push(listener);
     for (const event of this.pendingUiRequests.values()) listener(event);
     for (const event of this.activeToolEvents.values()) listener(event);
+    for (const run of SUBAGENT_CONTROLLER.listActive(this.sessionId)) listener(subagentStatusEvent(run));
     return () => {
       const i = this.listeners.indexOf(listener);
       if (i !== -1) this.listeners.splice(i, 1);
@@ -708,6 +774,34 @@ export class AgentSessionWrapper {
           }
           const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
           const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
+          const requestedSubagentMode = command.subagentMode;
+          if (requestedSubagentMode !== undefined && !isSubagentMode(requestedSubagentMode)) {
+            throw new Error("subagentMode must be auto, off, or on");
+          }
+          let requirement: typeof this.subagentRequirement = undefined;
+          if (!this.isRunning()) {
+            if (requestedSubagentMode === "on" && this.subagentsBlocked()) {
+              throw new Error("Subagents cannot be required in Plan mode, read-only mode, Chat only, or a child session.");
+            }
+            if (this.subagentMode !== requestedSubagentMode) {
+              this.subagentMode = requestedSubagentMode;
+              // Keep every other tool in its current state. Queued messages
+              // inherit the active run's delegation policy.
+              if (!this.chatOnly && !this.suppressCompletionNotifications) {
+                const active = this.inner.getActiveToolNames().filter((name) => !SUBAGENT_CONTROL_TOOLS.has(name));
+                const available = this.effectiveSubagentMode() === "off"
+                  ? []
+                  : this.inner.getAllTools().map(({ name }) => name).filter((name) => SUBAGENT_CONTROL_TOOLS.has(name));
+                const next = [...active, ...available];
+                this.inner.setActiveToolsByName(next);
+              }
+            }
+            if (requestedSubagentMode === "on" && !this.inner.getActiveToolNames().includes("Agent")) {
+              throw new Error("The Agent tool is unavailable. Reload the session before requiring a subagent.");
+            }
+            if (requestedSubagentMode === "on") requirement = { delegated: false, sawFinalAssistant: false };
+            this.subagentRequirement = requirement;
+          }
           let preflightAccepted = false;
           let preflightSettled = false;
           let promptSettled = false;
@@ -727,9 +821,15 @@ export class AgentSessionWrapper {
               reject(error);
             };
           });
-          const finishPrompt = () => {
+          const finishPrompt = (completed = false) => {
             if (promptSettled) return;
             promptSettled = true;
+            if (requirement && this.subagentRequirement === requirement) {
+              this.subagentRequirement = undefined;
+              if (completed && requirement.sawFinalAssistant && !requirement.delegated) {
+                this.emit({ type: "subagent_required_unmet" });
+              }
+            }
             this.pendingPromptCount = Math.max(0, this.pendingPromptCount - 1);
             this.resetIdleTimer();
             this.notifyAgentRunCompleteIfIdle();
@@ -757,7 +857,7 @@ export class AgentSessionWrapper {
             // Compatibility fallback if a future SDK resolves without invoking
             // the internal callback. This waits for the run, but never acks early.
             acceptPreflight();
-            finishPrompt();
+            finishPrompt(true);
             if (!streamingBehavior) this.emit({ type: "prompt_done" });
           }, (error) => {
             rejectPreflight(error);
@@ -826,6 +926,7 @@ export class AgentSessionWrapper {
           systemPrompt: composeSessionSystemPrompt(visibleSystemPrompt, this.promptSelection),
           baseSystemPrompt: visibleSystemPrompt,
           promptSelection: this.promptSelection ?? null,
+          subagentMode: this.effectiveSubagentMode(),
           thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),
@@ -959,12 +1060,6 @@ export class AgentSessionWrapper {
       case "set_thinking_level": {
         const level = command.level as string;
         this.inner.setThinkingLevel(level);
-        // setThinkingLevel clamps xhigh→high for models where supportsXhigh()===false.
-        // If the model has DeepSeek thinking compat (reasoningEffortMap maps xhigh→max),
-        // force the state back so the compat layer can use it correctly.
-        if (level === "xhigh" && (this.inner.model as { compat?: { thinkingFormat?: string } } | null)?.compat?.thinkingFormat === "deepseek" && this.inner.agent?.state) {
-          this.inner.agent.state.thinkingLevel = "xhigh";
-        }
         invalidateSessionListCache();
         return null;
       }
@@ -1840,7 +1935,8 @@ const SUBAGENT_CONTROLLER = createSubagentController({
     (await startRpcSession(sessionId, sessionFile, undefined)).session,
   resolveSessionPath,
   invalidateSessionList: invalidateSessionListCache,
-  isBuiltInSubagentsEnabled,
+  subagentMode: (parentId) => getRegistry().get(parentId)?.effectiveSubagentMode() ?? "off",
+  publishStatus: (run) => getRegistry().get(run.parentSessionId)?.publishSubagentStatus(run),
 });
 
 export function getSubagentRun(sessionId: string) {
@@ -2193,7 +2289,6 @@ export async function startRpcSession(
               createSubagentExtension(
                 SUBAGENT_CONTROLLER.extensionRuntime,
                 () => listSubagentProfiles(sessionCwd),
-                isBuiltInSubagentsEnabled,
               ),
               createMeteorAgentBrandExtension(),
             ],
@@ -2277,13 +2372,6 @@ export async function startRpcSession(
     );
     if (persistedPreferences.modelDefaultChanged) invalidateModelsCache();
 
-    // If specific tool names were requested (non-empty), set the active tools to the
-    // requested builtin coding tools PLUS all extension/package tools, so installed
-    // extensions stay usable in Pi Web just like in the `pi` CLI.
-    if (!subagentResources && !chatOnly) {
-      inner.setActiveToolsByName(withExtensionTools(inner, selectedToolNames ?? inner.getActiveToolNames()));
-    }
-
     const exactSystemPrompt = subagentResources?.exactSystemPrompt !== undefined
       ? () => subagentResources.exactSystemPrompt!
       : chatOnly
@@ -2302,7 +2390,12 @@ export async function startRpcSession(
       },
       suppressCompletionNotifications: Boolean(subagentResources),
     });
-    if (promptSelection?.mode === "plan") wrapper.setActiveToolSelection(selectedToolNames ?? ["read", "grep", "find", "ls"]);
+    if (!subagentResources && !chatOnly) {
+      const fallbackTools = promptSelection?.mode === "plan"
+        ? ["read", "grep", "find", "ls"]
+        : inner.getActiveToolNames();
+      wrapper.setActiveToolSelection(selectedToolNames ?? fallbackTools);
+    }
     const realSessionId = inner.sessionId as string;
     registerRpcWrapper(wrapper);
 

@@ -1,6 +1,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Api, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { isRelayProviderId, relayModelNeedsResponseRepair } from "./relay-config";
+import { withProviderDefaultThinking } from "./model-auto-reasoning";
 
 const RECOVERABLE_DELTA_EVENTS = new Set([
   "response.output_text.delta",
@@ -328,13 +329,13 @@ export function installRelayResponseRepair(modelRuntime: ModelRuntime): void {
 
   const originalStreamSimple = modelRuntime.streamSimple.bind(modelRuntime);
   modelRuntime.streamSimple = ((model, context, options) => {
-    if (!needsRepair(model)) return originalStreamSimple(model, context, options);
-    return originalStreamSimple(model, context, withRelayRepairFetch(options));
+    const resolved = withProviderDefaultThinking(model, options);
+    return originalStreamSimple(model, context, needsRepair(model) ? withRelayRepairFetch(resolved) : resolved);
   }) as ModelRuntime["streamSimple"];
 
   const originalStream = modelRuntime.stream.bind(modelRuntime);
   modelRuntime.stream = ((model, context, options) => {
-    if (!needsRepair(model)) return originalStream(model, context, options);
-    return originalStream(model, context, withRelayRepairFetch(options));
+    const resolved = withProviderDefaultThinking(model, options);
+    return originalStream(model, context, needsRepair(model) ? withRelayRepairFetch(resolved) : resolved);
   }) as ModelRuntime["stream"];
 }
