@@ -11,7 +11,7 @@
  */
 
 import { getRelayBaseUrl, getRelayResponsesBaseUrl } from "./relay-config";
-import { resolveModelCapabilities } from "./model-capability-catalog";
+import { canonicalModelOutputTokenLimit, resolveModelCapabilities } from "./model-capability-catalog";
 import { relayModelCapabilityCompat, type ModelCapabilities } from "./model-capabilities";
 import type { ModelCatalogEntry } from "./model-catalog";
 import {
@@ -21,8 +21,14 @@ import {
   clampRelayContextWindow,
 } from "./relay-model-policy";
 import { isRelayImageGenerationModel } from "./relay-image-generation";
+import {
+  readOutputTokenLimit,
+  RELAY_FALLBACK_MAX_OUTPUT_TOKENS,
+  resolveRelayMaxOutputTokens,
+  type RelayOutputPreferences,
+} from "./relay-output-policy";
 
-export interface RelayModelDef extends ModelCapabilities {
+export interface RelayModelDef extends ModelCapabilities, RelayOutputPreferences {
   id: string;
   name?: string;
   cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -34,6 +40,10 @@ export interface RelayModelDef extends ModelCapabilities {
   baseUrl?: string;
   meteorAgentCapabilityOverrides?: ModelCapabilities;
   compat?: Record<string, unknown>;
+}
+
+export interface RelayModelUpstreamMetadata extends ModelCapabilities {
+  maxOutputTokens?: number;
 }
 
 const GPT_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
@@ -92,8 +102,24 @@ const TABLE_BY_FAMILY: Record<"gpt" | "claude", Map<string, RelayModelDef>> = {
 const FALLBACK: RelayModelDef = {
   id: "",
   contextWindow: RELAY_OTHER_DEFAULT_CONTEXT_WINDOW,
-  maxTokens: 16_384,
+  maxTokens: RELAY_FALLBACK_MAX_OUTPUT_TOKENS,
 };
+
+function modelFamily(id: string): "gpt" | "claude" | "other" {
+  return CLAUDE_MATCH.test(id) ? "claude" : GPT_MATCH.test(id) ? "gpt" : "other";
+}
+
+function relayModelApi(family: ReturnType<typeof modelFamily>): string {
+  return family === "claude" ? "anthropic-messages" : family === "gpt" ? "openai-responses" : "openai-completions";
+}
+
+export function relayOutputNeedsCatalog(id: string, upstream?: RelayModelUpstreamMetadata): boolean {
+  // Don't delay a relay group sync just to find a limit for a protocol that
+  // can use Auto without one. Anthropic Messages requires the field.
+  return modelFamily(id) === "claude"
+    && readOutputTokenLimit(upstream?.maxOutputTokens) === undefined
+    && canonicalModelOutputTokenLimit(id, "anthropic-messages") === undefined;
+}
 
 /** Resolve local context and price fallbacks independently of capabilities. */
 function relayModelFallback(family: "gpt" | "claude" | "other", id: string): RelayModelDef {
@@ -105,36 +131,60 @@ function relayModelFallback(family: "gpt" | "claude" | "other", id: string): Rel
   };
 }
 
+export function relayOutputTokenFallback(id: string): number {
+  return relayModelFallback(modelFamily(id), id).maxTokens ?? RELAY_FALLBACK_MAX_OUTPUT_TOKENS;
+}
+
 export function resolveRelayModels(family: "gpt" | "claude" | "other", remoteIds?: string[]): RelayModelDef[] {
   const ids = remoteIds?.length ? remoteIds : family === "other" ? [] : [...TABLE_BY_FAMILY[family].keys()];
   return ids.filter((id) => family === "claude" ? CLAUDE_MATCH.test(id)
     : family === "gpt" ? GPT_MATCH.test(id)
-      : !CLAUDE_MATCH.test(id) && !GPT_MATCH.test(id)).map((id) => ({
-    ...relayModelFallback(family, id),
-    name: id,
-    ...resolveModelCapabilities({ id }),
-  }));
+      : !CLAUDE_MATCH.test(id) && !GPT_MATCH.test(id)).map((id) => {
+    const model = relayModelFallback(family, id);
+    const limit = canonicalModelOutputTokenLimit(id, relayModelApi(family));
+    const output: RelayOutputPreferences = limit === undefined ? {} : {
+      meteorAgentMaxOutputTokensLimit: limit,
+      meteorAgentMaxOutputTokensSource: "catalog",
+    };
+    return {
+      ...model,
+      ...output,
+      name: id,
+      maxTokens: resolveRelayMaxOutputTokens(output, model.contextWindow, model.maxTokens),
+      ...resolveModelCapabilities({ id }),
+    };
+  });
 }
 
 /** SDK supports per-model api/baseUrl; preserve all families under one key. */
 export function resolveMixedRelayModels(
   ids: readonly string[],
   base = getRelayBaseUrl(),
-  upstream: ReadonlyMap<string, ModelCapabilities> = new Map(),
+  upstream: ReadonlyMap<string, RelayModelUpstreamMetadata> = new Map(),
   catalog: readonly ModelCatalogEntry[] = [],
 ): RelayModelDef[] {
   return [...new Set(ids)].flatMap((id) => {
     // Non-chat endpoints must not be advertised as conversational models.
     if (isRelayImageGenerationModel(id) || /embedding|whisper|tts|sora|rerank/i.test(id)) return [];
-    const family = CLAUDE_MATCH.test(id) ? "claude" : GPT_MATCH.test(id) ? "gpt" : "other";
-    const api = family === "claude" ? "anthropic-messages" : family === "gpt" ? "openai-responses" : "openai-completions";
+    const family = modelFamily(id);
+    const api = relayModelApi(family);
     const model = relayModelFallback(family, id);
+    const metadata = upstream.get(id);
+    const relayLimit = readOutputTokenLimit(metadata?.maxOutputTokens);
+    const limit = relayLimit ?? canonicalModelOutputTokenLimit(id, api, catalog);
+    const output: RelayOutputPreferences = limit === undefined ? {} : {
+      meteorAgentMaxOutputTokensLimit: limit,
+      meteorAgentMaxOutputTokensSource: relayLimit === undefined ? "catalog" : "relay",
+    };
+    const contextWindow = clampRelayContextWindow(id, model.contextWindow);
     const compat = relayModelCapabilityCompat(id);
     return [{
       ...model,
-      ...resolveModelCapabilities({ id, api }, upstream.get(id), catalog),
+      ...resolveModelCapabilities({ id, api }, metadata, catalog),
+      ...output,
       name: id,
-      contextWindow: clampRelayContextWindow(id, model.contextWindow),
+      contextWindow,
+      maxTokens: resolveRelayMaxOutputTokens(output, contextWindow, model.maxTokens),
       api,
       baseUrl: family === "claude" ? base : `${base}/v1`,
       ...(compat ? { compat } : {}),

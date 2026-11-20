@@ -1,6 +1,6 @@
 /** Account-scoped relay key synchronization. Full API keys never leave this server module. */
 import { getRelayBaseUrl } from "./relay-config";
-import { resolveMixedRelayModels } from "./relay-models";
+import { relayOutputNeedsCatalog, resolveMixedRelayModels } from "./relay-models";
 import { loadOptionalModelCapabilityCatalog, modelCapabilitiesNeedCatalog } from "./model-capability-catalog";
 import {
   applyPlazaContextWindows,
@@ -245,7 +245,10 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       const partition = test.ok
         ? partitionRelayModelIds(test.modelIds ?? [])
         : { chatModelIds: [], imageModelIds: [] };
-      const catalog = partition.chatModelIds.some((id) => modelCapabilitiesNeedCatalog({ id }, test.capabilitiesByModelId?.get(id) ?? {}))
+      const catalog = partition.chatModelIds.some((id) => {
+        const metadata = test.capabilitiesByModelId?.get(id);
+        return modelCapabilitiesNeedCatalog({ id }, metadata ?? {}) || relayOutputNeedsCatalog(id, metadata);
+      })
         ? await (capabilityCatalog ??= loadOptionalModelCapabilityCatalog()) : [];
       const resolved = test.ok ? resolveMixedRelayModels(partition.chatModelIds, getRelayBaseUrl(), test.capabilitiesByModelId, catalog) : [];
       const resolvedIds = resolved.map((model) => model.id);

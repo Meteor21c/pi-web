@@ -2,6 +2,10 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Api, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { isRelayProviderId, relayModelNeedsResponseRepair } from "./relay-config";
 import { withProviderDefaultThinking } from "./model-auto-reasoning";
+import { capabilityRecord } from "./model-capabilities";
+import { canonicalModelOutputTokenLimit } from "./model-capability-catalog";
+import { readModelsConfig } from "./models-config-store";
+import { applyRelayOutputPolicy, readRelayOutputPreferences } from "./relay-output-policy";
 
 const RECOVERABLE_DELTA_EVENTS = new Set([
   "response.output_text.delta",
@@ -318,10 +322,26 @@ function withRelayRepairFetch<T extends { fetch?: FetchFunction }>(options: T | 
   } as T;
 }
 
+function relayOutputPreferencesForModel(model: Model<Api>) {
+  // Pi projects known schema fields into Model; read app-specific preferences
+  // from this exact provider and model instead of relying on preserved fields.
+  const providers = capabilityRecord(readModelsConfig().providers);
+  const storedModels = capabilityRecord(providers?.[model.provider])?.models;
+  const storedModel = Array.isArray(storedModels)
+    ? storedModels.find((entry) => capabilityRecord(entry)?.id === model.id) : undefined;
+  const preferences = readRelayOutputPreferences(storedModel);
+  if (preferences.meteorAgentMaxOutputTokensLimit === undefined) {
+    // Legacy files have no source marker; use an available builtin model
+    // ceiling even before the user saves or re-synchronizes their group.
+    preferences.meteorAgentMaxOutputTokensLimit = canonicalModelOutputTokenLimit(model.id, model.api);
+  }
+  return preferences;
+}
+
 /**
- * Install the compatibility fetch at the ModelRuntime boundary. AgentSession
- * uses streamSimple for normal turns, while the extra stream hook protects SDK
- * callers and completeSimple (which delegates to streamSimple).
+ * Install relay request/response compatibility at the ModelRuntime boundary.
+ * AgentSession and completeSimple use streamSimple; stream covers lower-level
+ * SDK callers.
  */
 export function installRelayResponseRepair(modelRuntime: ModelRuntime): void {
   if (installedRuntimes.has(modelRuntime)) return;
@@ -329,13 +349,13 @@ export function installRelayResponseRepair(modelRuntime: ModelRuntime): void {
 
   const originalStreamSimple = modelRuntime.streamSimple.bind(modelRuntime);
   modelRuntime.streamSimple = ((model, context, options) => {
-    const resolved = withProviderDefaultThinking(model, options);
-    return originalStreamSimple(model, context, needsRepair(model) ? withRelayRepairFetch(resolved) : resolved);
+    const output = applyRelayOutputPolicy(model, withProviderDefaultThinking(model, options), relayOutputPreferencesForModel);
+    return originalStreamSimple(output.model, context, needsRepair(model) ? withRelayRepairFetch(output.options) : output.options);
   }) as ModelRuntime["streamSimple"];
 
   const originalStream = modelRuntime.stream.bind(modelRuntime);
   modelRuntime.stream = ((model, context, options) => {
-    const resolved = withProviderDefaultThinking(model, options);
-    return originalStream(model, context, needsRepair(model) ? withRelayRepairFetch(resolved) : resolved);
+    const output = applyRelayOutputPolicy(model, withProviderDefaultThinking(model, options), relayOutputPreferencesForModel);
+    return originalStream(output.model, context, needsRepair(model) ? withRelayRepairFetch(output.options) : output.options);
   }) as ModelRuntime["stream"];
 }

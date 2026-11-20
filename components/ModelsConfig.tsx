@@ -105,6 +105,7 @@ interface ModelEntry {
   contextWindow?: number;
   meteorAgentContextWindowOverride?: number;
   maxTokens?: number;
+  meteorAgentMaxOutputTokensOverride?: number;
   cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; tiers?: unknown };
   headers?: Record<string, string>;
   compat?: Record<string, unknown>;
@@ -142,6 +143,7 @@ function mergeSavedModelDefaults(draft: ModelsJson, submitted: ModelsJson, saved
         input: model.input ?? (prior.input === undefined ? persisted.input : undefined),
         thinkingLevelMap: model.thinkingLevelMap ?? (prior.thinkingLevelMap === undefined ? persisted.thinkingLevelMap : undefined),
         contextWindow: model.contextWindow === prior.contextWindow ? persisted.contextWindow : model.contextWindow,
+        maxTokens: model.maxTokens === prior.maxTokens ? persisted.maxTokens : model.maxTokens,
       };
     }) }];
   })) };
@@ -943,6 +945,8 @@ function ModelDetail({
   const [testState, setTestState] = useState<ModelTestState>({ phase: "idle" });
   const { locale, t } = useI18n();
   const contextHelpId = useId();
+  const outputHelpId = useId();
+  const advancedSettingsId = useId();
   const [editingCustomContextWindow, setEditingCustomContextWindow] = useState(false);
   const [catalogState, setCatalogState] = useState<ModelCatalogState>({ phase: "idle" });
   const [costEditing, setCostEditing] = useState(false);
@@ -1173,6 +1177,19 @@ function ModelDetail({
     ? advancedSummaryParts.join(" · ")
     : t("models.providerDefaults");
   const relayContextPolicy = relayMode || isRelayProviderId(providerName);
+  const relayOutputOverride = readContextWindowTokens(model.meteorAgentMaxOutputTokensOverride);
+  const relayOutputLabel = relayOutputOverride === undefined
+    ? t("models.outputFollowProvider")
+    : t("models.outputManualLimit", { count: relayOutputOverride.toLocaleString(locale) });
+  const editOutputOverride = (text: string) => {
+    const normalized = text.replace(/[\s,，]/g, "");
+    if (!normalized) {
+      set("meteorAgentMaxOutputTokensOverride", undefined);
+    } else if (/^\d+$/.test(normalized)) {
+      const next = readContextWindowTokens(Number(normalized));
+      if (next !== undefined) set("meteorAgentMaxOutputTokensOverride", next);
+    }
+  };
   const customContextWindow = readContextWindowTokens(
     relayContextPolicy ? model.meteorAgentContextWindowOverride : model.contextWindow,
   );
@@ -1444,10 +1461,12 @@ function ModelDetail({
               )}
             </span>
           </Field>
-          <Field label={t("models.maxOutputTokens")}>
+          {relayContextPolicy ? <Field label={t("models.outputLength")}>
+            <span>{relayOutputLabel}</span>
+          </Field> : <Field label={t("models.maxOutputTokens")}>
             <NumInput value={model.maxTokens !== undefined ? String(model.maxTokens) : ""}
               onChange={(v) => set("maxTokens", v ? parseInt(v) : undefined)} placeholder="16384" />
-          </Field>
+          </Field>}
         </div>
 
         <div style={{ marginTop: 16 }}>
@@ -1486,12 +1505,12 @@ function ModelDetail({
         </div>
       </section>
 
-      {!relayMode && <section style={{ borderTop: "1px solid var(--border)", paddingTop: 4 }}>
+      <section style={{ borderTop: "1px solid var(--border)", paddingTop: 4 }}>
         <button
           type="button"
           onClick={() => setAdvancedOpen((open) => !open)}
           aria-expanded={advancedOpen}
-          aria-controls="model-advanced-settings"
+          aria-controls={advancedSettingsId}
           style={{
             width: "100%", minHeight: 48, padding: "8px 0", border: "none", background: "transparent",
             display: "grid", gridTemplateColumns: "minmax(0, 1fr) 18px", alignItems: "center", gap: 10,
@@ -1501,7 +1520,7 @@ function ModelDetail({
           <span style={{ minWidth: 0 }}>
             <span style={{ display: "block", fontSize: 11, fontWeight: 600 }}>{t("models.advancedSettings")}</span>
             <span style={{ display: "block", marginTop: 3, color: "var(--text-dim)", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {advancedSummary}
+              {relayMode ? t("models.outputLimitOverride") : advancedSummary}
             </span>
           </span>
           <svg
@@ -1521,7 +1540,22 @@ function ModelDetail({
         </button>
 
         {advancedOpen && (
-          <div id="model-advanced-settings" style={{ display: "flex", flexDirection: "column", gap: 14, padding: "4px 0 16px" }}>
+          <div id={advancedSettingsId} style={{ display: "flex", flexDirection: "column", gap: 14, padding: "4px 0 16px" }}>
+            {relayContextPolicy && <Field label={t("models.outputLimitOverride")}>
+              <input
+                aria-label={t("models.outputLimitOverride")}
+                aria-describedby={outputHelpId}
+                inputMode="numeric"
+                value={relayOutputOverride === undefined ? "" : String(relayOutputOverride)}
+                placeholder={t("models.outputFollowProvider")}
+                onChange={(event) => editOutputOverride(event.target.value)}
+                style={inputStyle}
+              />
+              <span id={outputHelpId} style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                {t("models.outputLimitOverrideHelp")}
+              </span>
+            </Field>}
+            {!relayMode && <>
             <Field label={t("models.apiOverride")}>
               <Select value={model.api ?? ""} onChange={(v) => set("api", v || undefined)} options={API_OPTIONS} />
             </Field>
@@ -1569,9 +1603,10 @@ function ModelDetail({
                 </div>
               </div>
             )}
+            </>}
           </div>
         )}
-      </section>}
+      </section>
     </div>
   );
 }

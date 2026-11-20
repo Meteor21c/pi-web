@@ -27,6 +27,8 @@ import { userMessageKey } from "@/lib/prompt-recovery";
 import { AgentEventConnection } from "@/lib/agent-event-connection";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
 import { resolveThinkingLevelOption, type ThinkingLevelOption } from "@/lib/model-capabilities";
+import { isWorkMode, type WorkMode } from "@/lib/prompt-presets";
+import type { SessionWorkMode } from "@/lib/session-work-mode";
 import {
   CHAT_SCROLL_REATTACH_TOLERANCE,
   CHAT_SCROLL_TAIL_TOLERANCE,
@@ -39,7 +41,9 @@ import {
 } from "@/lib/streaming-message";
 
 export interface SessionData {
-  workMode?: import("@/lib/prompt-presets").WorkMode;
+  workMode?: WorkMode;
+  pendingWorkMode?: WorkMode | null;
+  workModeRevision?: number;
   sessionId: string;
   filePath: string;
   totalActiveMs: number;
@@ -72,7 +76,7 @@ interface LastAssistantTextResponse {
   text?: string;
 }
 
-type AgentStateResponse = {
+type AgentStateResponse = Partial<SessionWorkMode> & {
   model?: { provider: string; id: string };
   contextUsage?: { percent: number | null; contextWindow: number; tokens: number | null } | null;
   systemPrompt?: string;
@@ -313,8 +317,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(null);
   const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
   const [toolPreset, setToolPreset] = useState<ToolPreset>("default");
-  const subagentModeUnavailable = toolPreset === "none" || toolPreset === "read-only" || (data?.workMode ?? composerWorkMode) === "plan";
-  const effectiveSubagentMode = subagentMode && subagentModeUnavailable ? "off" : subagentMode;
+  const subagentModeUnavailable = toolPreset === "none" || toolPreset === "read-only"
+    || (data?.pendingWorkMode ?? data?.workMode ?? composerWorkMode) === "plan";
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
@@ -366,6 +370,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const thinkingLevelOverrideRef = useRef<ThinkingLevelOption | null>(null);
   const pendingThinkingChangeRef = useRef<Promise<void> | null>(null);
+  const pendingWorkModeChangeRef = useRef<Promise<void> | null>(null);
+  const workModeRef = useRef<{ sid: string; state: SessionWorkMode } | null>(null);
   const thinkingChangeVersionRef = useRef(0);
   const promptRunIdRef = useRef(0);
   const optimisticUserMessageKeyRef = useRef<string | null>(null);
@@ -481,6 +487,24 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } satisfies SessionStatsInfo;
   }, [messages, sessionStatsOverride, contextUsage, data?.context.messages, data?.filePath, data?.totalActiveMs, data?.stats, session?.id, session?.name]);
 
+  const updateWorkMode = useCallback((sid: string, state: SessionWorkMode) => {
+    if (sessionIdRef.current !== sid) return;
+    const previous = workModeRef.current?.sid === sid ? workModeRef.current.state : undefined;
+    if (previous && (previous.workModeRevision > state.workModeRevision
+      || (previous.workModeRevision === state.workModeRevision && previous.workMode === state.workMode
+        && previous.pendingWorkMode === state.pendingWorkMode))) return;
+    workModeRef.current = { sid, state };
+    setData((current) => current?.sessionId === sid ? { ...current, ...state } : current);
+  }, []);
+
+  const syncLiveWorkMode = useCallback((sid: string, state?: Partial<SessionWorkMode>) => {
+    if (!state || !isWorkMode(state.workMode) || (state.pendingWorkMode !== null && !isWorkMode(state.pendingWorkMode))
+      || typeof state.workModeRevision !== "number" || !Number.isSafeInteger(state.workModeRevision)) return;
+    updateWorkMode(sid, {
+      workMode: state.workMode, pendingWorkMode: state.pendingWorkMode, workModeRevision: state.workModeRevision,
+    });
+  }, [updateWorkMode]);
+
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
     let messagesLoaded = false;
     try {
@@ -503,6 +527,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const d = await res.json() as SessionData;
       if (sessionIdRef.current !== sid) return null;
       const persistedMessages = d.context.messages;
+      if (d.workMode !== undefined) {
+        updateWorkMode(sid, {
+          workMode: d.workMode,
+          pendingWorkMode: d.pendingWorkMode ?? null,
+          workModeRevision: d.workModeRevision ?? 0,
+        });
+      }
+      if (workModeRef.current?.sid === sid) Object.assign(d, workModeRef.current.state);
       setData(d);
       setActiveLeafId(d.leafId);
       setMessages(persistedMessages);
@@ -526,6 +558,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         const liveState = agentState.state;
         syncLiveModel(liveState);
+        syncLiveWorkMode(sid, liveState);
         if (liveState) {
           if (liveState.contextUsage !== undefined) setContextUsage(liveState.contextUsage ?? null);
           if (liveState.systemPrompt !== undefined) setSystemPrompt(liveState.systemPrompt ?? null);
@@ -547,7 +580,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       if (showLoading && !messagesLoaded) setLoading(false);
     }
-  }, [setToolPresetState, syncLiveModel]);
+  }, [setToolPresetState, syncLiveModel, syncLiveWorkMode, updateWorkMode]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null, before?: string | null, options?: { tail?: number; signal?: AbortSignal }) => {
     try {
@@ -1085,6 +1118,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
       const state = data.state;
       syncLiveModel(state);
+      syncLiveWorkMode(sid, state);
       // Mirror compaction state unconditionally: a missed compaction_end
       // would otherwise leave the "Stop compaction" UI stuck. No state
       // (wrapper destroyed) means nothing is compacting.
@@ -1108,7 +1142,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } catch {
       // Network still down — the next poll / visibility / online tick retries.
     }
-  }, [finishPromptWithoutStream, syncLiveModel]);
+  }, [finishPromptWithoutStream, syncLiveModel, syncLiveWorkMode]);
 
   // Recovery net for missed SSE events: while the agent is running, verify
   // against the server periodically and whenever the tab returns to the
@@ -1140,6 +1174,19 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {
+      case "work_mode_changed": {
+        const sid = sessionIdRef.current;
+        const { workMode, pendingWorkMode, workModeRevision } = event;
+        if (!sid || !isWorkMode(workMode) || (pendingWorkMode !== null && !isWorkMode(pendingWorkMode))
+          || typeof workModeRevision !== "number" || !Number.isSafeInteger(workModeRevision)) break;
+        const previous = workModeRef.current?.sid === sid ? workModeRef.current.state : undefined;
+        updateWorkMode(sid, { workMode, pendingWorkMode, workModeRevision });
+        if (previous?.workMode !== workMode && (previous?.workModeRevision ?? -1) < workModeRevision) {
+          setSlashCommands([]);
+          void loadTools(sid);
+        }
+        break;
+      }
       case "connected": {
         dispatch({ type: "end" });
         if (event.isStreaming === true) {
@@ -1403,7 +1450,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setExtensionDialog((current) => current?.id === event.id ? null : current);
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t, updateWorkMode]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
@@ -1420,6 +1467,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const isExcluded = trimmedMessage.startsWith("!!");
       const bashCmd = (isExcluded ? trimmedMessage.slice(2) : trimmedMessage.slice(1)).trim();
       if (!bashCmd) {
+        restoreSubmission(message, images, composerDraftKey);
+        return;
+      }
+      try {
+        await pendingWorkModeChangeRef.current;
+      } catch {
         restoreSubmission(message, images, composerDraftKey);
         return;
       }
@@ -1455,6 +1508,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
     try {
       await pendingThinkingChangeRef.current;
+      await pendingWorkModeChangeRef.current;
+      const persistedMode = workModeRef.current?.sid === sessionIdRef.current
+        ? workModeRef.current?.state : undefined;
+      const effectiveSubagentMode = subagentMode && (toolPreset === "none" || toolPreset === "read-only"
+        || (persistedMode?.pendingWorkMode ?? persistedMode?.workMode ?? composerWorkMode) === "plan")
+        ? "off" : subagentMode;
       if (isNew && newSessionCwd) {
         const selectedModel = newSessionModel;
         const existingSid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
@@ -1526,7 +1585,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission, effectiveSubagentMode]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, composerWorkMode, reconcileAgentState, restoreSubmission, subagentMode, toolPreset]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -1991,6 +2050,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (pendingThinkingChangeRef.current === change) pendingThinkingChangeRef.current = null;
   }, [addNotice, isNew, modelThinkingLevels, newSessionDefaultModel, t]);
 
+  const handleWorkModeChange = useCallback(async (mode: WorkMode) => {
+    const sid = sessionIdRef.current;
+    if (!sid || previewOnly || session?.relation?.kind === "subagent") return;
+    const change = (async () => {
+      const next = await sendAgentCommand<SessionWorkMode>(sid, { type: "set_work_mode", mode });
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
+      const previous = workModeRef.current?.sid === sid ? workModeRef.current.state : undefined;
+      updateWorkMode(sid, next);
+      if (previous?.workMode !== next.workMode && (previous?.workModeRevision ?? -1) < next.workModeRevision) {
+        setSlashCommands([]);
+        void loadTools(sid);
+      }
+    })();
+    pendingWorkModeChangeRef.current = change;
+    try {
+      await change;
+    } finally {
+      if (pendingWorkModeChangeRef.current === change) pendingWorkModeChangeRef.current = null;
+    }
+  }, [loadTools, previewOnly, session?.relation?.kind, updateWorkMode]);
+
   const handleToolPresetChange = useCallback(async (preset: ToolPreset) => {
     const toolNames = getToolNamesForPreset(preset);
     setPreferredToolPreset(preset);
@@ -2299,7 +2379,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     handleRecallQueue,
     handleBuiltinSlashCommand,
     setNoticePaused: setPausedNoticeId,
-    handleToolPresetChange, handleThinkingLevelChange, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages, loadContext,
+    handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages, loadContext,
     scrollToBottom, scrollUserMsgToTop, scrollToMessage,
     dispatch, setAgentRunning, setForkingEntryId,
     bashRunning, pendingBash,

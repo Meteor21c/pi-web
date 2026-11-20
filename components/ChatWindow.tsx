@@ -302,7 +302,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     handleRecallQueue,
     handleBuiltinSlashCommand,
-    handleToolPresetChange, handleThinkingLevelChange, loadTools, loadSlashCommands, scrollUserMsgToTop,
+    handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, loadTools, loadSlashCommands, scrollUserMsgToTop,
     loadContext, activeLeafId, scrollToBottom, scrollToMessage,
   } = useAgentSession({
     session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
@@ -1028,15 +1028,18 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       compactResult={compactResult}
       toolPreset={toolPreset}
       workMode={data?.workMode ?? "auto"}
+      pendingWorkMode={data?.pendingWorkMode}
       onResolvedWorkMode={setComposerWorkMode}
-      workModeEditable={isNew && messages.length === 0}
+      showWorkMode={isNew || Boolean(data)}
+      workModeDisabled={previewOnly || session?.relation?.kind === "subagent"}
       subagentMode={subagentMode}
       onSubagentModeChange={session?.relation?.kind === "subagent" ? undefined : setSubagentMode}
       subagentModeDisabled={subagentModeUnavailable}
-      onWorkModeChanged={async () => {
+      onSessionWorkModeChange={!isNew ? handleWorkModeChange : undefined}
+      onNewWorkModeChanged={isNew ? async () => {
         const sid = sessionIdRef.current;
         if (sid) await loadTools(sid);
-      }}
+      } : undefined}
       onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
       thinkingLevel={thinkingLevel}
       onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}

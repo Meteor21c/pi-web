@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { testRelayConnection } from "@/lib/relay-config-test";
 import { persistRelayProvider, dominantFamily, protocolFor, sanitizeBaseUrlOverride } from "@/lib/relay-config-save";
-import { resolveMixedRelayModels } from "@/lib/relay-models";
+import { relayOutputNeedsCatalog, resolveMixedRelayModels } from "@/lib/relay-models";
 import { loadOptionalModelCapabilityCatalog, modelCapabilitiesNeedCatalog } from "@/lib/model-capability-catalog";
 import { partitionRelayModelIds } from "@/lib/relay-image-generation";
 
@@ -45,7 +45,10 @@ export async function POST(request: Request) {
     const family = dominantFamily(test.modelIds ?? []);
     const { api, baseUrl } = protocolFor(family, base ?? undefined);
     const modelIds = partitionRelayModelIds(test.modelIds ?? []).chatModelIds;
-    const catalog = modelIds.some((id) => modelCapabilitiesNeedCatalog({ id }, test.capabilitiesByModelId?.get(id) ?? {}))
+    const catalog = modelIds.some((id) => {
+      const metadata = test.capabilitiesByModelId?.get(id);
+      return modelCapabilitiesNeedCatalog({ id }, metadata ?? {}) || relayOutputNeedsCatalog(id, metadata);
+    })
       ? await loadOptionalModelCapabilityCatalog() : [];
     const models = resolveMixedRelayModels(modelIds, base ?? undefined, test.capabilitiesByModelId, catalog);
     if (!models.length) return NextResponse.json({ ok: false, reason: "relay-error", message: "No chat models available" });

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { startRpcSession, getRpcSession, setRpcSessionTools } from "@/lib/rpc-manager";
 import { rebrandMeteorAgentState } from "@/lib/meteoragent-brand";
+import { isWorkMode } from "@/lib/prompt-presets";
+import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
 // POST /api/agent/[id] - Send a command to an existing session
 export async function POST(
@@ -15,6 +17,11 @@ export async function POST(
   try {
     const body = await req.json() as { type: string; [key: string]: unknown };
     commandType = typeof body.type === "string" ? body.type : undefined;
+    if (commandType === "set_work_mode") {
+      if (!isApiRequestAllowed(req)) return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+      if (!hasJsonContentType(req)) return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+      if (!isWorkMode(body.mode)) return NextResponse.json({ error: "Invalid work mode" }, { status: 400 });
+    }
     const requestedToolNames = body.toolNames;
     if (
       requestedToolNames !== undefined

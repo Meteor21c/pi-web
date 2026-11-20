@@ -1,4 +1,5 @@
 import { getCurrentSystemMessage, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
@@ -64,8 +65,9 @@ import { readSessionThinkingSelection, THINKING_SELECTION_TYPE } from "./session
 import { readPromptPresetSettings } from "./prompt-preset-store";
 import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
-  promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection,
+  isWorkMode, promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection, type WorkMode,
 } from "./prompt-presets";
+import { appendSessionWorkMode, inheritSessionWorkMode, readSessionWorkMode, type SessionWorkMode } from "./session-work-mode";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -267,6 +269,10 @@ export class AgentSessionWrapper {
   private extensionBindingError: unknown = null;
   private readonly exactSystemPrompt?: () => string;
   private promptSelection?: SessionPromptSelection;
+  private workModeState: SessionWorkMode;
+  private configuredToolNames?: string[];
+  private useDefaultPlanTools = false;
+  private activeQueueSubmissions = 0;
   private subagentMode?: SubagentMode;
   private subagentRequirement?: { delegated: boolean; sawFinalAssistant: boolean };
   private readonly chatOnly: boolean;
@@ -290,6 +296,10 @@ export class AgentSessionWrapper {
     this.chatOnly = options.chatOnly ?? false;
     this.onAgentRunComplete = options.onAgentRunComplete;
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
+    this.workModeState = readSessionWorkMode(
+      (inner.sessionManager?.getEntries?.() ?? []) as unknown as SessionEntry[],
+      this.promptSelection?.mode,
+    );
     this.installExactSystemPromptContinuation();
     this.installPromptPresetProjection();
     this.installThinkingSelection();
@@ -333,7 +343,7 @@ export class AgentSessionWrapper {
   }
 
   private subagentsBlocked(toolNames?: readonly string[]): boolean {
-    return this.chatOnly || this.suppressCompletionNotifications || this.promptSelection?.mode === "plan"
+    return this.chatOnly || this.suppressCompletionNotifications || this.workModeState.workMode === "plan"
       || getPresetFromToolNames(toolNames ?? this.inner.getActiveToolNames?.() ?? []) === "read-only";
   }
 
@@ -550,7 +560,7 @@ export class AgentSessionWrapper {
     const previousTransform = this.inner.agent.transformContext;
     this.inner.agent.transformContext = async (messages, signal) => {
       const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
-      const selection = this.promptSelection;
+      const selection = this.effectivePromptSelection();
       let projectedMessages = transformed;
       if (selection?.version === 1) {
         // Keep the original behavior for conversations that already have a v1
@@ -613,14 +623,46 @@ export class AgentSessionWrapper {
     };
     const previousBeforeTool = this.inner.agent.beforeToolCall;
     this.inner.agent.beforeToolCall = async (context, signal) => {
-      if (this.promptSelection?.mode === "plan" && !PLAN_TOOL_NAMES.has(context.toolCall.name)) {
-        return { block: true, reason: "计划模式仅允许读取和搜索文件，请在新对话中选择自动或目标模式以执行操作。" };
+      if (this.workModeState.workMode === "plan" && !PLAN_TOOL_NAMES.has(context.toolCall.name)) {
+        return { block: true, reason: "计划模式仅允许读取和搜索文件。要执行操作，请切换到自动或目标模式后再发送新消息。" };
       }
       if (SUBAGENT_CONTROL_TOOLS.has(context.toolCall.name) && this.effectiveSubagentMode() === "off") {
         return { block: true, reason: "Subagents are disabled for this task." };
       }
       return previousBeforeTool?.(context, signal);
     };
+  }
+
+  getWorkMode() {
+    return this.workModeState;
+  }
+
+  private effectivePromptSelection(): SessionPromptSelection | undefined {
+    const { workMode } = this.workModeState;
+    if (this.promptSelection) return { ...this.promptSelection, mode: workMode };
+    return workMode === "auto" ? undefined : { version: 2, preset: null, mode: workMode };
+  }
+
+  private setWorkModeState(workMode: WorkMode, pendingWorkMode: WorkMode | null): SessionWorkMode {
+    const previous = this.workModeState;
+    if (previous.workMode === workMode && previous.pendingWorkMode === pendingWorkMode) return previous;
+    const next = { workMode, pendingWorkMode, workModeRevision: previous.workModeRevision + 1 };
+    appendSessionWorkMode(this.inner.sessionManager, next);
+    this.workModeState = next;
+    if (workMode !== previous.workMode) this.applyActiveToolSelection();
+    this.emit({ type: "work_mode_changed", ...next });
+    return next;
+  }
+
+  private changeWorkMode(mode: unknown): SessionWorkMode {
+    if (!isWorkMode(mode)) throw new Error("work mode must be auto, plan, or goal");
+    if (this.suppressCompletionNotifications) throw new Error("A subagent cannot change its work mode");
+    this.refreshUnstartedPromptSelection();
+    if (!this.isRunning() && !this.activeQueueSubmissions && !this.hasQueuedUserMessages()) {
+      return this.setWorkModeState(mode, null);
+    }
+    const modeInUse = this.workModeState.workMode;
+    return this.setWorkModeState(modeInUse, mode === modeInUse ? null : mode);
   }
 
   private refreshUnstartedPromptSelection(): void {
@@ -632,16 +674,68 @@ export class AgentSessionWrapper {
     if (JSON.stringify(next) === JSON.stringify(this.promptSelection)) return;
     this.promptSelection = next;
     appendSessionPromptSelection(this.inner.sessionManager, next);
-    this.setActiveToolSelection(readSessionToolSelection(entries) ?? ["read", "bash", "edit", "write"]);
+    if (this.workModeState.workModeRevision === 0) {
+      this.workModeState = { ...this.workModeState, workMode: next.mode };
+    }
+    this.applyActiveToolSelection();
   }
 
-  setActiveToolSelection(toolNames: string[]): void {
+  setActiveToolSelection(toolNames: string[], useDefaultPlanTools = false): void {
+    this.configuredToolNames = [...toolNames];
+    this.useDefaultPlanTools = useDefaultPlanTools;
+    this.applyActiveToolSelection();
+  }
+
+  private applyActiveToolSelection(): void {
+    if (this.chatOnly) return;
+    const toolNames = this.configuredToolNames ??= this.inner.getActiveToolNames();
     const selected = this.suppressCompletionNotifications ? toolNames
-      : this.promptSelection?.mode === "plan" ? toolNames.filter((name) => PLAN_TOOL_NAMES.has(name))
+      : this.workModeState.workMode === "plan" ? (this.useDefaultPlanTools
+        ? this.inner.getAllTools().map(({ name }) => name) : toolNames).filter((name) => PLAN_TOOL_NAMES.has(name))
       : withExtensionTools(this.inner, toolNames);
     this.inner.setActiveToolsByName(this.effectiveSubagentMode(selected) === "off"
       ? selected.filter((name) => !SUBAGENT_CONTROL_TOOLS.has(name))
       : selected);
+  }
+
+  private hasQueuedUserMessages(): boolean {
+    return Boolean(this.inner.getSteeringMessages?.().length || this.inner.getFollowUpMessages?.().length);
+  }
+
+  private finalizeBranchedSession(manager: SessionManager, path: string): string {
+    if (!this.suppressCompletionNotifications) inheritSessionWorkMode(manager, this.workModeState.workMode);
+    if (!existsSync(path)) {
+      // Pi defers persisting a copied branch if it has no assistant message yet.
+      const header = manager.getHeader();
+      if (!header) throw new Error("Forked session is missing a session header");
+      const content = [header, ...manager.getEntries()].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+      writeFileSync(path, content, { encoding: "utf8", flag: "wx" });
+    }
+    return manager.getSessionId();
+  }
+
+  private assertWorkModeAllowsPrompt(workMode: WorkMode, message: unknown): void {
+    if (workMode === "plan" && /^\s*\//.test(String(message ?? ""))) {
+      throw new Error("计划模式不运行插件命令。请直接描述要分析的任务，或切换到自动或目标模式。");
+    }
+  }
+
+  private async queueUserPrompt(
+    behavior: "steer" | "followUp",
+    message: string,
+    images: ImageContent[] | undefined,
+  ): Promise<void> {
+    this.assertWorkModeAllowsPrompt(this.workModeState.workMode, message);
+    if (this.workModeState.pendingWorkMode !== null && !this.inner.isStreaming) {
+      throw new Error("上一轮已结束。消息没有排入队列，请重新发送，让新模式生效。");
+    }
+    this.activeQueueSubmissions += 1;
+    try {
+      if (behavior === "steer") await this.inner.steer(message, images, { source: "rpc" });
+      else await this.inner.followUp(message, images, { source: "rpc" });
+    } finally {
+      this.activeQueueSubmissions -= 1;
+    }
   }
 
   private emit(event: AgentEvent): void {
@@ -739,6 +833,7 @@ export class AgentSessionWrapper {
     return this.inner.isBashRunning
       || this.inner.isStreaming
       || this.inner.isCompacting
+      || this.activeQueueSubmissions > 0
       || this.pendingPromptCount > 0;
   }
 
@@ -780,23 +875,31 @@ export class AgentSessionWrapper {
       }
 
       switch (type) {
+      case "set_work_mode":
+        return this.changeWorkMode(command.mode);
+
       case "get_prompt_selection": {
         this.refreshUnstartedPromptSelection();
         const currentSystemPrompt = this.inner.agent.state?.systemPrompt ?? "";
         const baseSystemPrompt = this.exactSystemPrompt?.()
           ?? (this.chatOnly ? currentSystemPrompt : rebrandMeteorAgentSystemPrompt(currentSystemPrompt));
-        return { selection: this.promptSelection ?? null, baseSystemPrompt };
+        return { selection: this.effectivePromptSelection() ?? null, baseSystemPrompt };
       }
       case "prompt": {
         // Serialize only admission. Once the preceding prompt has either
         // passed or failed preflight, the SDK can atomically decide whether
         // this submission starts a run or joins its streaming queue.
         const releaseAdmission = await this.acquirePromptAdmission();
+        let promotedFrom: SessionWorkMode | undefined;
+        let promotedRevision: number | undefined;
+        let preflightAccepted = false;
         try {
           this.refreshUnstartedPromptSelection();
-          if (this.promptSelection?.mode === "plan" && /^\s*\//.test(String(command.message ?? ""))) {
-            throw new Error("计划模式不运行插件命令。请直接描述要分析的任务，或在新对话中选择自动或目标模式。");
-          }
+          const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
+          const freshPrompt = !this.isRunning() && !streamingBehavior;
+          const { workMode, pendingWorkMode } = this.workModeState;
+          const nextWorkMode = freshPrompt ? pendingWorkMode ?? workMode : workMode;
+          this.assertWorkModeAllowsPrompt(nextWorkMode, command.message);
           if (this.inner.isBashRunning) {
             throw new Error("Cannot send a prompt while a shell command is running");
           }
@@ -806,16 +909,32 @@ export class AgentSessionWrapper {
           if (this.extensionUiAbortController.signal.aborted) {
             this.extensionUiAbortController = new AbortController();
           }
-          const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
-          const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
+          const promptImages = command.images as ImageContent[] | undefined;
+          if (pendingWorkMode !== null) {
+            if (streamingBehavior) {
+              // SDK prompt(streamingBehavior) may start a fresh turn once the
+              // running turn settles. An explicit queue call never does.
+              await this.queueUserPrompt(streamingBehavior, command.message as string, promptImages?.length ? promptImages : undefined);
+              return null;
+            }
+            if (!freshPrompt) throw new Error("当前任务还未结束。请排队发送，或等任务结束后再试。");
+            if (this.activeQueueSubmissions || this.hasQueuedUserMessages()) {
+              throw new Error("请先撤回上一轮的排队消息，再发送应用新模式的消息。");
+            }
+          }
           const requestedSubagentMode = command.subagentMode;
           if (requestedSubagentMode !== undefined && !isSubagentMode(requestedSubagentMode)) {
             throw new Error("subagentMode must be auto, off, or on");
           }
           let requirement: typeof this.subagentRequirement = undefined;
-          if (!this.isRunning()) {
-            if (requestedSubagentMode === "on" && this.subagentsBlocked()) {
+          if (freshPrompt) {
+            if (requestedSubagentMode === "on" && (nextWorkMode === "plan" || this.chatOnly || this.suppressCompletionNotifications
+              || getPresetFromToolNames(this.configuredToolNames ?? this.inner.getActiveToolNames()) === "read-only")) {
               throw new Error("Subagents cannot be required in Plan mode, read-only mode, Chat only, or a child session.");
+            }
+            if (pendingWorkMode !== null) {
+              promotedFrom = this.workModeState;
+              promotedRevision = this.setWorkModeState(nextWorkMode, null).workModeRevision;
             }
             if (this.subagentMode !== requestedSubagentMode) {
               this.subagentMode = requestedSubagentMode;
@@ -836,7 +955,6 @@ export class AgentSessionWrapper {
             if (requestedSubagentMode === "on") requirement = { delegated: false, sawFinalAssistant: false };
             this.subagentRequirement = requirement;
           }
-          let preflightAccepted = false;
           let preflightSettled = false;
           let promptSettled = false;
           let acceptPreflight!: () => void;
@@ -915,6 +1033,13 @@ export class AgentSessionWrapper {
 
           await preflight;
           return null;
+        } catch (error) {
+          if (!preflightAccepted && promotedFrom && this.workModeState.workModeRevision === promotedRevision) {
+            // Nothing ran and no newer mode choice was made. Keep the queued
+            // mode change available to the user's next accepted submission.
+            this.setWorkModeState(promotedFrom.workMode, promotedFrom.pendingWorkMode);
+          }
+          throw error;
         } finally {
           releaseAdmission();
         }
@@ -957,9 +1082,10 @@ export class AgentSessionWrapper {
           contextUsage: contextUsage
             ? { percent: contextUsage.percent, contextWindow: contextUsage.contextWindow, tokens: contextUsage.tokens }
             : null,
-          systemPrompt: composeSessionSystemPrompt(visibleSystemPrompt, this.promptSelection),
+          systemPrompt: composeSessionSystemPrompt(visibleSystemPrompt, this.effectivePromptSelection()),
           baseSystemPrompt: visibleSystemPrompt,
-          promptSelection: this.promptSelection ?? null,
+          promptSelection: this.effectivePromptSelection() ?? null,
+          ...this.workModeState,
           subagentMode: this.effectiveSubagentMode(),
           thinkingLevel: this.currentThinkingLevel(),
           extensionStatuses: this.getExtensionStatuses(),
@@ -1023,16 +1149,7 @@ export class AgentSessionWrapper {
             newSessionFile = forkedPath;
           }
 
-          if (!existsSync(newSessionFile)) {
-            const header = forkedManager.getHeader();
-            if (!header) throw new Error("Forked session is missing a session header");
-            const content = [header, ...forkedManager.getEntries()]
-              .map((forkedEntry) => JSON.stringify(forkedEntry))
-              .join("\n") + "\n";
-            writeFileSync(newSessionFile, content, { encoding: "utf8", flag: "wx" });
-          }
-
-          const newSessionId = forkedManager.getSessionId();
+          const newSessionId = this.finalizeBranchedSession(forkedManager, newSessionFile);
           cacheSessionPath(newSessionId, newSessionFile);
           invalidateSessionListCache();
           await this.shutdownAfterSessionReplacement("fork");
@@ -1056,7 +1173,7 @@ export class AgentSessionWrapper {
         const forkedPath = sourceManager.createBranchedSession(entryId);
         if (!forkedPath) throw new Error("Failed to create forked session");
 
-        const newSessionId = SessionManager.open(forkedPath, sessionDir).getSessionId();
+        const newSessionId = this.finalizeBranchedSession(sourceManager, forkedPath);
         cacheSessionPath(newSessionId, forkedPath);
         invalidateSessionListCache();
         return { cancelled: false, newSessionId };
@@ -1082,7 +1199,7 @@ export class AgentSessionWrapper {
           const clonedPath = sourceManager.createBranchedSession(leafId);
           if (!clonedPath || !existsSync(clonedPath)) throw new Error("Failed to clone current session branch");
 
-          const newSessionId = SessionManager.open(clonedPath, sessionDir).getSessionId();
+          const newSessionId = this.finalizeBranchedSession(sourceManager, clonedPath);
           cacheSessionPath(newSessionId, clonedPath);
           invalidateSessionListCache();
           await this.shutdownAfterSessionReplacement("clone");
@@ -1146,16 +1263,16 @@ export class AgentSessionWrapper {
       }
 
       case "steer": {
-        const steerImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
+        const steerImages = command.images as ImageContent[] | undefined;
         if (this.inner.model) this.assertRelayModelAuthorized(this.inner.model.provider, this.inner.model.id);
-        await this.inner.steer(command.message as string, steerImages?.length ? steerImages : undefined);
+        await this.queueUserPrompt("steer", command.message as string, steerImages?.length ? steerImages : undefined);
         return null;
       }
 
       case "follow_up": {
-        const followImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
+        const followImages = command.images as ImageContent[] | undefined;
         if (this.inner.model) this.assertRelayModelAuthorized(this.inner.model.provider, this.inner.model.id);
-        await this.inner.followUp(command.message as string, followImages?.length ? followImages : undefined);
+        await this.queueUserPrompt("followUp", command.message as string, followImages?.length ? followImages : undefined);
         return null;
       }
 
@@ -1163,15 +1280,18 @@ export class AgentSessionWrapper {
         this.refreshUnstartedPromptSelection();
         const all: ToolInfo[] = this.inner.getAllTools();
         const active = new Set<string>(this.inner.getActiveToolNames());
+        const configured = new Set(this.configuredToolNames ?? active);
         return all.map((t) => ({
           ...t,
           active: active.has(t.name),
+          ...(this.workModeState.workMode === "plan" ? { configuredActive: configured.has(t.name) } : {}),
         }));
       }
 
       case "get_commands": {
+        if (this.workModeState.workMode === "plan") return { commands: [] };
         const commands: SlashCommandInfo[] = [];
-        for (const registered of this.promptSelection?.mode === "plan" ? [] : this.inner.extensionRunner.getRegisteredCommands()) {
+        for (const registered of this.inner.extensionRunner.getRegisteredCommands()) {
           commands.push({
             name: registered.invocationName,
             description: registered.description,
@@ -1209,7 +1329,7 @@ export class AgentSessionWrapper {
           if (this.extensionUiAbortController.signal.aborted) {
             this.extensionUiAbortController = new AbortController();
           }
-          const activeToolNames = this.inner.getActiveToolNames();
+          const activeToolNames = [...(this.configuredToolNames ?? this.inner.getActiveToolNames())];
           await this.waitForExtensionsBound();
           this.extensionStatuses.clear();
           this.resetExtensionWidgetsForReload();
@@ -1219,7 +1339,7 @@ export class AgentSessionWrapper {
           await this.inner.settingsManager.reload?.();
           this.syncProjectTrust();
           await this.inner.reload();
-          this.setActiveToolSelection(activeToolNames);
+          this.setActiveToolSelection(activeToolNames, this.useDefaultPlanTools);
           if (typeof this.inner.bindExtensions !== "function") {
             this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
           }
@@ -1249,7 +1369,9 @@ export class AgentSessionWrapper {
       }
 
       case "bash": {
-        if (this.promptSelection?.mode === "plan") throw new Error("计划模式不执行命令，请在新对话中选择自动或目标模式。");
+        if (this.workModeState.workMode === "plan" || this.workModeState.pendingWorkMode === "plan") {
+          throw new Error("计划模式不执行命令，请先切换到自动或目标模式。");
+        }
         if (this.pendingPromptCount > 0 || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning) {
           throw new Error("Cannot run a shell command while the session is busy");
         }
@@ -1913,6 +2035,7 @@ export class AgentSessionWrapper {
             this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
           },
         });
+        this.applyActiveToolSelection();
       },
     };
   }
@@ -2440,10 +2563,7 @@ export async function startRpcSession(
       suppressCompletionNotifications: Boolean(subagentResources),
     });
     if (!subagentResources && !chatOnly) {
-      const fallbackTools = promptSelection?.mode === "plan"
-        ? ["read", "grep", "find", "ls"]
-        : inner.getActiveToolNames();
-      wrapper.setActiveToolSelection(selectedToolNames ?? fallbackTools);
+      wrapper.setActiveToolSelection(selectedToolNames ?? inner.getActiveToolNames(), selectedToolNames === undefined);
     }
     const realSessionId = inner.sessionId as string;
     registerRpcWrapper(wrapper);

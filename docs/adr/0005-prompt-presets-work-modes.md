@@ -1,6 +1,6 @@
 # Prompt presets and work modes
 
-Date: 2026-10-28. Status: shipped in v0.1.18. The additive preset implementation shipped in v0.1.17 and was superseded by the full-prompt design.
+Date: 2026-10-28. Full-prompt presets shipped in v0.1.18, superseding the additive presets in v0.1.17. Same-conversation work-mode switching is included in v0.1.21.
 
 ## User experience
 
@@ -10,9 +10,11 @@ the MeteorAgent default prompt. Selecting a preset replaces the default prompt
 instead of appending to it. Auto /
 Plan / Goal lives below the chat input, beside the model selector. Prompt preset
 settings do not include a mode control. The complete generated prompt is folded
-by default. A started conversation displays its persisted mode in the composer
-and its own applied preset in Assistant rules. Mode changes are available before
-the first message in a new conversation.
+by default. The composer lets users switch work modes in the same conversation;
+the Assistant rules panel still displays the conversation's original prompt.
+An idle switch applies immediately. A switch requested while a task is running
+is shown as pending and applies to the next standalone user prompt. Steering,
+queued follow-ups and tool continuations keep the running task's mode.
 
 Modes are independent of presets:
 
@@ -48,6 +50,11 @@ Deleting a preset clears it as a new-conversation default but does not remove
 snapshots in existing conversations. This operation edits a single JSON file;
 it never deletes directories or session files.
 
+Later work-mode changes are stored separately from the prompt snapshot. Pending
+changes can be replaced or cancelled. Switching mode never rewrites the
+conversation's saved prompt or its underlying tool selection. A new conversation
+copied from an existing one inherits its effective mode, not a pending choice.
+
 ## Actual provider prompt
 
 Pi 0.87.1 represents prompts as structured system messages, with tools declared in
@@ -70,5 +77,8 @@ An isolated dependency installation passed TypeScript and ESLint. A local SDK
 simulation exercised first and subsequent requests, a context reset, snapshot
 stability after editing/deletion, corruption preservation, and actual prevention
 of a write tool execution in Plan mode. Goal mode retained the same simulated
-tool execution. No paid model requests were made. Browser checks cover preset
-creation, saving, default selection, mode switching, and responsive layout.
+tool execution. Same-conversation regression tests cover idle switching, queue
+isolation, rejected submissions, reopening, and branch inheritance. A browser
+check against a loopback relay verified that a queued follow-up stays read-only
+and a subsequent standalone prompt restores the configured tools. No paid model
+requests were made.

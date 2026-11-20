@@ -7,7 +7,9 @@
  */
 import { getRelayBaseUrl, RELAY_MODELS_ENDPOINT } from "./relay-config";
 import { sanitizeBaseUrlOverride } from "./relay-config-save";
-import { readUpstreamModelCapabilities, type ModelCapabilities } from "./model-capabilities";
+import { readUpstreamModelCapabilities } from "./model-capabilities";
+import type { RelayModelUpstreamMetadata } from "./relay-models";
+import { upstreamRelayOutputTokenLimit } from "./relay-output-policy";
 
 const GPT_RE = /gpt|codex/i;
 const CLAUDE_RE = /claude/i;
@@ -21,7 +23,7 @@ export interface RelayTestResult {
   claudeCount?: number;
   /** 该 key 实际可见的模型 id 列表（200 时返回）。 */
   modelIds?: string[];
-  capabilitiesByModelId?: ReadonlyMap<string, ModelCapabilities>;
+  capabilitiesByModelId?: ReadonlyMap<string, RelayModelUpstreamMetadata>;
   reason?: RelayTestReason;
   message?: string;
 }
@@ -67,7 +69,13 @@ export async function testRelayConnection(
       }
       // parseRelayModelIds has already validated the exact authorized IDs.
       const entries = (json as { data: Array<Record<string, unknown> & { id: string }> }).data;
-      const capabilitiesByModelId = new Map(entries.map((entry) => [entry.id.trim(), readUpstreamModelCapabilities(entry)]));
+      const capabilitiesByModelId = new Map(entries.map((entry) => {
+        const maxOutputTokens = upstreamRelayOutputTokenLimit(entry);
+        return [entry.id.trim(), {
+          ...readUpstreamModelCapabilities(entry),
+          ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+        }] as const;
+      }));
       return { ok: true, modelCount: ids.length, gptCount, claudeCount, modelIds: ids, capabilitiesByModelId };
     }
 

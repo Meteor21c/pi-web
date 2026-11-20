@@ -2,6 +2,8 @@ export interface ToolEntry {
   name: string;
   description: string;
   active: boolean;
+  /** Configured without the temporary Plan restriction; absent outside Plan. */
+  configuredActive?: boolean;
   parameters?: Record<string, unknown>;
   promptGuidelines?: string[];
 }
@@ -21,7 +23,7 @@ export function isToolPreset(value: unknown): value is ToolPreset {
 }
 
 export function getPresetFromTools(tools: ToolEntry[]): ToolPreset {
-  const activeTools = tools.filter((t) => t.active);
+  const activeTools = tools.filter((t) => t.configuredActive ?? t.active);
   return getPresetFromToolNames(activeTools.map((tool) => tool.name));
 }
 

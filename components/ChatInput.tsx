@@ -77,12 +77,15 @@ interface Props {
   compactResult?: CompactResultInfo | null;
   toolPreset?: ToolPreset;
   workMode?: WorkMode;
+  pendingWorkMode?: WorkMode | null;
   onResolvedWorkMode?: (mode: WorkMode) => void;
   subagentMode?: SubagentMode;
   onSubagentModeChange?: (mode: SubagentMode) => void;
   subagentModeDisabled?: boolean;
-  workModeEditable?: boolean;
-  onWorkModeChanged?: () => Promise<void>;
+  showWorkMode?: boolean;
+  workModeDisabled?: boolean;
+  onNewWorkModeChanged?: () => Promise<void>;
+  onSessionWorkModeChange?: (mode: WorkMode) => Promise<void>;
   onToolPresetChange?: (preset: ToolPreset) => void;
   thinkingLevel?: ThinkingLevelOption;
   onThinkingLevelChange?: (level: ThinkingLevelOption) => void;
@@ -714,7 +717,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
-  workMode, workModeEditable, onWorkModeChanged, onResolvedWorkMode, subagentMode, onSubagentModeChange, subagentModeDisabled,
+  workMode, pendingWorkMode, showWorkMode, workModeDisabled, onNewWorkModeChanged, onSessionWorkModeChange, onResolvedWorkMode,
+  subagentMode, onSubagentModeChange, subagentModeDisabled,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
   slashCommands, slashCommandsLoading, availableTools, onLoadSlashCommands,
@@ -2796,7 +2800,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             >
               @
             </button>
-            {onWorkModeChanged && <WorkModeSelector mode={workMode ?? "auto"} editable={workModeEditable === true} disabled={isStreaming} onChanged={onWorkModeChanged} onResolvedMode={onResolvedWorkMode} />}
+            {showWorkMode && <WorkModeSelector
+              mode={workMode ?? "auto"}
+              pendingMode={pendingWorkMode}
+              disabled={workModeDisabled ?? false}
+              onChanged={onNewWorkModeChanged}
+              onSessionModeChange={onSessionWorkModeChange}
+              onResolvedMode={onResolvedWorkMode}
+            />}
             {onSubagentModeChange && (
               <label className="chat-subagent-mode" title={t(subagentModeDisabled
                 ? "chat.subagentModeUnavailable"

@@ -8,6 +8,7 @@ import { readModelsConfig, writeModelsConfig } from "./models-config-store";
 import { storeProviderCredential, removeStoredCredentialIfType } from "./provider-credential-store";
 import { readModelInput, readModelThinkingLevelMap } from "./model-capabilities";
 import { readContextWindowTokens } from "./relay-model-policy";
+import { readOutputTokenLimit } from "./relay-output-policy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -56,7 +57,7 @@ export function sessionAffinityCompat(api: string): Record<string, unknown> | un
 }
 
 /**
- * Preserve explicit transport, capability, and context choices during account sync.
+ * Preserve explicit transport, capability, context and output choices during account sync.
  * Configurations from older versions used false placeholders and did not mark
  * capability edits. Refresh those unmarked values from the current catalog.
  */
@@ -76,10 +77,12 @@ export function preserveRelayProtocolSelections(
     const api = typeof previousApi === "string" && switchable.has(previousApi) && switchable.has(model.api ?? "")
       ? previousApi : model.api;
     const contextWindowOverride = readContextWindowTokens(previous?.meteorAgentContextWindowOverride);
+    const outputTokensOverride = readOutputTokenLimit(previous?.meteorAgentMaxOutputTokensOverride);
     const next = {
       ...model,
       api,
       ...(contextWindowOverride === undefined ? {} : { meteorAgentContextWindowOverride: contextWindowOverride }),
+      ...(outputTokensOverride === undefined ? {} : { meteorAgentMaxOutputTokensOverride: outputTokensOverride }),
     };
     const overrides = previous?.meteorAgentCapabilityOverrides;
     if (!isRecord(overrides)) return next;
@@ -130,7 +133,9 @@ export async function persistRelayProvider(opts: {
     models,
   };
 
-  writeModelsConfig({ ...config, providers });
+  // An unavailable key may still have an older saved provider entry. Do not
+  // recalculate its model budgets while writing a different, healthy key.
+  writeModelsConfig({ ...config, providers }, undefined, { normalizeRelayLimitsForProvider: opts.providerId });
   await storeProviderCredential(opts.providerId, { type: "api_key", key: opts.apiKey });
 }
 
@@ -148,6 +153,6 @@ export function removeRelayProviderConfig(providerId: string): void {
     : ({} as Record<string, unknown>);
   if (providerId in providers) {
     delete providers[providerId];
-    writeModelsConfig({ ...config, providers });
+    writeModelsConfig({ ...config, providers }, undefined, { normalizeRelayLimitsForProvider: providerId });
   }
 }

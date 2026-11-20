@@ -7,6 +7,7 @@ import {
 } from "./model-capabilities";
 import { recommendModelCatalogPreset, type ModelCatalogEntry } from "./model-catalog";
 import { loadCatalog } from "./model-catalog-fetch";
+import { readOutputTokenLimit } from "./relay-output-policy";
 
 interface ModelLookup {
   id: string;
@@ -32,6 +33,33 @@ function exactBuiltinModels(id: string): BuiltinModel[] {
     }
   }
   return exactModels.get(id.trim().toLowerCase()) ?? [];
+}
+
+/** A model spec is not a relay entitlement; only use exact canonical entries,
+ * never another intermediary's limits or a fuzzy match. */
+export function canonicalModelOutputTokenLimit(id: string, api: string | undefined, catalog: readonly ModelCatalogEntry[] = []): number | undefined {
+  const normalized = id.trim().toLowerCase().replace(/^claude-fable-5\.1$/, "claude-fable-5-1");
+  const provider = api === "anthropic-messages" ? "anthropic"
+    : api === "openai-responses" ? "openai"
+    : api === "openai-completions" && /^(?:gpt-|codex(?:-|$))/.test(normalized) ? "openai"
+    : api === "openai-completions" && /^deepseek-/.test(normalized) ? "deepseek"
+    : api === "openai-completions" && /^(?:gemini-|gemma-)/.test(normalized) ? "google"
+    : api === "openai-completions" && /^grok-/.test(normalized) ? "xai" : undefined;
+  if (!provider) return undefined;
+  // The publisher's model limit belongs to the model, not the wire encoding
+  // selected in a relay group (e.g. a GPT switched to Chat Completions).
+  const builtin = exactBuiltinModels(normalized).find((entry) => entry.provider === provider);
+  const bounds = catalog
+    .filter((entry) => entry.providerId === provider && [id.trim().toLowerCase(), normalized].includes(entry.id.trim().toLowerCase()))
+    .flatMap((entry) => {
+      const bound = readOutputTokenLimit(entry.maxTokens);
+      return bound === undefined ? [] : [bound];
+    });
+  // The bundled directory is available offline. If both sources publish
+  // values, stay within both rather than assuming the larger one is usable.
+  const builtinLimit = readOutputTokenLimit(builtin?.maxTokens);
+  if (builtinLimit !== undefined) bounds.push(builtinLimit);
+  return bounds.length ? Math.min(...bounds) : undefined;
 }
 
 function hostname(url: string | undefined): string | undefined {
