@@ -66,6 +66,8 @@ Versions older than v0.1.6 do not contain the independent updater and therefore 
 
 Install the generated tarball into a fresh temporary npm prefix, run `webagent --help`, start it on a free loopback port, and verify `/api/relay-health` reports `MeteorAgent` and `ok`. Also verify both ZIP files with `unzip -t`.
 
+Point `PI_CODING_AGENT_DIR` at an isolated data directory with a saved conversation large enough to trigger transport compression. On the installed production server, request `/api/sessions` and `/api/sessions/<id>` with both `Accept-Encoding: identity` and `curl --compressed`. Parse both responses as JSON and check that the fixture appears in the list and that its messages appear in the detail. When requesting gzip, verify the body parses after one gzip decode.
+
 Windows launcher behavior cannot be fully executed on macOS; GitHub CI plus static PowerShell/BAT inspection is the minimum first-release check until a Windows runner is added.
 
 ## 4. Commit, tag, and push

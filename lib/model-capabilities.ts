@@ -15,7 +15,7 @@ export const AUTO_ONLY_THINKING_LEVEL_MAP: Readonly<ModelThinkingLevelMap> =
   Object.fromEntries(MODEL_THINKING_LEVELS.map((level) => [level, null]));
 
 export const STANDARD_THINKING_LEVEL_MAP: Readonly<ModelThinkingLevelMap> = {
-  off: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: null, max: null,
+  off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max",
 };
 
 export function isAutoOnlyThinkingMap(map?: Readonly<ModelThinkingLevelMap>): boolean {

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
 import test from "node:test";
 import { createJiti } from "jiti";
 
@@ -76,8 +75,8 @@ test("list versions expose idle session creation, rename and deletion to other w
   assert.equal((await (await getRunningSessions()).json()).sessionListVersion, deleted.sessionListVersion);
 });
 
-test("session listing returns a gzip-compressed response when the client accepts it", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-web-list-gzip-"));
+test("session list leaves compression to the HTTP server", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-web-list-json-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
   invalidateSessionListCache();
@@ -99,9 +98,9 @@ test("session listing returns a gzip-compressed response when the client accepts
   }));
 
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("Content-Encoding"), "gzip");
-  assert.match(response.headers.get("Vary") ?? "", /(?:^|,\s*)Accept-Encoding(?:\s*,|$)/i);
-  const payload = JSON.parse(gunzipSync(Buffer.from(await response.arrayBuffer())).toString("utf8"));
+  assert.equal(response.headers.get("Content-Encoding"), null);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const payload = await response.json();
   assert.equal(payload.sessions[0].firstMessage, firstMessage);
 });
 
@@ -155,7 +154,6 @@ test("session listing merges live registry snapshots and honors force refresh", 
   assert.match(listRoute, /listAllSessions\(\{ force \}\)/);
   assert.match(listRoute, /attachSessionProjectInfo\(getRpcSessionInfos\(\)\)/);
   assert.match(listRoute, /mergeSessionLists\(persistedSessions, runtimeSessions\)/);
-  assert.match(listRoute, /"Cache-Control": "no-store"/);
 });
 
 test("session reads use the live SessionManager before requiring a JSONL path", () => {
@@ -303,9 +301,9 @@ test("live detail and state routes work without a persisted JSONL file", async (
   });
 });
 
-test("session detail returns a gzip-compressed response when the client accepts it", async (t) => {
+test("session detail leaves compression to the HTTP server", async (t) => {
   const previousRegistry = globalThis.__piSessions;
-  const id = "live-route-gzip-test";
+  const id = "live-route-json-test";
   const timestamp = "2026-09-05T00:00:00.000Z";
   const firstMessage = "large session detail content ".repeat(500);
   const entry = {
@@ -321,7 +319,7 @@ test("session detail returns a gzip-compressed response when the client accepts 
     getLeafId: () => entry.id,
     getTree: () => [],
     getSessionName: () => undefined,
-    getSessionFile: () => `/tmp/pi-web-live-route-gzip-${process.pid}.jsonl`,
+    getSessionFile: () => `/tmp/pi-web-live-route-json-${process.pid}.jsonl`,
   };
   globalThis.__piSessions = new Map([[id, {
     isAlive: () => true,
@@ -343,7 +341,8 @@ test("session detail returns a gzip-compressed response when the client accepts 
   );
 
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("Content-Encoding"), "gzip");
-  const payload = JSON.parse(gunzipSync(Buffer.from(await response.arrayBuffer())).toString("utf8"));
+  assert.equal(response.headers.get("Content-Encoding"), null);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const payload = await response.json();
   assert.equal(payload.info.firstMessage, firstMessage);
 });

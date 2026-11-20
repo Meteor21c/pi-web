@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import { jsonResponse } from "@/lib/json-response";
 import {
   attachSessionProjectInfo,
@@ -25,20 +24,13 @@ export async function GET(req: Request) {
       attachSessionProjectInfo(getRpcSessionInfos()),
     ]);
     const sessions = mergeSessionLists(persistedSessions, runtimeSessions);
-    return jsonResponse(
-      req,
-      {
-        sessions,
-        sessionListVersion,
-        runningSessionIds: getRunningRpcSessionIds(),
-        completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
-      },
-      { headers: { "Cache-Control": "no-store" } },
-    );
+    return jsonResponse({
+      sessions,
+      sessionListVersion,
+      runningSessionIds: getRunningRpcSessionIds(),
+      completionNotificationSuppressedSessionIds: getCompletionNotificationSuppressedRpcSessionIds(),
+    });
   } catch (error) {
-    return NextResponse.json(
-      { error: String(error) },
-      { status: 500, headers: { "Cache-Control": "no-store" } },
-    );
+    return jsonResponse({ error: String(error) }, { status: 500 });
   }
 }

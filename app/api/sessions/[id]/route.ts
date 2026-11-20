@@ -34,7 +34,7 @@ export async function GET(
     const liveRpc = rpc?.isAlive() ? rpc : undefined;
     const resolvedPath = liveRpc ? null : await resolveSessionPath(id);
     if (!liveRpc && !resolvedPath) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      return jsonResponse({ error: "Session not found" }, { status: 404 });
     }
 
     const sm = liveRpc?.inner.sessionManager ?? SessionManager.open(resolvedPath!);
@@ -96,23 +96,20 @@ export async function GET(
       transient: !filePath || !existsSync(filePath),
     }]))[0] : null;
 
-    return jsonResponse(
-      req,
-      {
-        sessionId: id,
-        filePath,
-        info,
-        leafId,
-        tree,
-        context,
-        stats,
-        totalActiveMs,
-        workMode: readSessionPromptSelection(entries as unknown as SessionEntry[])?.mode ?? "auto",
-        ...(toolNames !== undefined ? { toolNames } : {}),
-      },
-    );
+    return jsonResponse({
+      sessionId: id,
+      filePath,
+      info,
+      leafId,
+      tree,
+      context,
+      stats,
+      totalActiveMs,
+      workMode: readSessionPromptSelection(entries as unknown as SessionEntry[])?.mode ?? "auto",
+      ...(toolNames !== undefined ? { toolNames } : {}),
+    });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return jsonResponse({ error: String(error) }, { status: 500 });
   }
 }
 

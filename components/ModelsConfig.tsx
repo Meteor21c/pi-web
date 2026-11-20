@@ -266,6 +266,12 @@ function customSelectionExists(config: ModelsJson, selection: Selection): boolea
 
 const API_OPTIONS = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
 const RELAY_OPENAI_MODEL_ID = /^(?:gpt(?:-|$)|chatgpt(?:-|$)|codex(?:-|$)|o\d(?:-|$)|computer-use(?:-|$))/i;
+const CONTEXT_WINDOW_PRESETS = [
+  { label: "128K", tokens: 128_000 },
+  { label: "256K", tokens: 256_000 },
+  { label: "512K", tokens: 512_000 },
+  { label: "1M", tokens: 1_000_000 },
+] as const;
 
 // ── Form field helpers ────────────────────────────────────────────────────────
 
@@ -937,6 +943,7 @@ function ModelDetail({
   const [testState, setTestState] = useState<ModelTestState>({ phase: "idle" });
   const { locale, t } = useI18n();
   const contextHelpId = useId();
+  const [editingCustomContextWindow, setEditingCustomContextWindow] = useState(false);
   const [catalogState, setCatalogState] = useState<ModelCatalogState>({ phase: "idle" });
   const [costEditing, setCostEditing] = useState(false);
   const [costDraft, setCostDraft] = useState<ModelCostDraft>(() => modelCostToDraft(model.cost));
@@ -1174,10 +1181,10 @@ function ModelDetail({
   const effectiveContextWindow = relayContextPolicy
     ? resolveRelayContextWindow(model.id, customContextWindow, relayFirstTierContextWindow)
     : customContextWindow ?? defaultContextWindow;
-  const setContextWindow = (text: string) => {
-    const normalized = text.replace(/[\s,，]/g, "");
-    const next = /^\d+$/.test(normalized) ? readContextWindowTokens(Number(normalized)) : undefined;
-    if (normalized && next === undefined) return;
+  const matchingContextPreset = CONTEXT_WINDOW_PRESETS.find(({ tokens }) => tokens === customContextWindow);
+  const showCustomContextWindow = editingCustomContextWindow || (customContextWindow !== undefined && !matchingContextPreset);
+  const autoContextWindowLabel = t("models.contextWindowAuto", { count: defaultContextWindow.toLocaleString(locale) });
+  const setContextWindow = (next: number | undefined) => {
     if (relayContextPolicy) {
       onChange({
         ...model,
@@ -1187,6 +1194,13 @@ function ModelDetail({
     } else {
       set("contextWindow", next);
     }
+  };
+  const editCustomContextWindow = (text: string) => {
+    const normalized = text.replace(/[\s,，]/g, "");
+    const next = /^\d+$/.test(normalized) ? readContextWindowTokens(Number(normalized)) : undefined;
+    if (normalized && next === undefined) return;
+    setEditingCustomContextWindow(true);
+    setContextWindow(next);
   };
 
   return (
@@ -1360,6 +1374,7 @@ function ModelDetail({
                 <option value="standard">{t("models.reasoningModelStandard")}</option>
               </select>
               {reasoningPreset === "auto" && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{t("models.reasoningModelAutoHint")}</span>}
+              {reasoningPreset === "standard" && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{t("models.reasoningModelStandardHint")}</span>}
             </Field>
           </div>
         )}
@@ -1380,19 +1395,45 @@ function ModelDetail({
 
         <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
           <Field label={t("models.contextWindow")}>
-            <input
-              inputMode="numeric"
+            <select
               aria-label={t("models.contextWindow")}
               aria-describedby={contextHelpId}
-              value={customContextWindow === undefined ? "" : String(customContextWindow)}
-              onChange={(event) => setContextWindow(event.target.value)}
-              placeholder={t("models.contextWindowDefault", { count: defaultContextWindow.toLocaleString(locale) })}
               style={inputStyle}
-            />
+              value={showCustomContextWindow ? "custom" : matchingContextPreset?.tokens ?? "auto"}
+              onChange={(event) => {
+                const value = event.target.value;
+                setEditingCustomContextWindow(value === "custom");
+                if (value !== "custom") setContextWindow(value === "auto" ? undefined : Number(value));
+              }}
+            >
+              <option value="auto">{autoContextWindowLabel}</option>
+              {CONTEXT_WINDOW_PRESETS.map(({ label, tokens }) => (
+                <option key={tokens} value={tokens} disabled={contextCeiling !== undefined && tokens > contextCeiling}>
+                  {label}
+                </option>
+              ))}
+              <option value="custom">{t("models.contextWindowCustom")}</option>
+            </select>
+            {showCustomContextWindow && (
+              <input
+                inputMode="numeric"
+                aria-label={t("models.contextWindowCustomInput")}
+                aria-describedby={contextHelpId}
+                value={customContextWindow === undefined ? "" : String(customContextWindow)}
+                onChange={(event) => editCustomContextWindow(event.target.value)}
+                placeholder={autoContextWindowLabel}
+                style={inputStyle}
+              />
+            )}
             <span id={contextHelpId} style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 10 }}>
               {contextCeiling !== undefined
-                ? t("models.contextWindowFirstTier", { count: contextCeiling.toLocaleString(locale) })
-                : t("models.contextWindowBlank")}
+                ? t(
+                    readContextWindowTokens(relayFirstTierContextWindow) === undefined
+                      ? "models.contextWindowProtectiveLimit" : "models.contextWindowFirstTier",
+                    { count: contextCeiling.toLocaleString(locale) },
+                  )
+                : t("models.contextWindowCompaction")}
+              {showCustomContextWindow && <> {t("models.contextWindowBlank")}</>}
               {customContextWindow !== undefined && effectiveContextWindow !== customContextWindow && (
                 <> {t("models.contextWindowClamped", { count: effectiveContextWindow.toLocaleString(locale) })}</>
               )}

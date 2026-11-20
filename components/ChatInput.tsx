@@ -2957,11 +2957,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     padding: 5,
                     overflow: "hidden", minWidth: 180,
                   }}>
-                    {THINKING_LEVELS.filter((lvl) => {
-                      if (!availableThinkingLevels) return true;
-                      if (lvl === "auto") return true;
-                      return availableThinkingLevels.includes(lvl);
-                    }).map((lvl) => {
+                    {THINKING_LEVELS.filter((lvl) => lvl === "auto" || availableThinkingLevels?.includes(lvl)).map((lvl) => {
                       const isActive = effectiveThinkingLevel === lvl;
                       const desc = t(lvl === "auto" && availableThinkingLevels?.length === 0 ? "models.reasoningModelAuto" : THINKING_LEVEL_DESC_KEYS[lvl]);
                       const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
