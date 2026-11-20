@@ -1,18 +1,14 @@
 import { NextResponse } from "next/server";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
 import { allowFileRoot } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { startRpcSession } from "@/lib/rpc-manager";
+import { isModelThinkingLevel, type ThinkingLevelOption } from "@/lib/model-capabilities";
 
-const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-
-function parseThinkingLevel(value: unknown): ThinkingLevel | undefined {
+function parseThinkingLevel(value: unknown): ThinkingLevelOption | undefined {
   if (value === undefined) return undefined;
-  if (typeof value === "string" && THINKING_LEVELS.has(value as ThinkingLevel)) {
-    return value as ThinkingLevel;
-  }
+  if (value === "auto" || isModelThinkingLevel(value)) return value;
   throw new Error(`Invalid thinking level: ${String(value)}`);
 }
 // POST /api/agent/new  body: { cwd: string; type: string; message?: string; ... }

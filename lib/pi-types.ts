@@ -14,6 +14,8 @@ import type {
   BeforeToolCallResult,
   AfterToolCallContext,
   AfterToolCallResult,
+  StreamFn,
+  ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 
@@ -146,6 +148,7 @@ export interface AgentSessionLike {
   readonly sessionManager: SessionManager;
   readonly settingsManager: SettingsManager;
   readonly agent: {
+    streamFunction?: StreamFn;
     transformContext?: (messages: PiAgentMessage[], signal?: AbortSignal) => Promise<PiAgentMessage[]>;
     beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
     afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
@@ -191,6 +194,7 @@ export interface AgentSessionLike {
   readonly isBashRunning: boolean;
   setModel(model: ModelLike): Promise<void>;
   navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<NavigateTreeResult>;
+  getAvailableThinkingLevels(): ThinkingLevel[];
   setThinkingLevel(level: string): void;
   compact(customInstructions?: string): Promise<unknown>;
   setSessionName(name: string): void;

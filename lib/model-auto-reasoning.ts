@@ -8,8 +8,9 @@ type PayloadHook<M> = (payload: unknown, model: M) => unknown | Promise<unknown>
 export function withProviderDefaultThinking<M extends Model<Api>, T extends { onPayload?: PayloadHook<M> }>(
   model: M,
   options: T | undefined,
+  selectedAuto = false,
 ): T | undefined {
-  if (!model.reasoning || !isAutoOnlyThinkingMap(model.thinkingLevelMap)) return options;
+  if (!model.reasoning || (!selectedAuto && !isAutoOnlyThinkingMap(model.thinkingLevelMap))) return options;
   return {
     ...options,
     onPayload(payload: unknown, requestModel: M) {

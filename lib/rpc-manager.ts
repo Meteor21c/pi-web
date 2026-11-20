@@ -1,5 +1,4 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
@@ -59,6 +58,9 @@ import { createSessionScopedSettingsManager } from "./plugin-activation";
 import { withRelayImageGenerationSession } from "./relay-image-generation";
 import { appendRelayImageBillingEntries } from "./relay-image-billing";
 import { installRelayResponseRepair } from "./relay-responses";
+import { withProviderDefaultThinking } from "./model-auto-reasoning";
+import { isModelThinkingLevel, resolveThinkingLevelOption, type ThinkingLevelOption } from "./model-capabilities";
+import { readSessionThinkingSelection, THINKING_SELECTION_TYPE } from "./session-thinking";
 import { readPromptPresetSettings } from "./prompt-preset-store";
 import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
@@ -186,11 +188,10 @@ export interface RpcSessionStartOptions {
   toolNames?: string[];
   initialModel?: { provider: string; modelId: string };
   allowInitialModelFallback?: boolean;
-  thinkingLevel?: ThinkingLevel;
+  thinkingLevel?: ThinkingLevelOption;
 }
 
 const CODING_TOOL_NAMES = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
-const THINKING_LEVEL_NAMES = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 // Extensions require a complete Theme, while the web UI applies its own styling.
 class PlainTextTheme extends Theme {
@@ -291,6 +292,7 @@ export class AgentSessionWrapper {
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
     this.installExactSystemPromptContinuation();
     this.installPromptPresetProjection();
+    this.installThinkingSelection();
     this.clearToolFileChangeTracking = installToolFileChangeTracking(inner);
   }
 
@@ -510,6 +512,38 @@ export class AgentSessionWrapper {
         },
       };
     };
+  }
+
+  getThinkingSelection(): ThinkingLevelOption | undefined {
+    const branch = this.inner.sessionManager?.getBranch?.() as SessionEntry[] | undefined;
+    return branch ? readSessionThinkingSelection(branch) : undefined;
+  }
+
+  private currentThinkingLevel(): ThinkingLevelOption {
+    const level = this.getThinkingSelection() ?? this.inner.agent.state?.thinkingLevel;
+    return level === "auto" || isModelThinkingLevel(level) ? level : "off";
+  }
+
+  private installThinkingSelection(): void {
+    const stream = this.inner.agent.streamFunction?.bind(this.inner.agent);
+    if (!stream) return;
+    this.inner.agent.streamFunction = (model, context, options) => {
+      const selection = this.getThinkingSelection();
+      if (!selection || resolveThinkingLevelOption(selection, getSupportedThinkingLevels(model)) !== "auto") {
+        return stream(model, context, options);
+      }
+      return stream(model, context, withProviderDefaultThinking(model, { ...options, reasoning: undefined }, true));
+    };
+  }
+
+  private selectThinkingLevel(requested: ThinkingLevelOption): ThinkingLevelOption {
+    const level = resolveThinkingLevelOption(requested, this.inner.getAvailableThinkingLevels());
+    if (level !== "auto") this.inner.setThinkingLevel(level);
+    if (this.getThinkingSelection() !== level) {
+      this.inner.sessionManager.appendCustomEntry(THINKING_SELECTION_TYPE, level);
+    }
+    invalidateSessionListCache();
+    return level;
   }
 
   private installPromptPresetProjection(): void {
@@ -927,7 +961,7 @@ export class AgentSessionWrapper {
           baseSystemPrompt: visibleSystemPrompt,
           promptSelection: this.promptSelection ?? null,
           subagentMode: this.effectiveSubagentMode(),
-          thinkingLevel: this.inner.agent.state?.thinkingLevel ?? "off",
+          thinkingLevel: this.currentThinkingLevel(),
           extensionStatuses: this.getExtensionStatuses(),
           extensionWidgets: this.getExtensionWidgets(),
         };
@@ -942,10 +976,17 @@ export class AgentSessionWrapper {
           model = this.inner.modelRuntime.getModel(provider, modelId);
         }
         if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
+        const selection = this.getThinkingSelection();
+        const previousLevel = this.currentThinkingLevel();
         await this.inner.setModel(model);
+        const mustFallBack = previousLevel !== "off"
+          && resolveThinkingLevelOption(previousLevel, this.inner.getAvailableThinkingLevels()) !== previousLevel;
+        const thinkingLevel = selection || mustFallBack
+          ? this.selectThinkingLevel(previousLevel)
+          : this.currentThinkingLevel();
         invalidateModelsCache();
         invalidateSessionListCache();
-        return { id: model.id, provider: model.provider };
+        return { id: model.id, provider: model.provider, thinkingLevel };
       }
 
       case "fork": {
@@ -1058,10 +1099,10 @@ export class AgentSessionWrapper {
       }
 
       case "set_thinking_level": {
-        const level = command.level as string;
-        this.inner.setThinkingLevel(level);
-        invalidateSessionListCache();
-        return null;
+        const level = command.level;
+        if (level !== "auto" && !isModelThinkingLevel(level)) throw new Error("Invalid thinking level");
+        if (this.isRunning()) throw new Error("Cannot change reasoning while a task is running");
+        return { thinkingLevel: this.selectThinkingLevel(level) };
       }
 
       case "compact": {
@@ -2034,7 +2075,7 @@ export async function setRpcSessionTools(
     : undefined;
   const sessionCwd = existing.cwd;
   const model = existing.inner.model;
-  const currentThinkingLevel = existing.inner.agent.state?.thinkingLevel;
+  const currentThinkingLevel = existing.getThinkingSelection?.() ?? existing.inner.agent.state?.thinkingLevel;
   await existing.shutdown();
 
   if (persistedFile) {
@@ -2046,8 +2087,8 @@ export async function setRpcSessionTools(
     toolNames,
     ...(model ? { initialModel: { provider: model.provider, modelId: model.id } } : {}),
     allowInitialModelFallback: true,
-    ...(currentThinkingLevel && THINKING_LEVEL_NAMES.has(currentThinkingLevel as ThinkingLevel)
-      ? { thinkingLevel: currentThinkingLevel as ThinkingLevel }
+    ...(currentThinkingLevel === "auto" || isModelThinkingLevel(currentThinkingLevel)
+      ? { thinkingLevel: currentThinkingLevel }
       : {}),
   });
   return { session: started.session, sessionId: started.realSessionId, recreated: true };
@@ -2334,7 +2375,7 @@ export async function startRpcSession(
         ...(defaultProvider && defaultModelId
           ? { defaultModel: { provider: defaultProvider, modelId: defaultModelId } }
           : {}),
-        ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(isModelThinkingLevel(thinkingLevel) ? { thinkingLevel } : {}),
       });
     const fallbackForRestoredSession = hasExistingMessages && !restoredModel
       ? selectInitialModelScope(scope, {
@@ -2346,21 +2387,29 @@ export async function startRpcSession(
     const startupModel = restoredModel && services.modelRuntime.hasConfiguredAuth(restoredModel.provider)
       ? restoredModel
       : initial?.model ?? fallbackForRestoredSession;
+    const requestedThinking = !hasExistingMessages ? thinkingLevel : undefined;
+    const startupThinking = requestedThinking && startupModel
+      ? resolveThinkingLevelOption(requestedThinking, getSupportedThinkingLevels(startupModel))
+      : requestedThinking;
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,
       ...(startupModel ? { model: startupModel } : {}),
-      ...(initial?.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
+      ...(startupThinking !== "auto" && initial?.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
       ...(scope.scopedModels.length > 0 ? { scopedModels: [...scope.scopedModels] } : {}),
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
       ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES] } : {}),
     });
+    const effectiveThinking = startupThinking && inner.model
+      ? resolveThinkingLevelOption(startupThinking, getSupportedThinkingLevels(inner.model))
+      : startupThinking;
+    if (effectiveThinking) sessionManager.appendCustomEntry(THINKING_SELECTION_TYPE, effectiveThinking);
 
     const persistedPreferences = await persistExplicitStartupPreferences(
       services.settingsManager,
       {
         ...(effectiveInitialModel ? { model: effectiveInitialModel } : {}),
-        ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(isModelThinkingLevel(effectiveThinking) ? { thinkingLevel: effectiveThinking } : {}),
       },
       {
         ...(inner.model

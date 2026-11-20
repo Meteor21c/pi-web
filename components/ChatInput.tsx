@@ -32,6 +32,7 @@ import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
 import { DEFAULT_SUBAGENT_MODE, SUBAGENT_MODES, type SubagentMode } from "@/lib/subagent-mode";
 import { WorkModeSelector } from "./WorkModeSelector";
 import type { WorkMode } from "@/lib/prompt-presets";
+import { MODEL_THINKING_LEVELS, resolveThinkingLevelOption, type ThinkingLevelOption } from "@/lib/model-capabilities";
 
 export { filterModelOptions } from "./ModelSelector";
 
@@ -83,8 +84,8 @@ interface Props {
   workModeEditable?: boolean;
   onWorkModeChanged?: () => Promise<void>;
   onToolPresetChange?: (preset: ToolPreset) => void;
-  thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  onThinkingLevelChange?: (level: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") => void;
+  thinkingLevel?: ThinkingLevelOption;
+  onThinkingLevelChange?: (level: ThinkingLevelOption) => void;
   availableThinkingLevels?: string[] | null;
   thinkingLevelMap?: Record<string, string | null> | null;
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
@@ -215,8 +216,8 @@ function subscribeUpwardMenuMaxHeight(
   };
 }
 
-const THINKING_LEVELS = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-const THINKING_LEVEL_DESC_KEYS: Record<typeof THINKING_LEVELS[number], string> = {
+const THINKING_LEVELS = ["auto", ...MODEL_THINKING_LEVELS] as const;
+const THINKING_LEVEL_DESC_KEYS: Record<ThinkingLevelOption, string> = {
   auto: "chat.thinkingUseDefault", off: "chat.thinkingOff", minimal: "chat.thinkingMinimal", low: "chat.thinkingLow",
   medium: "chat.thinkingMedium", high: "chat.thinkingHigh", xhigh: "chat.thinkingXhigh", max: "chat.thinkingMax",
 };
@@ -1859,7 +1860,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const compactResultText = compactResult
     ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatTokenCount(compactSavedTokens) })})`
     : null;
-  const effectiveThinkingLevel = availableThinkingLevels?.length === 0 ? "auto" : thinkingLevel ?? "auto";
+  const effectiveThinkingLevel = resolveThinkingLevelOption(thinkingLevel ?? "auto", availableThinkingLevels ?? MODEL_THINKING_LEVELS);
   const thinkingDisplayLabel = (() => {
     const lvl = effectiveThinkingLevel;
     if (lvl === "auto") return t("chat.thinkingAuto");
@@ -2914,8 +2915,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {!isStreaming && onThinkingLevelChange && (
               <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
                 <button
-                  onClick={() => !isStreaming && setThinkingDropdownOpen((v) => !v)}
-                  disabled={isStreaming}
+                  onClick={() => !modelSwitching && setThinkingDropdownOpen((v) => !v)}
+                  disabled={modelSwitching}
                    title={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
                    aria-label={t("chat.changeReasoningLabel")}
                   style={{
@@ -2957,9 +2958,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     padding: 5,
                     overflow: "hidden", minWidth: 180,
                   }}>
-                    {THINKING_LEVELS.filter((lvl) => lvl === "auto" || availableThinkingLevels?.includes(lvl)).map((lvl) => {
+                    {THINKING_LEVELS.filter((lvl) => (lvl !== "off" && lvl !== "minimal") || availableThinkingLevels?.includes(lvl)).map((lvl) => {
                       const isActive = effectiveThinkingLevel === lvl;
-                      const desc = t(lvl === "auto" && availableThinkingLevels?.length === 0 ? "models.reasoningModelAuto" : THINKING_LEVEL_DESC_KEYS[lvl]);
+                      const fallsBack = lvl !== "auto" && availableThinkingLevels !== null && availableThinkingLevels !== undefined
+                        && !availableThinkingLevels.includes(lvl);
+                      const desc = t(fallsBack ? "chat.thinkingFallsBack" : THINKING_LEVEL_DESC_KEYS[lvl]);
                       const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
                       const displayLabel = lvl === "auto" ? t("chat.thinkingAuto") : mappedVal ?? lvl;
                       const showOriginal = mappedVal != null && mappedVal !== lvl;
@@ -2967,7 +2970,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         <button
                           key={lvl}
                           className="ui-menu-item"
-                          onClick={() => { setThinkingDropdownOpen(false); if (!isActive) onThinkingLevelChange(lvl); }}
+                          aria-pressed={isActive}
+                          onClick={() => { setThinkingDropdownOpen(false); if (!isActive || lvl === "auto") onThinkingLevelChange(lvl); }}
                           style={{
                             display: "flex", alignItems: "center", gap: 8,
                             width: "100%", padding: "7px 12px",

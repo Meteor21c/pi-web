@@ -1,5 +1,16 @@
 export const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
+export type ModelThinkingLevel = typeof MODEL_THINKING_LEVELS[number];
+export type ThinkingLevelOption = ModelThinkingLevel | "auto";
+
+export function isModelThinkingLevel(value: unknown): value is ModelThinkingLevel {
+  return MODEL_THINKING_LEVELS.some((level) => level === value);
+}
+
+export function resolveThinkingLevelOption(level: ThinkingLevelOption, supported: readonly string[]): ThinkingLevelOption {
+  return supported.includes(level) ? level : "auto";
+}
+
 export type ModelInput = "text" | "image";
 export type ModelThinkingLevelMap = Record<string, string | null>;
 

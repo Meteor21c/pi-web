@@ -14,6 +14,7 @@ import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-res
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { listSessionsIncremental } from "./session-list-scanner";
+import { readSessionThinkingSelection } from "./session-thinking";
 
 export { getAgentDir };
 
@@ -423,7 +424,7 @@ export function getLatestModelChange(entries: SessionEntry[]): SessionContext["m
 function getSessionSettings(entries: SessionEntry[], leafId?: string | null): Pick<SessionContext, "thinkingLevel" | "model"> {
   if (leafId === null) return { thinkingLevel: "off", model: null };
   const branch = sliceActiveBranch(entries, leafId ?? null, entries.length);
-  let thinkingLevel: string | undefined;
+  let thinkingLevel: string | undefined = readSessionThinkingSelection(branch);
   let responseModel: SessionContext["model"] | undefined;
 
   for (let i = branch.length - 1; i >= 0 && (thinkingLevel === undefined || responseModel === undefined); i--) {
