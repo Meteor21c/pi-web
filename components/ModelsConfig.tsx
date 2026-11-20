@@ -1181,7 +1181,9 @@ function ModelDetail({
   const effectiveContextWindow = relayContextPolicy
     ? resolveRelayContextWindow(model.id, customContextWindow, relayFirstTierContextWindow)
     : customContextWindow ?? defaultContextWindow;
-  const matchingContextPreset = CONTEXT_WINDOW_PRESETS.find(({ tokens }) => tokens === customContextWindow);
+  const matchingContextPreset = CONTEXT_WINDOW_PRESETS.find(
+    ({ tokens }) => tokens === customContextWindow && tokens === effectiveContextWindow,
+  );
   const showCustomContextWindow = editingCustomContextWindow || (customContextWindow !== undefined && !matchingContextPreset);
   const autoContextWindowLabel = t("models.contextWindowAuto", { count: defaultContextWindow.toLocaleString(locale) });
   const setContextWindow = (next: number | undefined) => {
