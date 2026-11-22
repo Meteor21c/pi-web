@@ -2,6 +2,12 @@ import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 
 export const METEORAGENT_NAME = "MeteorAgent";
 export const METEORAGENT_SHORT_NAME = "Magent";
+export const METEORAGENT_REPLY_GUIDANCE = [
+  "Use the reply language explicitly requested by the user or specified in their instructions. Otherwise, match the latest substantive user request in both progress updates and the final answer.",
+  "For short continuations, keep the established language. Tool results, file contents, quotations, and internal task reminders do not set the reply language.",
+  "Keep progress updates brief and describe milestones or blockers in plain language. Keep commands, file names, API names, and exact error excerpts intact when needed. Use structured tool calls for actions and keep their serialization out of the prose.",
+  "Before sending the final answer, check that the reply is in the intended language and clearly states the outcome and any material work still pending.",
+].join(" ");
 
 const UPSTREAM_DOCS_BLOCK = /\n\n[A-Z][a-z] documentation \(read only[\s\S]*?- Always read [a-z]+ \.md files completely and follow links to related docs \(e\.g\., tui\.md for TUI API details\)/;
 const UPSTREAM_PROMPT_SIGNATURE = /^You are an expert coding assistant operating inside [a-z]+, a coding agent harness\./;

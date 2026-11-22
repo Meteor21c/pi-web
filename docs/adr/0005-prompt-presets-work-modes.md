@@ -78,6 +78,13 @@ applies to the first request, tool-loop continuations, context compaction, and
 later turns. Plan/Goal instructions are applied separately. Existing v1
 conversation snapshots keep their original additive behavior.
 
+The default main-session prompt asks the model to use the user's requested
+language in visible progress and the final answer, or to match the latest
+substantive request. Goal continuations keep the established reply language.
+The runtime projects this guidance on each ordinary provider request and skips
+it when a v2 full prompt is selected. The check is part of generation and uses
+the same model call.
+
 In Goal mode, the runtime reads the active objective at the start of a run and
 adds it and any previous evidence to the latest user message for the provider.
 Tool continuations and queued messages keep the same goal snapshot for that run.

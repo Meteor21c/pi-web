@@ -9,7 +9,7 @@ import { existsSync, realpathSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
-import { createMeteorAgentBrandExtension, rebrandMeteorAgentSystemPrompt } from "./meteoragent-brand";
+import { createMeteorAgentBrandExtension, METEORAGENT_REPLY_GUIDANCE, rebrandMeteorAgentSystemPrompt } from "./meteoragent-brand";
 import {
   filterModelScopeByProviders,
   filterModelScopeByRelayAuthorization,
@@ -113,7 +113,7 @@ type GoalRun = {
 };
 
 const GOAL_REPORT_TOOL = "meteoragent_report_goal";
-const GOAL_CONTINUATION = "Continue the current goal from the work already done. Check what remains before acting and avoid repeating completed operations. Use the goal report tool when you have verified completion or reached a blocker, then tell the user the result plainly.";
+const GOAL_CONTINUATION = "Continue the current goal from the work already done. Check what remains before acting and avoid repeating completed operations. Use the goal report tool when you have verified completion or reached a blocker, then tell the user the result plainly in the conversation's established reply language.";
 
 type PendingUiResponse = {
   resolve: (response: ExtensionUiResponse) => void;
@@ -792,6 +792,17 @@ export class AgentSessionWrapper {
         };
         projectedMessages = [projected, ...transformed.slice(head ? 1 : 0)];
       }
+      if (!this.suppressCompletionNotifications && !(selection?.version === 2 && selection.preset)) {
+        // Keep the default on the provider request, including after compaction.
+        // Full replacement presets control their own response style.
+        const index = projectedMessages.findLastIndex((message) => message.role === "system");
+        const sections = { meteoragentReplyGuidance: METEORAGENT_REPLY_GUIDANCE };
+        projectedMessages = index < 0
+          ? [{ role: "system", content: "", sections, timestamp: 0 }, ...projectedMessages]
+          : projectedMessages.map((message, messageIndex) => messageIndex === index && message.role === "system"
+            ? { ...message, sections: { ...message.sections, ...sections } }
+            : message);
+      }
       if (selection?.mode === "goal" && this.runGoalSnapshot) {
         const index = projectedMessages.findLastIndex((message) => message.role === "system");
         const reporting = showGoalTool
@@ -846,6 +857,14 @@ export class AgentSessionWrapper {
     const previousBeforeTool = this.inner.agent.beforeToolCall;
     this.inner.agent.beforeToolCall = async (context, signal) =>
       this.guardToolCall(context.toolCall.name) ?? await previousBeforeTool?.(context, signal);
+  }
+
+  private getBaseSystemPromptForDisplay(): string {
+    const current = this.inner.agent.state?.systemPrompt ?? "";
+    const base = this.exactSystemPrompt?.() ?? (this.chatOnly ? current : rebrandMeteorAgentSystemPrompt(current));
+    return this.suppressCompletionNotifications
+      ? base
+      : [base, METEORAGENT_REPLY_GUIDANCE].filter(Boolean).join("\n\n");
   }
 
   private allowedPlanTools(): Set<string> {
@@ -1094,10 +1113,7 @@ export class AgentSessionWrapper {
 
       case "get_prompt_selection": {
         this.refreshUnstartedPromptSelection();
-        const currentSystemPrompt = this.inner.agent.state?.systemPrompt ?? "";
-        const baseSystemPrompt = this.exactSystemPrompt?.()
-          ?? (this.chatOnly ? currentSystemPrompt : rebrandMeteorAgentSystemPrompt(currentSystemPrompt));
-        return { selection: this.effectivePromptSelection() ?? null, baseSystemPrompt };
+        return { selection: this.effectivePromptSelection() ?? null, baseSystemPrompt: this.getBaseSystemPromptForDisplay() };
       }
       case "prompt": {
         // Serialize only admission. Once the preceding prompt has either
@@ -1302,9 +1318,7 @@ export class AgentSessionWrapper {
         this.refreshUnstartedPromptSelection();
         const model = this.inner.model;
         const contextUsage = this.inner.getContextUsage();
-        const currentSystemPrompt = this.inner.agent.state?.systemPrompt ?? "";
-        const visibleSystemPrompt = this.exactSystemPrompt?.()
-          ?? (this.chatOnly ? currentSystemPrompt : rebrandMeteorAgentSystemPrompt(currentSystemPrompt));
+        const visibleSystemPrompt = this.getBaseSystemPromptForDisplay();
         return {
           sessionId: this.inner.sessionId,
           sessionFile: this.inner.sessionFile ?? "",
