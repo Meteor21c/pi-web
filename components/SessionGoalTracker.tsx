@@ -117,13 +117,16 @@ export function SessionGoalTracker({ goal, showCreate, disabled, running, runnin
           <button type="button" disabled={controlsDisabled} onClick={() => void applyAction({ type: "cancel" })}>{t("chat.goal.cancel")}</button>
         </div>
       )}
-      {!editing && (goal?.reason || goal?.detail || goal?.evidence) && (
+      {!editing && (goal?.reason || goal?.detail || goal?.evidence || goal?.userAction) && (
         <div className={styles.details}>
           {goal.reason && <p>{t(`chat.goal.reason.${goal.reason}`)}</p>}
           {goal.detail && <p className={styles.detailText}>{goal.detail}</p>}
+          {goal.userAction && (
+            <p className={styles.detailText}><strong>{t("chat.goal.nextAction")} </strong>{goal.userAction}</p>
+          )}
           {goal.evidence && (
             <details>
-              <summary>{t("chat.goal.evidence")}</summary>
+              <summary>{t(goal.status === "completed" ? "chat.goal.evidence" : "chat.goal.lastProgress")}</summary>
               <p className={styles.detailText}>{goal.evidence}</p>
             </details>
           )}

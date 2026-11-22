@@ -2,16 +2,16 @@
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
+import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, CustomMessage, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { getAssistantErrorMessage, getAssistantTimelineSegments, isMessageGroupAnchor, stoppedWithoutFinalAnswer } from "@/lib/message-display";
+import { getAssistantErrorMessage, getAssistantTimelineSegments, isMessageGroupAnchor, readGoalOutcomeStatus, shouldShowSettledGoalFinal, stoppedWithoutFinalAnswer } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
 import type { WorkMode } from "@/lib/prompt-presets";
 import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
-import { GOAL_CONTINUATION_TYPE } from "@/lib/session-goal-types";
+import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
 import { DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
 import { NewSessionWelcome } from "./NewSessionWelcome";
 import { divideByUiScale } from "@/lib/ui-scale";
@@ -143,6 +143,10 @@ function AgentActivityCard({ phase, streamingStage, t }: {
 
 const CHAT_MINIMAP_WIDTH = 36;
 
+function isGoalOutcomeMessage(message: AgentMessage): message is CustomMessage & { customType: typeof GOAL_OUTCOME_TYPE } {
+  return message.role === "custom" && message.customType === GOAL_OUTCOME_TYPE;
+}
+
 function getUserInputText(message: AgentMessage): string | null {
   if (message.role !== "user") return null;
   if (typeof message.content === "string") {
@@ -194,7 +198,7 @@ function aggregateTurnActualCost(
   return usageEntries.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 }
 
-function activitySummary(blocks: AssistantContentBlock[], commandCount: number, t: (key: string, params?: Record<string, string | number>) => string): string {
+function activitySummary(blocks: AssistantContentBlock[], commandCount: number, t: (key: string, params?: Record<string, string | number>) => string, goalTurn = false): string {
   const counts = new Map<string, number>();
   for (const block of blocks) {
     if (block.type !== "toolCall") continue;
@@ -208,7 +212,8 @@ function activitySummary(blocks: AssistantContentBlock[], commandCount: number, 
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   if (commandCount > 0) counts.set("chat.activityCommandSummary", (counts.get("chat.activityCommandSummary") ?? 0) + commandCount);
-  return [...counts].map(([key, count]) => t(key, { count })).join(" · ") || t("chat.activityThoughtSummary");
+  return [...counts].map(([key, count]) => t(key, { count })).join(" · ")
+    || t(goalTurn && blocks.some((block) => block.type === "text") ? "chat.activityGoalDetails" : "chat.activityThoughtSummary");
 }
 
 function ProcessDetailsGroup({ summary, activeLabel, failureCount = 0, children, t }: {
@@ -1192,10 +1197,18 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               }
 
               const visibleRefIndexByMessage = new Map<number, number>();
+              const goalOutcomeByAssistant = new Map<number, ReturnType<typeof readGoalOutcomeStatus>>();
               let refIdx = 0;
+              let lastAssistantIdx = -1;
               timelineMessages.forEach((msg, idx) => {
                 if (isMessageGroupAnchor(msg) || msg.role === "assistant") {
                   visibleRefIndexByMessage.set(idx, refIdx++);
+                }
+                // A compaction can separate the outcome entry from its final reply.
+                if (msg.role === "user") lastAssistantIdx = -1;
+                else if (msg.role === "assistant") lastAssistantIdx = idx;
+                else if (lastAssistantIdx !== -1 && isGoalOutcomeMessage(msg)) {
+                  goalOutcomeByAssistant.set(lastAssistantIdx, readGoalOutcomeStatus(msg.details));
                 }
               });
 
@@ -1276,8 +1289,13 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
               const rendered: ReactNode[] = [];
               let tailHasActivityGroup = false;
-              // Compaction splits the timeline, but an earlier part of the same turn can deliver an image.
+              // Compaction splits the display, while mode and delivered images belong to the full turn.
               let turnStartIdx = 0;
+              const goalUnavailable = goalsEnabled && (goalLoading || goalLoadError);
+              const firstUserIdx = timelineMessages.findIndex((message) => message.role === "user");
+              const leadingMessages = firstUserIdx === -1 ? timelineMessages : timelineMessages.slice(0, firstUserIdx);
+              let isGoalTurn = leadingMessages.some(isGoalOutcomeMessage)
+                || (lastUserIdx === -1 && data?.workMode === "goal" && (sessionGoal !== null || goalUnavailable));
               for (let idx = 0; idx < timelineMessages.length;) {
                 // A lazily loaded history page may start halfway through a turn.
                 const hasAnchor = isMessageGroupAnchor(timelineMessages[idx]);
@@ -1290,8 +1308,25 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 const turnMessages = timelineMessages.slice(userIdx + 1, endIdx);
                 const turnModel = turnMessages.find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
                 const anchor = timelineMessages[userIdx];
-                if (hasAnchor && anchor?.role === "user") turnStartIdx = idx + 1;
                 const turnWorkMode = anchor?.role === "user" ? anchor.turnWorkMode : undefined;
+                if (hasAnchor && anchor?.role === "user") {
+                  turnStartIdx = idx + 1;
+                  isGoalTurn = turnWorkMode === "goal";
+                }
+                let finalAssistantIdx = -1;
+                for (let i = endIdx - 1; i > userIdx; i--) {
+                  if (timelineMessages[i].role === "assistant") { finalAssistantIdx = i; break; }
+                }
+                const nextAnchor = timelineMessages[endIdx];
+                const goalOutcome = goalOutcomeByAssistant.get(finalAssistantIdx);
+                const isTurnEnd = Boolean(goalOutcome) || !nextAnchor || nextAnchor.role === "user";
+                if (goalOutcome) isGoalTurn = true;
+                const canShowGoalFinal = isTurnEnd && !isLiveTail && shouldShowSettledGoalFinal({
+                  outcome: goalOutcome,
+                  latest: endIdx === timelineMessages.length,
+                  goalUnavailable,
+                  goalStatus: sessionGoal?.status,
+                });
                 if (turnModel || turnWorkMode) {
                   rendered.push(<TurnLabels
                     key={"turn-labels-" + (entryIds[userIdx] ?? userIdx)}
@@ -1300,11 +1335,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     modeLabel={turnWorkMode ? t(`chat.turnMode.${turnWorkMode}`) : undefined}
                   />);
                 }
-                let finalAssistantIdx = -1;
-                for (let i = endIdx - 1; i > userIdx; i--) {
-                  if (timelineMessages[i].role === "assistant") { finalAssistantIdx = i; break; }
-                }
-
                 let processViews: ReactNode[] = [];
                 let processBlocks: AssistantContentBlock[] = [];
                 let processCommands = 0;
@@ -1313,13 +1343,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 let processEntryId: string | undefined;
                 let processEntryIds = new Set<string>();
                 let processRefIndices = new Set<number>();
+                const goalFinalText: AssistantContentBlock[] = [];
                 const flushProcess = (active = false) => {
                   if (processViews.length === 0) return;
                   const refIndices = processRefIndices;
                   rendered.push(
                     <div key={"process-" + processKey} data-entry-id={processEntryId} data-process-entry-ids={[...processEntryIds].join(" ")} ref={(el) => { for (const refIndex of refIndices) messageRefs.current[refIndex] = el; }}>
                       <ProcessDetailsGroup
-                        summary={activitySummary(processBlocks, processCommands, t)}
+                        summary={activitySummary(processBlocks, processCommands, t, isGoalTurn)}
                         activeLabel={active ? phaseLabel(agentPhase, t) ?? t("chat.thinking") : undefined}
                         failureCount={processFailures}
                         t={t}
@@ -1336,7 +1367,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 };
                 for (let messageIdx = userIdx + 1; messageIdx < endIdx; messageIdx++) {
                   const message = timelineMessages[messageIdx];
-                  if (message.role === "toolResult" || (message.role === "custom" && message.customType === GOAL_CONTINUATION_TYPE)) continue;
+                  if (message.role === "toolResult" || isGoalOutcomeMessage(message)
+                    || (message.role === "custom" && message.customType === GOAL_CONTINUATION_TYPE)) continue;
                   if (message.role === "bashExecution") {
                     if (processViews.length === 0) {
                       processKey = String(entryIds[messageIdx] ?? messageIdx);
@@ -1356,6 +1388,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   const isStreamingMessage = streamState.isStreaming && messageIdx === messages.length;
                   const segments = getAssistantTimelineSegments(message, {
                     isStreaming: isStreamingMessage,
+                    goalText: !isGoalTurn ? undefined : canShowGoalFinal && messageIdx === finalAssistantIdx ? "final" : "activity",
                     isVisibleToolResult: (block) => {
                       const result = toolResultsMap.get(block.toolCallId);
                       if (onOpenSession && block.toolName === "Agent" && isSubagentToolDetails(result?.details)) return true;
@@ -1365,6 +1398,12 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   for (const segment of segments) {
                     const keyPrefix = segment.kind + "-" + segment.blockIndices[0];
                     if (segment.kind === "output") {
+                      if (isGoalTurn && messageIdx === finalAssistantIdx) {
+                        for (const index of segment.blockIndices) {
+                          const block = message.content[index];
+                          if (block.type === "text") goalFinalText.push(block);
+                        }
+                      }
                       flushProcess();
                       rendered.push(renderMessage(messageIdx, { keyPrefix, blockIndices: segment.blockIndices, hideMetadata: true, showModel: false, showTimestamp: false }));
                       continue;
@@ -1390,8 +1429,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 flushProcess(isLiveTail);
                 const finalAssistant = timelineMessages[finalAssistantIdx];
                 if (!isLiveTail && finalAssistant?.role === "assistant") {
-                  const nextAnchor = timelineMessages[endIdx];
-                  if ((!nextAnchor || nextAnchor.role === "user") && stoppedWithoutFinalAnswer(finalAssistant)) {
+                  if (isTurnEnd && (!isGoalTurn || canShowGoalFinal) && stoppedWithoutFinalAnswer(finalAssistant)) {
                     const deliveredImage = timelineMessages.slice(turnStartIdx, endIdx).some((message) =>
                       message.role === "assistant" && message.content.some((block) =>
                         block.type === "toolCall" && getDeliveredToolImages(
@@ -1419,6 +1457,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     keyPrefix: "turn-summary",
                     attachRef: false,
                     blockIndices: [],
+                    // The footer copy action uses this message; copy only text shown as a Goal answer.
+                    messageOverride: isGoalTurn ? { ...finalAssistant, content: goalFinalText } : undefined,
                     showModel: false,
                     usageOverride: aggregateTurnUsage(timelineMessages, userIdx + 1, finalAssistantIdx),
                     actualCost: aggregateTurnActualCost(timelineMessages, entryIds, userIdx + 1, finalAssistantIdx, relayActualCosts.costs),

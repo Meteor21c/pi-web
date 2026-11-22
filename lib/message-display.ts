@@ -1,4 +1,5 @@
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ThinkingContent, ToolCallContent } from "./types";
+import type { SessionGoal } from "./session-goal-types";
 
 interface DisplayOptions {
   isStreaming?: boolean;
@@ -72,15 +73,51 @@ export interface AssistantTimelineSegment {
   blockIndices: number[];
 }
 
+type GoalOutcomeStatus = "completed" | "paused" | "blocked";
+
+export function readGoalOutcomeStatus(details: unknown): GoalOutcomeStatus | undefined {
+  if (!details || typeof details !== "object" || !("status" in details)) return;
+  const { status } = details;
+  if (status === "completed" || status === "paused" || status === "blocked") return status;
+}
+
+/** A turn's persisted outcome takes precedence over later changes to the tracker. */
+export function shouldShowSettledGoalFinal(options: {
+  outcome?: GoalOutcomeStatus;
+  latest: boolean;
+  goalUnavailable?: boolean;
+  goalStatus?: SessionGoal["status"];
+}): boolean {
+  if (options.outcome) return options.outcome === "completed";
+  // Legacy turns may have no outcome entry. Wait for current goal state before
+  // treating the latest turn as legacy, including while an active goal settles.
+  return !options.latest || (!options.goalUnavailable && (!options.goalStatus || options.goalStatus === "completed"));
+}
+
+// A relay can surface malformed DeepSeek tool markup as ordinary text. Keep
+// it available in the process details without presenting it as a final reply.
+const DSML_TOOL_MARKUP = /<\/?\s*[|｜]\s*DSML\s*[|｜]\s*(?:function_calls?|calls?|invoke|parameter)\b/i;
+
 /** Keep stage text in order and retain stored indices for deferred thinking. */
 export function getAssistantTimelineSegments(
   message: AssistantMessage,
-  options: DisplayOptions & { isVisibleToolResult?: (block: ToolCallContent) => boolean } = {},
+  options: DisplayOptions & {
+    goalText?: "activity" | "final";
+    isVisibleToolResult?: (block: ToolCallContent) => boolean;
+  } = {},
 ): AssistantTimelineSegment[] {
+  const finalTextFrom = options.goalText === "final" && !options.isStreaming && message.stopReason === "stop"
+    ? message.content.findLastIndex((block) =>
+        !isFinalAnswerBlock(block) && !isEmptyThinkingBlock(block, options),
+      ) + 1
+    : message.content.length;
   const segments: AssistantTimelineSegment[] = [];
   message.content.forEach((block, index) => {
     if (isEmptyThinkingBlock(block, options) || (block.type === "text" && !block.text.trim())) return;
-    const kind = block.type === "text" || block.type === "image"
+    const isVisibleText = block.type === "text" && (
+      options.goalText === undefined || (index >= finalTextFrom && !DSML_TOOL_MARKUP.test(block.text))
+    );
+    const kind = isVisibleText || block.type === "image"
       || (block.type === "toolCall" && options.isVisibleToolResult?.(block))
       ? "output" : "activity";
     const previous = segments.at(-1);

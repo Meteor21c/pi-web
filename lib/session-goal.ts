@@ -2,7 +2,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import lockfile from "proper-lockfile";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import {
-  MAX_SESSION_GOAL_LENGTH, type SessionGoal, type SessionGoalReason, type SessionGoalUpdate,
+  MAX_SESSION_GOAL_LENGTH, SESSION_GOAL_REASONS, type SessionGoal, type SessionGoalReason, type SessionGoalUpdate,
 } from "./session-goal-types";
 
 export type { SessionGoal, SessionGoalAction, SessionGoalUpdate } from "./session-goal-types";
@@ -15,10 +15,11 @@ export class SessionGoalError extends Error {
 
 const UNFINISHED_STATUSES = new Set<SessionGoal["status"]>(["active", "paused", "blocked"]);
 const GOAL_STATUSES = new Set<SessionGoal["status"]>([...UNFINISHED_STATUSES, "completed", "cancelled"]);
-const GOAL_REASONS = new Set<SessionGoalReason>(["empty_reply", "budget", "user_stop", "request_error", "blocked", "needs_review"]);
+const GOAL_REASONS = new Set<SessionGoalReason>(SESSION_GOAL_REASONS);
 const MAX_GOAL_REPORT_LENGTH = 2_000;
 
-type SessionGoalOutcome = Pick<SessionGoal, "reason" | "detail" | "evidence"> & {
+type GoalReportFields = Pick<SessionGoal, "reason" | "detail" | "evidence" | "userAction">;
+type SessionGoalOutcome = GoalReportFields & {
   status: "paused" | "blocked" | "completed";
 };
 
@@ -81,11 +82,12 @@ export function readSessionGoal(sessionFile: string): SessionGoal | null {
   throw new Error("Invalid session goal metadata");
 }
 
-function goalReportFields(value: Record<string, unknown>): Pick<SessionGoal, "reason" | "detail" | "evidence"> {
-  const report: Pick<SessionGoal, "reason" | "detail" | "evidence"> = {};
+function goalReportFields(value: Record<string, unknown>): GoalReportFields {
+  const report: GoalReportFields = {};
   if (GOAL_REASONS.has(value.reason as SessionGoalReason)) report.reason = value.reason as SessionGoalReason;
   if (typeof value.detail === "string" && value.detail.trim()) report.detail = value.detail.trim().slice(0, MAX_GOAL_REPORT_LENGTH);
   if (typeof value.evidence === "string" && value.evidence.trim()) report.evidence = value.evidence.trim().slice(0, MAX_GOAL_REPORT_LENGTH);
+  if (typeof value.userAction === "string" && value.userAction.trim()) report.userAction = value.userAction.trim().slice(0, MAX_GOAL_REPORT_LENGTH);
   return report;
 }
 

@@ -1249,7 +1249,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         break;
       }
-      case "agent_start":
+      case "agent_start": {
+        const sid = sessionIdRef.current;
+        if (sid && event.resumedGoal) updateGoalState(sid, event.resumedGoal as SessionGoal);
         setActiveComputerUseApprovalPolicy(event.computerUseApprovalPolicy === "full" ? "full" : "ask");
         cancelEventStreamGrace();
         sdkAgentActiveRef.current = true;
@@ -1258,6 +1260,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setAgentPhase({ kind: "waiting_model" });
         dispatch({ type: "start" });
         break;
+      }
       case "agent_end":
         // One logical prompt can emit multiple agent_end events before retrying,
         // compacting, or continuing messages queued by extension handlers.
@@ -1496,7 +1499,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (typeof event.id === "string") dispatchExtensionUi({ type: "closed", id: event.id });
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadGoal, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t, updateWorkMode]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadGoal, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t, updateGoalState, updateWorkMode]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[], restoreDraft = true) => {

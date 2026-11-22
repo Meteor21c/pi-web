@@ -91,14 +91,29 @@ Tool continuations and queued messages keep the same goal snapshot for that run.
 The system section contains the runtime's instructions for using that context.
 Pi uses a separate prompt for compaction.
 
-For a saved active goal in a tool-enabled conversation, the internal goal tool
-records progress, evidence of completion, or a blocker. A normal stop with an
-empty final response or a progress report can trigger one additional provider
-request through Pi's pre-settlement hook. Queued user input, an edited goal, a mode
-switch, or a user stop takes priority. The extra request counts toward usage.
-When the run settles, a paused, blocked, or completed status and its available
-evidence are saved under the starting goal revision. Completion requires a
-model report with evidence or explicit user confirmation.
+A saved active goal in a tool-enabled conversation uses an internal reporting
+tool for concrete checkpoints, verified completion, and blockers that require
+a specific action or answer from the user. Through Pi's pre-settlement hook,
+MeteorAgent continues after new checkpoints and gives an unreported normal
+stop one recovery attempt before pausing for lack of progress. A new checkpoint
+resets that recovery allowance. One user-initiated run allows up to eight
+automatic continuations, which count toward model usage. Queued user input, an
+edited goal, a mode switch, a user stop, and genuine request or approval
+failures take priority.
+
+When the run settles, MeteorAgent saves the outcome and available evidence
+under the starting goal revision. If the model asks for information, the user
+can reply in the Goal conversation to resume the same objective. Completion
+requires a model report with evidence or explicit user confirmation. Tracked
+turns store a hidden outcome marker so their operational text stays folded
+after reload and in later turns. That marker is filtered from model context.
+
+On macOS, MeteorAgent distinguishes app-level approval from Cua Driver's
+system grants. An explicit native denial or a failed capture paired with a
+negative grant check can pause the goal with system settings instructions.
+A generic capture error can include a permission hint even when the grants
+are present. The runtime gives that failure a chance to recover and explains
+the capture problem if progress stalls.
 
 With Pi 1.6.0, the runtime acknowledges the SDK's started, handled, and queued
 prompt dispositions. Only a started run receives the requested approval policy.

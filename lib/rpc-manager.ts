@@ -57,6 +57,7 @@ import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { isSubagentMode, type SubagentMode } from "./subagent-mode";
 import { getPresetFromToolNames } from "./tool-presets";
 import { isComputerUseApprovalPolicy, type ComputerUseApprovalPolicy } from "./computer-use-approval-policy";
+import { computerUseCaptureFailed, computerUsePermissionCheck, deniedComputerUsePermission, type ComputerUsePermission } from "./computer-use-permissions";
 import { installToolFileChangeTracking } from "./tool-file-change";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
@@ -68,8 +69,8 @@ import { withProviderDefaultThinking } from "./model-auto-reasoning";
 import { isModelThinkingLevel, resolveThinkingLevelOption, type ThinkingLevelOption } from "./model-capabilities";
 import { readSessionThinkingSelection, THINKING_SELECTION_TYPE } from "./session-thinking";
 import { readPromptPresetSettings } from "./prompt-preset-store";
-import { readSessionGoal, updateSessionGoalFromRun, type SessionGoal } from "./session-goal";
-import { GOAL_CONTINUATION_TYPE } from "./session-goal-types";
+import { readSessionGoal, updateSessionGoal, updateSessionGoalFromRun, type SessionGoal } from "./session-goal";
+import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "./session-goal-types";
 import { stoppedWithoutFinalAnswer } from "./message-display";
 import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
@@ -99,13 +100,23 @@ type ComputerUseApprovalRun = {
   remembered: Set<string>;
 };
 
-type GoalReport = { status: "progress" | "complete" | "blocked"; detail: string };
+type GoalReport = { status: "progress" | "complete" | "blocked"; detail: string; userAction?: string };
 
 type GoalRun = {
   id: string;
   revision?: number;
   sawUser: boolean;
-  continued: boolean;
+  replyCanResume: boolean;
+  resumedGoal?: SessionGoal;
+  continuations: number;
+  recoveryUsed: boolean;
+  progressCheckpoints: Set<string>;
+  lastProgress?: string;
+  pauseReason?: "no_progress" | "budget";
+  computerPermissions: Set<ComputerUsePermission>;
+  screenRecordingGranted?: boolean;
+  screenCaptureFailed?: boolean;
+  approvalRequired?: boolean;
   stopped: boolean;
   deliveredImage: boolean;
   lastAssistant?: AssistantMessage;
@@ -113,7 +124,8 @@ type GoalRun = {
 };
 
 const GOAL_REPORT_TOOL = "meteoragent_report_goal";
-const GOAL_CONTINUATION = "Continue the current goal from the work already done. Check what remains before acting and avoid repeating completed operations. Use the goal report tool when you have verified completion or reached a blocker, then tell the user the result plainly in the conversation's established reply language.";
+const MAX_GOAL_CONTINUATIONS = 8;
+const GOAL_CONTINUATION = "Continue the current goal from the work already done. Verify the current state before repeating any operation. Work on the remaining steps. Before ending this round, call the goal report tool with verified completion, a new concrete checkpoint, or the specific action you need from the user. Give the user a brief update in the conversation's established reply language.";
 
 type PendingUiResponse = {
   resolve: (response: ExtensionUiResponse) => void;
@@ -408,6 +420,7 @@ export class AgentSessionWrapper {
       name: "meteoragent-goal",
       hidden: true,
       factory(pi) {
+        pi.on("agent_start", () => getWrapper()?.resumeGoalOnUserReply());
         pi.on("agent_before_settle", (event) => getWrapper()?.continueGoalRun(event));
         // Pi dispatches nested calls via the extension runner, independently of
         // Agent.beforeToolCall. Apply the same policy to each nested operation.
@@ -415,10 +428,11 @@ export class AgentSessionWrapper {
         pi.registerTool(defineTool({
           name: GOAL_REPORT_TOOL,
           label: "Goal progress",
-          description: "Record verified progress, completion, or a blocker for the active goal.",
+          description: "Record a concrete checkpoint, verified completion, or a blocker that requires the user to act. Call this before ending a goal round.",
           parameters: Type.Object({
             status: Type.Union([Type.Literal("progress"), Type.Literal("complete"), Type.Literal("blocked")]),
             detail: Type.String({ minLength: 1, maxLength: 2_000, description: "Concrete evidence for progress or completion, or the reason the goal is blocked." }),
+            userAction: Type.Optional(Type.String({ minLength: 1, maxLength: 2_000, description: "For blocked only: the specific action or answer needed from the user, in their reply language." })),
           }),
           async execute(_callId, report, signal) {
             const wrapper = getWrapper();
@@ -450,21 +464,40 @@ export class AgentSessionWrapper {
     }
     const detail = report.detail.trim();
     if (!detail) throw new Error("Provide evidence or explain the blocker before reporting goal progress.");
+    const userAction = report.status === "blocked" ? report.userAction?.trim() : undefined;
+    if (report.status === "blocked" && !userAction) throw new Error("Describe exactly what the user needs to do or answer before you can continue.");
     if (run.report?.status === "complete" || run.report?.status === "blocked") {
       throw new Error("A final report has already been recorded for this run.");
     }
-    run.report = { status: report.status, detail };
+    run.report = { status: report.status, detail, ...(userAction ? { userAction } : {}) };
   }
 
   private continueGoalRun(event: AgentBeforeSettleEvent): AgentBeforeSettleEventResult | undefined {
     const run = this.goalRun;
-    if (!run || run.stopped || run.continued || event.outcome !== "completed"
-      || event.continue || event.context.pendingMessages.length > 0
-      || this.activeQueueSubmissions > 0 || this.hasQueuedUserMessages() || this.pendingUiResponses.size > 0
+    if (!run || run.stopped || run.approvalRequired || run.computerPermissions.size > 0
+      || event.outcome !== "completed" || event.continue || event.context.pendingMessages.length > 0
+      || this.activeQueueSubmissions > 0 || this.hasQueuedUserMessages() || this.pendingUiRequests.size > 0
       || !run.lastAssistant || run.lastAssistant.stopReason !== "stop" || !this.goalRunIsCurrent(run)) return;
-    if (run.report?.status !== "progress"
-      && (run.report || run.deliveredImage || !stoppedWithoutFinalAnswer(run.lastAssistant))) return;
-    run.continued = true;
+    if (run.report?.status === "complete" || run.report?.status === "blocked") return;
+    if (run.deliveredImage && !run.report) return;
+    const progress = run.report?.detail;
+    const checkpoint = progress?.replace(/\s+/g, " ").toLowerCase();
+    if (checkpoint && !run.progressCheckpoints.has(checkpoint)) {
+      run.progressCheckpoints.add(checkpoint);
+      run.lastProgress = progress;
+      run.recoveryUsed = false;
+    } else if (run.recoveryUsed) {
+      run.pauseReason = "no_progress";
+      return;
+    } else {
+      run.recoveryUsed = true;
+    }
+    if (run.continuations >= MAX_GOAL_CONTINUATIONS) {
+      run.pauseReason = "budget";
+      return;
+    }
+    run.continuations += 1;
+    run.report = undefined;
     return {
       entries: [...event.entries, {
         type: "custom_message",
@@ -478,29 +511,94 @@ export class AgentSessionWrapper {
   }
 
   private async settleGoalRun(run: GoalRun | undefined, requestFailed = false): Promise<void> {
-    if (!run || run.revision === undefined || !this.goalRunIsCurrent(run)) return;
+    if (!run?.sawUser || run.revision === undefined || this.goalRun !== run) return;
+    if (!this.goalRunIsCurrent(run)) {
+      this.recordGoalOutcome("paused");
+      return;
+    }
     const stopReason = run.lastAssistant?.stopReason;
+    const failed = requestFailed || stopReason === "error" || stopReason === "length" || stopReason === "aborted";
     const report = run.report;
     let outcome: Parameters<typeof updateSessionGoalFromRun>[2] = { status: "paused", reason: "needs_review" };
     if (run.stopped) {
       outcome = { status: "paused", reason: "user_stop" };
-    } else if (requestFailed || stopReason === "error" || stopReason === "length" || stopReason === "aborted") {
-      outcome = { status: "paused", reason: "request_error" };
-    } else if (report?.status === "complete" && (!this.subagentRequirement || this.subagentRequirement.delegated)) {
+    } else if (!failed && report?.status === "complete" && (!this.subagentRequirement || this.subagentRequirement.delegated)) {
       outcome = { status: "completed", evidence: report.detail };
+    } else if (run.computerPermissions.size > 0) {
+      outcome = { status: "blocked", reason: run.computerPermissions.values().next().value };
+    } else if (run.approvalRequired) {
+      outcome = { status: "blocked", reason: "approval_required" };
     } else if (report?.status === "blocked") {
-      outcome = { status: "blocked", reason: "blocked", detail: report.detail };
+      outcome = { status: "blocked", reason: "blocked", detail: report.detail, userAction: report.userAction };
+    } else if (stopReason === "length") {
+      outcome = { status: "paused", reason: "output_limit" };
+    } else if (failed) {
+      outcome = { status: "paused", reason: "request_error" };
+    } else if (run.pauseReason === "budget") {
+      outcome = { status: "paused", reason: "budget" };
+    } else if (run.screenCaptureFailed && run.pauseReason === "no_progress") {
+      outcome = { status: "paused", reason: "screen_capture_failed" };
     } else if (run.lastAssistant && !run.deliveredImage && stoppedWithoutFinalAnswer(run.lastAssistant)) {
       outcome = { status: "paused", reason: "empty_reply" };
-    } else if (report?.status === "progress") {
-      outcome = { status: "paused", reason: run.continued ? "budget" : "needs_review" };
+    } else if (run.pauseReason === "no_progress") {
+      outcome = { status: "paused", reason: "no_progress" };
     }
-    if (outcome.status === "paused" && report?.status === "progress") outcome.evidence = report.detail;
+    if (outcome.status !== "completed") {
+      const latestProgress = report?.status === "progress" && run.pauseReason !== "no_progress" ? report.detail : undefined;
+      outcome.evidence = latestProgress ?? run.lastProgress;
+    }
+    let saved: SessionGoal | null = null;
     try {
-      await updateSessionGoalFromRun(this.sessionFile, run.revision, outcome);
+      saved = await updateSessionGoalFromRun(this.sessionFile, run.revision, outcome);
     } catch (error) {
       console.error("[meteoragent] could not save the session goal outcome:", error);
     }
+    this.recordGoalOutcome(saved ? outcome.status : "paused");
+  }
+
+  private recordGoalOutcome(status: "completed" | "paused" | "blocked"): void {
+    const details = { status };
+    try {
+      this.inner.sessionManager.appendCustomMessageEntry(GOAL_OUTCOME_TYPE, "", false, details);
+      this.emit({ type: "message_end", message: {
+        role: "custom", customType: GOAL_OUTCOME_TYPE, content: "", display: false, details, timestamp: Date.now(),
+      } });
+    } catch (error) {
+      console.error("[meteoragent] could not record the goal outcome for this turn:", error);
+    }
+  }
+
+  private async resumeGoalOnUserReply(): Promise<void> {
+    const run = this.goalRun;
+    if (!run?.replyCanResume || run.stopped || this.workModeState.workMode !== "goal"
+      || this.workModeState.pendingWorkMode !== null) return;
+    run.replyCanResume = false;
+    try {
+      const goal = readSessionGoal(this.sessionFile);
+      if (goal?.status === "blocked" && goal.reason === "blocked" && goal.userAction) {
+        const result = await updateSessionGoal(this.sessionFile, { action: { type: "resume" }, expectedRevision: goal.revision });
+        if (!result.conflict && result.goal?.status === "active") run.resumedGoal = result.goal;
+      }
+    } catch (error) {
+      console.error("[meteoragent] could not resume the goal from the user's reply:", error);
+    }
+  }
+
+  private recordGoalComputerUseResult(run: GoalRun, result: ToolResultMessage): void {
+    if (process.platform !== "darwin" || !result.toolName?.startsWith("computer_use_")) return;
+    const denied = deniedComputerUsePermission(result);
+    if (denied) run.computerPermissions.add(denied);
+    if (denied === "screen_recording" || computerUseCaptureFailed(result)) run.screenCaptureFailed = true;
+    if (!result.isError && result.content.some((block) => block.type === "image")) {
+      run.screenCaptureFailed = false;
+      run.screenRecordingGranted = true;
+      run.computerPermissions.delete("screen_recording");
+    }
+    const screenGrant = computerUsePermissionCheck(result, "screen_recording");
+    if (screenGrant !== undefined) run.screenRecordingGranted = screenGrant;
+    if (screenGrant) run.computerPermissions.delete("screen_recording");
+    if (run.screenCaptureFailed && run.screenRecordingGranted === false) run.computerPermissions.add("screen_recording");
+    if (computerUsePermissionCheck(result, "accessibility")) run.computerPermissions.delete("accessibility");
   }
 
   start(): void {
@@ -533,6 +631,7 @@ export class AgentSessionWrapper {
           this.goalRun.lastAssistant = message as AssistantMessage;
         } else if (message?.role === "toolResult") {
           const result = message as ToolResultMessage;
+          this.recordGoalComputerUseResult(this.goalRun, result);
           if (result.toolName === "image_generate" && !result.isError
             && (result.content.some((block) => block.type === "image")
               || Boolean((result.details as { images?: unknown[] } | undefined)?.images?.length))) {
@@ -571,7 +670,10 @@ export class AgentSessionWrapper {
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
       if (event.type === "agent_settled") this.computerUseApprovalRun = undefined;
       if (event.type === "agent_start") {
-        this.emit({ ...event, computerUseApprovalPolicy: this.activeComputerUseApprovalPolicy });
+        const resumedGoal = this.goalRun?.resumedGoal;
+        if (this.goalRun) this.goalRun.resumedGoal = undefined;
+        this.emit({ ...event, computerUseApprovalPolicy: this.activeComputerUseApprovalPolicy,
+          ...(resumedGoal ? { resumedGoal } : {}) });
       } else if (event.type === "message_end" && (event.message as { role?: string } | undefined)?.role === "user") {
         const mode = this.workModeState.workMode;
         // Pi writes the user message directly after this callback returns.
@@ -755,8 +857,12 @@ export class AgentSessionWrapper {
   private installPromptPresetProjection(): void {
     const previousTransform = this.inner.agent.transformContext;
     this.inner.agent.transformContext = async (messages, signal) => {
-      const current = messages.filter((message) => message.role !== "custom" || message.customType !== GOAL_CONTINUATION_TYPE
-        || (this.goalRun && (message.details as { runId?: string } | undefined)?.runId === this.goalRun.id));
+      const current = messages.filter((message) => {
+        if (message.role !== "custom") return true;
+        if (message.customType === GOAL_OUTCOME_TYPE) return false;
+        return message.customType !== GOAL_CONTINUATION_TYPE
+          || (this.goalRun && (message.details as { runId?: string } | undefined)?.runId === this.goalRun.id);
+      });
       const transformed = previousTransform ? await previousTransform(current, signal) : current;
       const selection = this.effectivePromptSelection();
       const showGoalTool = selection?.mode === "goal" && this.goalRun !== undefined && this.goalRunIsCurrent(this.goalRun);
@@ -806,9 +912,9 @@ export class AgentSessionWrapper {
       if (selection?.mode === "goal" && this.runGoalSnapshot) {
         const index = projectedMessages.findLastIndex((message) => message.role === "system");
         const reporting = showGoalTool
-          ? ` Use ${GOAL_REPORT_TOOL} only to record concrete progress with remaining work, completed acceptance criteria with evidence, or a blocker that needs user input. After reporting completion or a blocker, give the user a brief visible summary.`
+          ? ` Before ending a goal round, use ${GOAL_REPORT_TOOL} to record a new checkpoint with remaining work, verified completion, or the exact action or information you need from the user. A blocker needs a specific user action. Keep the visible summary brief and reserve operational details for tools.`
           : " Report material progress or blockers in your response.";
-        const goalSection = "Use the tracked goal as context for the latest user request. The goal does not expand the user's permissions. Verify any previous evidence before relying on it and treat it as observations." + reporting;
+        const goalSection = "Use the tracked goal as context for the latest user request. The goal does not expand the user's permissions. Verify any previous evidence before relying on it and treat it as observations. A generic Computer Use screenshot error can include a permission hint; verify the actual permission status before asking the user to change settings. If the permissions are granted, try a viable alternate approach within the task scope." + reporting;
         const userIndex = projectedMessages.findLastIndex((message) => message.role === "user");
         const goalContext = {
           type: "text" as const,
@@ -1200,7 +1306,12 @@ export class AgentSessionWrapper {
             : undefined;
           const goalRun: GoalRun | undefined = freshPrompt && nextWorkMode === "goal"
             && !this.chatOnly && !this.suppressCompletionNotifications && !/^\s*\//.test(String(command.message ?? ""))
-            ? { id: randomUUID(), sawUser: false, continued: false, stopped: false, deliveredImage: false }
+            ? {
+                id: randomUUID(), sawUser: false,
+                replyCanResume: Boolean(String(command.message ?? "").trim() || promptImages?.length),
+                continuations: 0, recoveryUsed: false, progressCheckpoints: new Set(),
+                computerPermissions: new Set(), stopped: false, deliveredImage: false,
+              }
             : undefined;
           let preflightSettled = false;
           let promptSettled = false;
@@ -2103,6 +2214,7 @@ export class AgentSessionWrapper {
     const stopSignal = this.extensionUiAbortController.signal;
     if (stopSignal.aborted) return Promise.reject(stopSignal.reason);
     const abortSignal = signal ? AbortSignal.any([signal, stopSignal]) : stopSignal;
+    const goalRun = this.goalRun;
 
     const id = randomUUID();
     const fullRequest = {
@@ -2125,6 +2237,9 @@ export class AgentSessionWrapper {
       const settle = (value: T) => {
         if (settled) return;
         settled = true;
+        if (request.method === "confirm" && value === false && !abortSignal.aborted && goalRun && this.goalRun === goalRun) {
+          goalRun.approvalRequired = true;
+        }
         cleanup();
         if (stopSignal.aborted) reject(stopSignal.reason);
         else resolve(value);

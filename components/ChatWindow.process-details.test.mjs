@@ -9,3 +9,9 @@ test("keeps activity details closed until the user opens them", () => {
   assert.match(source, /onClick=\{\(\) => setOpen\(\(value\) => !value\)\}/);
   assert.doesNotMatch(source, /revealProcess|defaultExpanded/);
 });
+
+test("a hidden Goal outcome belongs to the previous assistant reply within the same user turn", () => {
+  assert.match(source, /if \(msg\.role === "user"\) lastAssistantIdx = -1;\s*else if \(msg\.role === "assistant"\) lastAssistantIdx = idx;\s*else if \(lastAssistantIdx !== -1 && isGoalOutcomeMessage\(msg\)\)/);
+  assert.match(source, /const goalOutcome = goalOutcomeByAssistant\.get\(finalAssistantIdx\)/);
+  assert.match(source, /if \(message\.role === "toolResult" \|\| isGoalOutcomeMessage\(message\)/);
+});
