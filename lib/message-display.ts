@@ -1,5 +1,5 @@
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, ThinkingContent, ToolCallContent } from "./types";
-import type { SessionGoal } from "./session-goal-types";
+import type { GoalOutcomeStatus, SessionGoal } from "./session-goal-types";
 
 interface DisplayOptions {
   isStreaming?: boolean;
@@ -73,12 +73,10 @@ export interface AssistantTimelineSegment {
   blockIndices: number[];
 }
 
-type GoalOutcomeStatus = "completed" | "paused" | "blocked";
-
 export function readGoalOutcomeStatus(details: unknown): GoalOutcomeStatus | undefined {
   if (!details || typeof details !== "object" || !("status" in details)) return;
   const { status } = details;
-  if (status === "completed" || status === "paused" || status === "blocked") return status;
+  if (status === "completed" || status === "paused" || status === "blocked" || status === "untracked") return status;
 }
 
 /** A turn's persisted outcome takes precedence over later changes to the tracker. */
@@ -88,7 +86,7 @@ export function shouldShowSettledGoalFinal(options: {
   goalUnavailable?: boolean;
   goalStatus?: SessionGoal["status"];
 }): boolean {
-  if (options.outcome) return options.outcome === "completed";
+  if (options.outcome) return options.outcome === "completed" || options.outcome === "untracked";
   // Legacy turns may have no outcome entry. Wait for current goal state before
   // treating the latest turn as legacy, including while an active goal settles.
   return !options.latest || (!options.goalUnavailable && (!options.goalStatus || options.goalStatus === "completed"));

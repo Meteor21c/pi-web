@@ -70,7 +70,7 @@ import { isModelThinkingLevel, resolveThinkingLevelOption, type ThinkingLevelOpt
 import { readSessionThinkingSelection, THINKING_SELECTION_TYPE } from "./session-thinking";
 import { readPromptPresetSettings } from "./prompt-preset-store";
 import { readSessionGoal, updateSessionGoal, updateSessionGoalFromRun, type SessionGoal } from "./session-goal";
-import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "./session-goal-types";
+import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE, type GoalOutcomeStatus } from "./session-goal-types";
 import { stoppedWithoutFinalAnswer } from "./message-display";
 import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
@@ -511,7 +511,13 @@ export class AgentSessionWrapper {
   }
 
   private async settleGoalRun(run: GoalRun | undefined, requestFailed = false): Promise<void> {
-    if (!run?.sawUser || run.revision === undefined || this.goalRun !== run) return;
+    if (!run?.sawUser || this.goalRun !== run) return;
+    if (run.revision === undefined) {
+      if (!requestFailed && !run.stopped && run.lastAssistant?.stopReason === "stop") {
+        this.recordGoalOutcome("untracked");
+      }
+      return;
+    }
     if (!this.goalRunIsCurrent(run)) {
       this.recordGoalOutcome("paused");
       return;
@@ -556,7 +562,7 @@ export class AgentSessionWrapper {
     this.recordGoalOutcome(saved ? outcome.status : "paused");
   }
 
-  private recordGoalOutcome(status: "completed" | "paused" | "blocked"): void {
+  private recordGoalOutcome(status: GoalOutcomeStatus): void {
     const details = { status };
     try {
       this.inner.sessionManager.appendCustomMessageEntry(GOAL_OUTCOME_TYPE, "", false, details);
@@ -613,14 +619,14 @@ export class AgentSessionWrapper {
             const goal = readSessionGoal(this.sessionFile);
             if (goal?.status === "active") {
               this.runGoalSnapshot = goal;
-              if (this.goalRun) this.goalRun.revision = goal.revision;
+              if (this.goalRun && !this.chatOnly) this.goalRun.revision = goal.revision;
             }
           } catch (error) {
             console.error("[meteoragent] could not read the session goal:", error);
           }
         }
       }
-      if (event.type === "message_end" && this.goalRun?.revision !== undefined) {
+      if (event.type === "message_end" && this.goalRun) {
         const message = event.message as AssistantMessage | ToolResultMessage | { role?: string } | undefined;
         if (message?.role === "user") {
           this.goalRun.sawUser = true;
@@ -629,7 +635,7 @@ export class AgentSessionWrapper {
           this.goalRun.report = undefined;
         } else if (message?.role === "assistant") {
           this.goalRun.lastAssistant = message as AssistantMessage;
-        } else if (message?.role === "toolResult") {
+        } else if (message?.role === "toolResult" && this.goalRun.revision !== undefined) {
           const result = message as ToolResultMessage;
           this.recordGoalComputerUseResult(this.goalRun, result);
           if (result.toolName === "image_generate" && !result.isError
@@ -1305,10 +1311,10 @@ export class AgentSessionWrapper {
             ? { policy: fullApproval ? "full" : "ask", remembered: new Set() }
             : undefined;
           const goalRun: GoalRun | undefined = freshPrompt && nextWorkMode === "goal"
-            && !this.chatOnly && !this.suppressCompletionNotifications && !/^\s*\//.test(String(command.message ?? ""))
+            && !this.suppressCompletionNotifications && !/^\s*\//.test(String(command.message ?? ""))
             ? {
                 id: randomUUID(), sawUser: false,
-                replyCanResume: Boolean(String(command.message ?? "").trim() || promptImages?.length),
+                replyCanResume: !this.chatOnly && Boolean(String(command.message ?? "").trim() || promptImages?.length),
                 continuations: 0, recoveryUsed: false, progressCheckpoints: new Set(),
                 computerPermissions: new Set(), stopped: false, deliveredImage: false,
               }

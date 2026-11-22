@@ -2,6 +2,8 @@ export const MAX_SESSION_GOAL_LENGTH = 2_000;
 export const GOAL_CONTINUATION_TYPE = "meteoragent:goal-continuation";
 export const GOAL_OUTCOME_TYPE = "meteoragent:goal-outcome";
 
+export type GoalOutcomeStatus = "completed" | "paused" | "blocked" | "untracked";
+
 export const SESSION_GOAL_REASONS = [
   "empty_reply", "budget", "user_stop", "request_error", "blocked", "needs_review",
   "no_progress", "output_limit", "screen_recording", "screen_capture_failed", "accessibility", "approval_required",
