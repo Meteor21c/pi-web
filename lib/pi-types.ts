@@ -1,9 +1,11 @@
 import type {
+  AgentSession,
   AgentSessionEvent,
   BashOperations,
   SessionManager,
   SettingsManager,
   SlashCommandInfo,
+  SourceInfo,
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import type {
@@ -35,7 +37,7 @@ export interface ToolInfo {
   description: string;
   parameters?: unknown;
   promptGuidelines?: string[];
-  sourceInfo?: unknown;
+  sourceInfo?: SourceInfo;
 }
 
 export interface NavigateTreeResult {
@@ -170,12 +172,7 @@ export interface AgentSessionLike {
   dispose(): void;
   reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void>;
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
-  prompt(text: string, options?: {
-    images?: Array<{ type: "image"; data: string; mimeType: string }>;
-    streamingBehavior?: "steer" | "followUp";
-    source?: "interactive" | "rpc";
-    preflightResult?: (success: boolean) => void;
-  }): Promise<void>;
+  prompt: AgentSession["prompt"];
   sendCustomMessage<T = unknown>(message: {
     customType: string;
     content: string | (TextContent | ImageContent)[];
@@ -202,8 +199,8 @@ export interface AgentSessionLike {
   getLastAssistantText(): string | undefined;
   setAutoCompactionEnabled(enabled: boolean): void;
   setAutoRetryEnabled(enabled: boolean): void;
-  steer(text: string, images?: Array<{ type: "image"; data: string; mimeType: string }>, options?: { source?: "rpc" }): Promise<void>;
-  followUp(text: string, images?: Array<{ type: "image"; data: string; mimeType: string }>, options?: { source?: "rpc" }): Promise<void>;
+  steer: AgentSession["steer"];
+  followUp: AgentSession["followUp"];
   readonly pendingMessageCount: number;
   getSteeringMessages(): readonly string[];
   getFollowUpMessages(): readonly string[];

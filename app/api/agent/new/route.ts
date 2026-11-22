@@ -5,6 +5,8 @@ import { allowFileRoot } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
 import { startRpcSession } from "@/lib/rpc-manager";
 import { isModelThinkingLevel, type ThinkingLevelOption } from "@/lib/model-capabilities";
+import { isWorkMode } from "@/lib/prompt-presets";
+import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
 function parseThinkingLevel(value: unknown): ThinkingLevelOption | undefined {
   if (value === undefined) return undefined;
@@ -22,6 +24,12 @@ export async function POST(req: Request) {
     const body = await req.json() as { cwd?: string; [key: string]: unknown };
     const { cwd, ...command } = body;
     commandType = typeof command.type === "string" ? command.type : undefined;
+    if (commandType === "set_work_mode" || commandType === "extension_ui_response" || commandType === "extension_ui_input"
+      || command.computerUseApprovalPolicy !== undefined) {
+      if (!isApiRequestAllowed(req)) return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+      if (!hasJsonContentType(req)) return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+      if (commandType === "set_work_mode" && !isWorkMode(command.mode)) return NextResponse.json({ error: "Invalid work mode" }, { status: 400 });
+    }
 
     if (!cwd || typeof cwd !== "string") {
       return NextResponse.json({

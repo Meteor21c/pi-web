@@ -40,3 +40,14 @@ test("resets collapse state when a new extension request arrives", () => {
   assert.match(source, /<ExtensionCustomPanel key=\{extensionCustomUi.id\}/);
   assert.match(customSource, /if \(!collapsed\) inputRef.current\?\.focus\(\);\s*}, \[collapsed\]\)/);
 });
+
+test("mounts only the active blocking extension screen so queued prompts cannot steal focus", () => {
+  assert.match(source, /\{extensionDialog \? \(\s*<ExtensionDialog key=\{extensionDialog.id\}[^>]*\/>\s*\) : extensionCustomUi && \(\s*<ExtensionCustomPanel key=\{extensionCustomUi.id\}/);
+});
+
+test("offers remembering a confirmation only for an eligible Computer Use request", () => {
+  assert.match(dialogSource, /\[rememberForRun, setRememberForRun\] = useState\(false\)/);
+  assert.match(dialogSource, /const canRemember = request\.method === "confirm" && request\.approvalScope === "computer-use-exact"/);
+  assert.match(dialogSource, /\{canRemember && \([\s\S]*?type="checkbox"[\s\S]*?checked=\{rememberForRun\}[\s\S]*?chat\.extensionRememberExactForRun/);
+  assert.match(dialogSource, /confirmed: true, \.\.\.\(canRemember && rememberForRun \? \{ rememberForRun: true \} : \{\}\)/);
+});

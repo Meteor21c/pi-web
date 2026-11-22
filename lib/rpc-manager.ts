@@ -1,9 +1,11 @@
 import { getCurrentSystemMessage, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { createAgentSessionFromServices, createAgentSessionServices, defineTool, getAgentDir, initTheme, SessionManager, SettingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
-import { randomUUID } from "crypto";
-import { existsSync, realpathSync, writeFileSync } from "fs";
+import { createHash, randomUUID } from "crypto";
+import { isDeepStrictEqual } from "node:util";
+import { existsSync, realpathSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
@@ -20,20 +22,22 @@ import {
   createProjectCommandBashOperations,
   preferUserBashExtension,
 } from "./project-command-env";
-import { cacheSessionPath, getLatestModelChange, invalidateSessionListCache, resolveSessionPath } from "./session-reader";
+import { cacheSessionPath, getLatestModelChange, invalidateSessionListCache, persistPreparedSession, resolveSessionPath } from "./session-reader";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
-import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import type { AgentBeforeSettleEvent, AgentBeforeSettleEventResult, InlineExtension, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
+  AssistantMessage,
   ExtensionUiRequest,
   ExtensionUiResponse,
   ExtensionWidgetItem,
   SessionEntry,
   SessionInfo,
   SessionMessageEntry,
+  ToolResultMessage,
 } from "./types";
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS, type HeadlessCustomUiTui } from "./custom-ui-terminal";
 import {
@@ -52,22 +56,26 @@ import { createSubagentController } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { isSubagentMode, type SubagentMode } from "./subagent-mode";
 import { getPresetFromToolNames } from "./tool-presets";
+import { isComputerUseApprovalPolicy, type ComputerUseApprovalPolicy } from "./computer-use-approval-policy";
 import { installToolFileChangeTracking } from "./tool-file-change";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import { createSessionScopedSettingsManager } from "./plugin-activation";
 import { withRelayImageGenerationSession } from "./relay-image-generation";
 import { appendRelayImageBillingEntries } from "./relay-image-billing";
-import { installRelayResponseRepair } from "./relay-responses";
+import { createRelaySummaryPolicyExtension, installRelayResponseRepair } from "./relay-responses";
 import { withProviderDefaultThinking } from "./model-auto-reasoning";
 import { isModelThinkingLevel, resolveThinkingLevelOption, type ThinkingLevelOption } from "./model-capabilities";
 import { readSessionThinkingSelection, THINKING_SELECTION_TYPE } from "./session-thinking";
 import { readPromptPresetSettings } from "./prompt-preset-store";
+import { readSessionGoal, updateSessionGoalFromRun, type SessionGoal } from "./session-goal";
+import { GOAL_CONTINUATION_TYPE } from "./session-goal-types";
+import { stoppedWithoutFinalAnswer } from "./message-display";
 import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
   isWorkMode, promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection, type WorkMode,
 } from "./prompt-presets";
-import { appendSessionWorkMode, inheritSessionWorkMode, readSessionWorkMode, type SessionWorkMode } from "./session-work-mode";
+import { appendSessionWorkMode, appendTurnWorkMode, inheritSessionWorkMode, readSessionWorkMode, type SessionWorkMode } from "./session-work-mode";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -86,13 +94,34 @@ export interface AgentEvent {
 type EventListener = (event: AgentEvent) => void;
 type AgentRunCompleteListener = (sessionId: string) => void;
 
+type ComputerUseApprovalRun = {
+  policy: ComputerUseApprovalPolicy;
+  remembered: Set<string>;
+};
+
+type GoalReport = { status: "progress" | "complete" | "blocked"; detail: string };
+
+type GoalRun = {
+  id: string;
+  revision?: number;
+  sawUser: boolean;
+  continued: boolean;
+  stopped: boolean;
+  deliveredImage: boolean;
+  lastAssistant?: AssistantMessage;
+  report?: GoalReport;
+};
+
+const GOAL_REPORT_TOOL = "meteoragent_report_goal";
+const GOAL_CONTINUATION = "Continue the current goal from the work already done. Check what remains before acting and avoid repeating completed operations. Use the goal report tool when you have verified completion or reached a blocker, then tell the user the result plainly.";
+
 type PendingUiResponse = {
   resolve: (response: ExtensionUiResponse) => void;
   cancel: () => void;
 };
 
 type CustomUiComponent = {
-  render: (width: number) => string[];
+  render: (width: number) => readonly string[];
   handleInput?: (data: string) => void;
   dispose?: () => void;
   invalidate?: () => void;
@@ -173,6 +202,14 @@ export function resolveSessionIdleTimeoutMs(
 }
 
 const SESSION_IDLE_TIMEOUT_MS = resolveSessionIdleTimeoutMs();
+const AUTO_APPROVABLE_COMPUTER_ACTIONS = new Set([
+  "run_script",
+  "run_steps",
+  "replay_trajectory",
+  "clipboard_read",
+  "clipboard_write",
+  "kill_app",
+]);
 
 const SESSION_REPLACEMENT_COMMAND_TYPES = new Set(["fork", "clone"]);
 const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = new Set([
@@ -254,6 +291,7 @@ export class AgentSessionWrapper {
   private pendingUiRequests = new Map<string, AgentEvent>();
   private activeCustomUis = new Map<string, ActiveCustomUi>();
   private extensionUiAbortController = new AbortController();
+  private computerUseApprovalRun?: ComputerUseApprovalRun;
   private extensionStatuses = new Map<string, string>();
   private extensionWidgets = new Map<string, ExtensionWidgetItem>();
   private activeExtensionWidgets = new Map<string, ActiveExtensionWidget>();
@@ -263,6 +301,8 @@ export class AgentSessionWrapper {
   private activeMutatingCommands = 0;
   private sessionReplacement: "fork" | "clone" | null = null;
   private agentRunNeedsCompletion = false;
+  private runGoalSnapshot: SessionGoal | null | undefined;
+  private goalRun?: GoalRun;
   private promptAdmissionTail: Promise<void> = Promise.resolve();
   private extensionsBound = false;
   private extensionBindingPromise: Promise<void> | null = null;
@@ -326,6 +366,10 @@ export class AgentSessionWrapper {
     return this.inner.isStreaming;
   }
 
+  get activeComputerUseApprovalPolicy(): ComputerUseApprovalPolicy {
+    return this.computerUseApprovalRun?.policy ?? "ask";
+  }
+
   isAlive(): boolean {
     return this._alive;
   }
@@ -359,9 +403,143 @@ export class AgentSessionWrapper {
     this.emit(subagentStatusEvent(run));
   }
 
+  static goalExtension(getWrapper: () => AgentSessionWrapper | undefined): InlineExtension {
+    return {
+      name: "meteoragent-goal",
+      hidden: true,
+      factory(pi) {
+        pi.on("agent_before_settle", (event) => getWrapper()?.continueGoalRun(event));
+        // Pi dispatches nested calls via the extension runner, independently of
+        // Agent.beforeToolCall. Apply the same policy to each nested operation.
+        pi.on("tool_call", (event) => event.parentToolCallId ? getWrapper()?.guardToolCall(event.toolName) : undefined);
+        pi.registerTool(defineTool({
+          name: GOAL_REPORT_TOOL,
+          label: "Goal progress",
+          description: "Record verified progress, completion, or a blocker for the active goal.",
+          parameters: Type.Object({
+            status: Type.Union([Type.Literal("progress"), Type.Literal("complete"), Type.Literal("blocked")]),
+            detail: Type.String({ minLength: 1, maxLength: 2_000, description: "Concrete evidence for progress or completion, or the reason the goal is blocked." }),
+          }),
+          async execute(_callId, report, signal) {
+            const wrapper = getWrapper();
+            if (!wrapper) throw new Error("Goal tracking is unavailable.");
+            wrapper.reportGoalProgress(report, signal);
+            return { content: [{ type: "text", text: "Goal report recorded. Continue if useful, or summarize the outcome for the user." }], details: {} };
+          },
+        }));
+      },
+    };
+  }
+
+  private goalRunIsCurrent(run: GoalRun): boolean {
+    if (this.goalRun !== run || !run.sawUser || run.revision === undefined
+      || this.workModeState.workMode !== "goal" || this.workModeState.pendingWorkMode !== null) return false;
+    try {
+      const goal = readSessionGoal(this.sessionFile);
+      return goal?.status === "active" && goal.revision === run.revision;
+    } catch (error) {
+      console.error("[meteoragent] could not check the session goal:", error);
+      return false;
+    }
+  }
+
+  private reportGoalProgress(report: GoalReport, signal?: AbortSignal): void {
+    const run = this.goalRun;
+    if (!run || run.stopped || signal?.aborted || !this.goalRunIsCurrent(run)) {
+      throw new Error("The active goal changed or is no longer running.");
+    }
+    const detail = report.detail.trim();
+    if (!detail) throw new Error("Provide evidence or explain the blocker before reporting goal progress.");
+    if (run.report?.status === "complete" || run.report?.status === "blocked") {
+      throw new Error("A final report has already been recorded for this run.");
+    }
+    run.report = { status: report.status, detail };
+  }
+
+  private continueGoalRun(event: AgentBeforeSettleEvent): AgentBeforeSettleEventResult | undefined {
+    const run = this.goalRun;
+    if (!run || run.stopped || run.continued || event.outcome !== "completed"
+      || event.continue || event.context.pendingMessages.length > 0
+      || this.activeQueueSubmissions > 0 || this.hasQueuedUserMessages() || this.pendingUiResponses.size > 0
+      || !run.lastAssistant || run.lastAssistant.stopReason !== "stop" || !this.goalRunIsCurrent(run)) return;
+    if (run.report?.status !== "progress"
+      && (run.report || run.deliveredImage || !stoppedWithoutFinalAnswer(run.lastAssistant))) return;
+    run.continued = true;
+    return {
+      entries: [...event.entries, {
+        type: "custom_message",
+        customType: GOAL_CONTINUATION_TYPE,
+        content: GOAL_CONTINUATION,
+        display: false,
+        details: { runId: run.id },
+      }],
+      continue: true,
+    };
+  }
+
+  private async settleGoalRun(run: GoalRun | undefined, requestFailed = false): Promise<void> {
+    if (!run || run.revision === undefined || !this.goalRunIsCurrent(run)) return;
+    const stopReason = run.lastAssistant?.stopReason;
+    const report = run.report;
+    let outcome: Parameters<typeof updateSessionGoalFromRun>[2] = { status: "paused", reason: "needs_review" };
+    if (run.stopped) {
+      outcome = { status: "paused", reason: "user_stop" };
+    } else if (requestFailed || stopReason === "error" || stopReason === "length" || stopReason === "aborted") {
+      outcome = { status: "paused", reason: "request_error" };
+    } else if (report?.status === "complete" && (!this.subagentRequirement || this.subagentRequirement.delegated)) {
+      outcome = { status: "completed", evidence: report.detail };
+    } else if (report?.status === "blocked") {
+      outcome = { status: "blocked", reason: "blocked", detail: report.detail };
+    } else if (run.lastAssistant && !run.deliveredImage && stoppedWithoutFinalAnswer(run.lastAssistant)) {
+      outcome = { status: "paused", reason: "empty_reply" };
+    } else if (report?.status === "progress") {
+      outcome = { status: "paused", reason: run.continued ? "budget" : "needs_review" };
+    }
+    if (outcome.status === "paused" && report?.status === "progress") outcome.evidence = report.detail;
+    try {
+      await updateSessionGoalFromRun(this.sessionFile, run.revision, outcome);
+    } catch (error) {
+      console.error("[meteoragent] could not save the session goal outcome:", error);
+    }
+  }
+
   start(): void {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
-      if (event.type === "agent_start") this.agentRunNeedsCompletion = true;
+      if (event.type === "agent_start") {
+        this.agentRunNeedsCompletion = true;
+        this.computerUseApprovalRun ??= { policy: "ask", remembered: new Set() };
+        if (this.runGoalSnapshot === undefined && this.workModeState.workMode === "goal" && !this.suppressCompletionNotifications) {
+          // Freeze the objective for the entire run, including retries and queued messages.
+          this.runGoalSnapshot = null;
+          try {
+            const goal = readSessionGoal(this.sessionFile);
+            if (goal?.status === "active") {
+              this.runGoalSnapshot = goal;
+              if (this.goalRun) this.goalRun.revision = goal.revision;
+            }
+          } catch (error) {
+            console.error("[meteoragent] could not read the session goal:", error);
+          }
+        }
+      }
+      if (event.type === "message_end" && this.goalRun?.revision !== undefined) {
+        const message = event.message as AssistantMessage | ToolResultMessage | { role?: string } | undefined;
+        if (message?.role === "user") {
+          this.goalRun.sawUser = true;
+          this.goalRun.lastAssistant = undefined;
+          this.goalRun.deliveredImage = false;
+          this.goalRun.report = undefined;
+        } else if (message?.role === "assistant") {
+          this.goalRun.lastAssistant = message as AssistantMessage;
+        } else if (message?.role === "toolResult") {
+          const result = message as ToolResultMessage;
+          if (result.toolName === "image_generate" && !result.isError
+            && (result.content.some((block) => block.type === "image")
+              || Boolean((result.details as { images?: unknown[] } | undefined)?.images?.length))) {
+            this.goalRun.deliveredImage = true;
+          }
+        }
+      }
       if (event.type === "message_end" && this.subagentRequirement) {
         const message = event.message as { role?: string; stopReason?: string } | undefined;
         if (message?.role === "assistant") this.subagentRequirement.sawFinalAssistant = message.stopReason === "stop";
@@ -391,14 +569,32 @@ export class AgentSessionWrapper {
         }
       }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
-      this.emit(event);
+      if (event.type === "agent_settled") this.computerUseApprovalRun = undefined;
+      if (event.type === "agent_start") {
+        this.emit({ ...event, computerUseApprovalPolicy: this.activeComputerUseApprovalPolicy });
+      } else if (event.type === "message_end" && (event.message as { role?: string } | undefined)?.role === "user") {
+        const mode = this.workModeState.workMode;
+        // Pi writes the user message directly after this callback returns.
+        try {
+          appendTurnWorkMode(this.inner.sessionManager, mode);
+        } catch (error) {
+          console.error("[meteoragent] failed to persist turn work mode:", error);
+        }
+        this.emit({ ...event, turnWorkMode: mode });
+      } else {
+        this.emit(event);
+      }
       if (event.type === "agent_settled") this.notifyAgentRunCompleteIfIdle();
     });
     this.resetIdleTimer();
   }
 
   private notifyAgentRunCompleteIfIdle(): void {
-    if (!this.agentRunNeedsCompletion || this.isRunning()) return;
+    if (this.isRunning()) return;
+    this.computerUseApprovalRun = undefined;
+    this.runGoalSnapshot = undefined;
+    this.goalRun = undefined;
+    if (!this.agentRunNeedsCompletion) return;
     this.agentRunNeedsCompletion = false;
     if (this.suppressCompletionNotifications) return;
     try {
@@ -559,8 +755,11 @@ export class AgentSessionWrapper {
   private installPromptPresetProjection(): void {
     const previousTransform = this.inner.agent.transformContext;
     this.inner.agent.transformContext = async (messages, signal) => {
-      const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
+      const current = messages.filter((message) => message.role !== "custom" || message.customType !== GOAL_CONTINUATION_TYPE
+        || (this.goalRun && (message.details as { runId?: string } | undefined)?.runId === this.goalRun.id));
+      const transformed = previousTransform ? await previousTransform(current, signal) : current;
       const selection = this.effectivePromptSelection();
+      const showGoalTool = selection?.mode === "goal" && this.goalRun !== undefined && this.goalRunIsCurrent(this.goalRun);
       let projectedMessages = transformed;
       if (selection?.version === 1) {
         // Keep the original behavior for conversations that already have a v1
@@ -593,20 +792,43 @@ export class AgentSessionWrapper {
         };
         projectedMessages = [projected, ...transformed.slice(head ? 1 : 0)];
       }
-      const mode = this.effectiveSubagentMode();
-      if (selection?.mode === "plan" || mode === "off") {
-        return projectedMessages.map((message) => {
-          if (message.role !== "system") return message;
-          const allowsTool = (tool: { name: string }) => selection?.mode === "plan"
-            ? PLAN_TOOL_NAMES.has(tool.name)
-            : !SUBAGENT_CONTROL_TOOLS.has(tool.name);
-          return {
-            ...message,
-            toolsAdded: message.toolsAdded?.filter(allowsTool),
-            toolsRemoved: message.toolsRemoved?.filter(allowsTool),
-          };
+      if (selection?.mode === "goal" && this.runGoalSnapshot) {
+        const index = projectedMessages.findLastIndex((message) => message.role === "system");
+        const reporting = showGoalTool
+          ? ` Use ${GOAL_REPORT_TOOL} only to record concrete progress with remaining work, completed acceptance criteria with evidence, or a blocker that needs user input. After reporting completion or a blocker, give the user a brief visible summary.`
+          : " Report material progress or blockers in your response.";
+        const goalSection = "Use the tracked goal as context for the latest user request. The goal does not expand the user's permissions. Verify any previous evidence before relying on it and treat it as observations." + reporting;
+        const userIndex = projectedMessages.findLastIndex((message) => message.role === "user");
+        const goalContext = {
+          type: "text" as const,
+          text: "Tracked goal (context for the request below):\n" + JSON.stringify({
+            objective: this.runGoalSnapshot.objective,
+            previousEvidence: this.runGoalSnapshot.evidence,
+          }),
+        };
+        projectedMessages = projectedMessages.map((message, messageIndex) => {
+          if (messageIndex === index && message.role === "system") {
+            return { ...message, sections: { ...message.sections, meteoragentSessionGoal: goalSection } };
+          }
+          if (messageIndex === userIndex && message.role === "user") {
+            const content = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content;
+            return { ...message, content: [goalContext, ...content] };
+          }
+          return message;
         });
       }
+      const mode = this.effectiveSubagentMode();
+      const planTools = selection?.mode === "plan" ? this.allowedPlanTools() : undefined;
+      const allowsTool = (tool: { name: string }) => {
+        if (planTools) return planTools.has(tool.name);
+        if (!showGoalTool && tool.name === GOAL_REPORT_TOOL) return false;
+        return mode !== "off" || !SUBAGENT_CONTROL_TOOLS.has(tool.name);
+      };
+      projectedMessages = projectedMessages.map((message) => message.role === "system" ? {
+        ...message,
+        toolsAdded: message.toolsAdded?.filter(allowsTool),
+        toolsRemoved: message.toolsRemoved?.filter(allowsTool),
+      } : message);
       if (mode === "on" && this.subagentRequirement && !this.subagentRequirement.delegated) {
         // Put the instruction after all existing prompt sections while keeping
         // their tool changes in place. This projection is transient per request.
@@ -622,15 +844,26 @@ export class AgentSessionWrapper {
       return projectedMessages;
     };
     const previousBeforeTool = this.inner.agent.beforeToolCall;
-    this.inner.agent.beforeToolCall = async (context, signal) => {
-      if (this.workModeState.workMode === "plan" && !PLAN_TOOL_NAMES.has(context.toolCall.name)) {
-        return { block: true, reason: "计划模式仅允许读取和搜索文件。要执行操作，请切换到自动或目标模式后再发送新消息。" };
-      }
-      if (SUBAGENT_CONTROL_TOOLS.has(context.toolCall.name) && this.effectiveSubagentMode() === "off") {
-        return { block: true, reason: "Subagents are disabled for this task." };
-      }
-      return previousBeforeTool?.(context, signal);
-    };
+    this.inner.agent.beforeToolCall = async (context, signal) =>
+      this.guardToolCall(context.toolCall.name) ?? await previousBeforeTool?.(context, signal);
+  }
+
+  private allowedPlanTools(): Set<string> {
+    return new Set(this.inner.getAllTools().filter(({ name, sourceInfo }) =>
+      PLAN_TOOL_NAMES.has(name) && sourceInfo?.source === "builtin" && sourceInfo.path === `builtin:${name}`,
+    ).map(({ name }) => name));
+  }
+
+  private guardToolCall(name: string): { block: true; reason: string } | undefined {
+    if (this.workModeState.workMode === "plan" && !this.allowedPlanTools().has(name)) {
+      return { block: true, reason: "计划模式仅允许读取和搜索文件。要执行操作，请切换到自动或目标模式后再发送新消息。" };
+    }
+    if (SUBAGENT_CONTROL_TOOLS.has(name) && this.effectiveSubagentMode() === "off") {
+      return { block: true, reason: "Subagents are disabled for this task." };
+    }
+    if (name === GOAL_REPORT_TOOL && (!this.goalRun || !this.goalRunIsCurrent(this.goalRun))) {
+      return { block: true, reason: "No active goal is running." };
+    }
   }
 
   getWorkMode() {
@@ -689,9 +922,9 @@ export class AgentSessionWrapper {
   private applyActiveToolSelection(): void {
     if (this.chatOnly) return;
     const toolNames = this.configuredToolNames ??= this.inner.getActiveToolNames();
+    const planTools = this.workModeState.workMode === "plan" ? this.allowedPlanTools() : undefined;
     const selected = this.suppressCompletionNotifications ? toolNames
-      : this.workModeState.workMode === "plan" ? (this.useDefaultPlanTools
-        ? this.inner.getAllTools().map(({ name }) => name) : toolNames).filter((name) => PLAN_TOOL_NAMES.has(name))
+      : planTools ? (this.useDefaultPlanTools ? [...planTools] : toolNames.filter((name) => planTools.has(name)))
       : withExtensionTools(this.inner, toolNames);
     this.inner.setActiveToolsByName(this.effectiveSubagentMode(selected) === "off"
       ? selected.filter((name) => !SUBAGENT_CONTROL_TOOLS.has(name))
@@ -704,12 +937,8 @@ export class AgentSessionWrapper {
 
   private finalizeBranchedSession(manager: SessionManager, path: string): string {
     if (!this.suppressCompletionNotifications) inheritSessionWorkMode(manager, this.workModeState.workMode);
-    if (!existsSync(path)) {
-      // Pi defers persisting a copied branch if it has no assistant message yet.
-      const header = manager.getHeader();
-      if (!header) throw new Error("Forked session is missing a session header");
-      const content = [header, ...manager.getEntries()].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
-      writeFileSync(path, content, { encoding: "utf8", flag: "wx" });
+    if (manager.getSessionFile() !== path || !persistPreparedSession(manager)) {
+      throw new Error("Forked session is missing its session file");
     }
     return manager.getSessionId();
   }
@@ -781,24 +1010,9 @@ export class AgentSessionWrapper {
     }, SESSION_IDLE_TIMEOUT_MS);
   }
 
-  private persistBashOnlySession(): void {
-    const manager = this.inner.sessionManager;
-    const sessionFile = manager.getSessionFile();
-    if (!sessionFile || existsSync(sessionFile)) return;
-
-    const header = manager.getHeader();
-    if (!header) return;
-
-    const content = [header, ...manager.getEntries()]
-      .map((entry) => JSON.stringify(entry))
-      .join("\n") + "\n";
-    writeFileSync(sessionFile, content, { encoding: "utf8", flag: "wx" });
-
-    // Pi normally delays the first flush until an assistant message exists.
-    // A leading shell command has no assistant message, so mark this SDK
-    // manager as flushed after writing its own generated entries.
-    (manager as unknown as { flushed: boolean }).flushed = true;
-    cacheSessionPath(this.inner.sessionId, sessionFile);
+  persistUnflushedSession(): void {
+    const sessionFile = persistPreparedSession(this.inner.sessionManager);
+    if (sessionFile) cacheSessionPath(this.inner.sessionId, sessionFile);
   }
 
   onEvent(listener: EventListener): () => void {
@@ -900,6 +1114,10 @@ export class AgentSessionWrapper {
           const { workMode, pendingWorkMode } = this.workModeState;
           const nextWorkMode = freshPrompt ? pendingWorkMode ?? workMode : workMode;
           this.assertWorkModeAllowsPrompt(nextWorkMode, command.message);
+          const requestedApproval = command.computerUseApprovalPolicy;
+          if (requestedApproval !== undefined && !isComputerUseApprovalPolicy(requestedApproval)) {
+            throw new Error("Invalid computer use approval policy");
+          }
           if (this.inner.isBashRunning) {
             throw new Error("Cannot send a prompt while a shell command is running");
           }
@@ -955,6 +1173,19 @@ export class AgentSessionWrapper {
             if (requestedSubagentMode === "on") requirement = { delegated: false, sawFinalAssistant: false };
             this.subagentRequirement = requirement;
           }
+          // Only the foreground user's standalone prompt can start a full-access
+          // run. Queued messages use the current run's policy.
+          const fullApproval = freshPrompt && requestedApproval === "full"
+            && nextWorkMode !== "plan" && !this.chatOnly && !this.suppressCompletionNotifications
+            && !/^\s*\//.test(String(command.message ?? ""))
+            && getPresetFromToolNames(this.configuredToolNames ?? this.inner.getActiveToolNames()) !== "read-only";
+          const approvalRun: ComputerUseApprovalRun | undefined = freshPrompt
+            ? { policy: fullApproval ? "full" : "ask", remembered: new Set() }
+            : undefined;
+          const goalRun: GoalRun | undefined = freshPrompt && nextWorkMode === "goal"
+            && !this.chatOnly && !this.suppressCompletionNotifications && !/^\s*\//.test(String(command.message ?? ""))
+            ? { id: randomUUID(), sawUser: false, continued: false, stopped: false, deliveredImage: false }
+            : undefined;
           let preflightSettled = false;
           let promptSettled = false;
           let acceptPreflight!: () => void;
@@ -962,7 +1193,6 @@ export class AgentSessionWrapper {
           const preflight = new Promise<void>((resolve, reject) => {
             acceptPreflight = () => {
               preflightAccepted = true;
-              this.agentRunNeedsCompletion = true;
               if (preflightSettled) return;
               preflightSettled = true;
               resolve();
@@ -976,6 +1206,7 @@ export class AgentSessionWrapper {
           const finishPrompt = (completed = false) => {
             if (promptSettled) return;
             promptSettled = true;
+            if (approvalRun && this.computerUseApprovalRun === approvalRun) this.computerUseApprovalRun = undefined;
             if (requirement && this.subagentRequirement === requirement) {
               this.subagentRequirement = undefined;
               if (completed && requirement.sawFinalAssistant && !requirement.delegated) {
@@ -988,16 +1219,23 @@ export class AgentSessionWrapper {
           };
 
           this.pendingPromptCount += 1;
+          if (goalRun) this.goalRun = goalRun;
           let prompt: Promise<void>;
           try {
             prompt = this.inner.prompt(command.message as string, {
               ...(promptImages?.length ? { images: promptImages } : {}),
               ...(streamingBehavior ? { streamingBehavior } : {}),
               source: "rpc",
-              // Match pi's RPC contract: acknowledge only after synchronous prompt
-              // validation and extension preflight have accepted the submission.
-              preflightResult: (success) => {
-                if (success) acceptPreflight();
+              // Queue delivery and input handlers can accept a message without
+              // starting a model run. Only a started run owns its approval policy.
+              preflightResult: (disposition) => {
+                if (disposition === "started") {
+                  this.agentRunNeedsCompletion = true;
+                  if (approvalRun && !this.extensionUiAbortController.signal.aborted) {
+                    this.computerUseApprovalRun = approvalRun;
+                  }
+                }
+                acceptPreflight();
               },
             });
           } catch (error) {
@@ -1005,14 +1243,16 @@ export class AgentSessionWrapper {
             throw error;
           }
 
-          void prompt.then(() => {
+          void prompt.then(async () => {
             // Compatibility fallback if a future SDK resolves without invoking
             // the internal callback. This waits for the run, but never acks early.
             acceptPreflight();
+            if (goalRun) await this.settleGoalRun(goalRun);
             finishPrompt(true);
             if (!streamingBehavior) this.emit({ type: "prompt_done" });
-          }, (error) => {
+          }, async (error) => {
             rejectPreflight(error);
+            if (preflightAccepted && goalRun) await this.settleGoalRun(goalRun, true);
             finishPrompt();
             invalidateSessionListCache();
             // A preflight rejection is returned by the POST itself. Only an
@@ -1047,6 +1287,8 @@ export class AgentSessionWrapper {
 
       case "abort":
         this.forceShutdownOnIdle = true;
+        this.computerUseApprovalRun = undefined;
+        if (this.goalRun) this.goalRun.stopped = true;
         // Stop must unwind extension commands that have not started the agent yet.
         this.extensionUiAbortController.abort(new DOMException("Extension UI cancelled by Stop", "AbortError"));
         try {
@@ -1067,6 +1309,7 @@ export class AgentSessionWrapper {
           sessionId: this.inner.sessionId,
           sessionFile: this.inner.sessionFile ?? "",
           isStreaming: this.inner.isStreaming,
+          computerUseApprovalPolicy: this.activeComputerUseApprovalPolicy,
           isPromptRunning: this.pendingPromptCount > 0,
           isBashRunning: this.inner.isBashRunning,
           isCompacting: this.inner.isCompacting,
@@ -1281,7 +1524,7 @@ export class AgentSessionWrapper {
         const all: ToolInfo[] = this.inner.getAllTools();
         const active = new Set<string>(this.inner.getActiveToolNames());
         const configured = new Set(this.configuredToolNames ?? active);
-        return all.map((t) => ({
+        return all.filter((t) => t.name !== GOAL_REPORT_TOOL).map((t) => ({
           ...t,
           active: active.has(t.name),
           ...(this.workModeState.workMode === "plan" ? { configuredActive: configured.has(t.name) } : {}),
@@ -1326,6 +1569,7 @@ export class AgentSessionWrapper {
 
       case "reload": {
         return withRelayImageGenerationSession(this.inner.sessionManager, async () => {
+          this.computerUseApprovalRun = undefined;
           if (this.extensionUiAbortController.signal.aborted) {
             this.extensionUiAbortController = new AbortController();
           }
@@ -1387,7 +1631,7 @@ export class AgentSessionWrapper {
         );
         try {
           const result = await execution;
-          this.persistBashOnlySession();
+          this.persistUnflushedSession();
           return result;
         } finally {
           this.resetIdleTimer();
@@ -1420,6 +1664,7 @@ export class AgentSessionWrapper {
     this.pendingUiResponses.clear();
     this.pendingUiRequests.clear();
     this.activeToolEvents.clear();
+    this.computerUseApprovalRun = undefined;
     this.clearExtensionWidgets(false);
 
     const finishDispose = () => {
@@ -1624,7 +1869,7 @@ export class AgentSessionWrapper {
       || this.extensionWidgetGenerations.get(active.key) !== active.generation
     ) return;
 
-    const widgetLines = lines as string[];
+    const widgetLines = [...lines] as string[];
     this.extensionWidgets.set(active.key, {
       key: active.key,
       lines: widgetLines,
@@ -1706,7 +1951,7 @@ export class AgentSessionWrapper {
   private emitCustomUiRender(id: string, custom: ActiveCustomUi): void {
     let lines: string[];
     try {
-      lines = custom.component.render(custom.width);
+      lines = [...custom.component.render(custom.width)];
     } catch (error) {
       lines = [`Extension custom UI render failed: ${error instanceof Error ? error.message : String(error)}`];
     }
@@ -1884,6 +2129,57 @@ export class AgentSessionWrapper {
     });
   }
 
+  private computerUseApproval(title: string, message: string) {
+    if (!this.computerUseApprovalRun || !this.isRunning() || this.suppressCompletionNotifications
+      || this.workModeState.workMode === "plan" || this.activeToolEvents.size !== 1
+      || title !== "Confirm high-risk computer action") return;
+    const [toolCallId, call] = this.activeToolEvents.entries().next().value!;
+    const toolName = call.toolName;
+    if (typeof toolName !== "string" || !toolName.startsWith("computer_use_")) return;
+    const action = toolName.slice("computer_use_".length);
+    if (!AUTO_APPROVABLE_COMPUTER_ACTIONS.has(action)) return;
+    const prefix = `Allow ${action} with arguments `;
+    if (!message.startsWith(prefix) || !message.endsWith("?")) return;
+    const source = this.inner.getAllTools().find((tool) => tool.name === toolName)?.sourceInfo as {
+      origin?: string; source?: string; path?: string;
+    } | undefined;
+    if (source?.origin !== "package" || !source.path
+      || !/^npm:@amaster\.ai\/pi-computer-use(?:@[^/\s]+)?$/.test(source.source ?? "")) return;
+    try {
+      const args: unknown = JSON.parse(message.slice(prefix.length, -1));
+      if (!args || typeof args !== "object" || Array.isArray(args) || !isDeepStrictEqual(args, call.args)) return;
+    } catch {
+      return;
+    }
+    const key = createHash("sha256").update(JSON.stringify([source.source, source.path, title, message])).digest("hex");
+    return { key, toolCallId, canRemember: action === "run_script" };
+  }
+
+  private confirmExtensionUi(title: string, message: string, opts?: { timeout?: number; signal?: AbortSignal }): Promise<boolean> {
+    const run = this.computerUseApprovalRun;
+    const approval = this.computerUseApproval(title, message);
+    const deadline = opts?.timeout ? Date.now() + opts.timeout : undefined;
+    if (approval && (run?.policy === "full" || run?.remembered.has(approval.key))
+      && !opts?.signal?.aborted && !this.extensionUiAbortController.signal.aborted) {
+      return Promise.resolve(true);
+    }
+    return this.requestExtensionUi(
+      { method: "confirm", title, message, ...(approval?.canRemember ? { approvalScope: "computer-use-exact" } : {}) },
+      false,
+      (response) => {
+        if (!("confirmed" in response) || response.confirmed !== true
+          || opts?.signal?.aborted || (deadline !== undefined && Date.now() >= deadline)) return false;
+        if (response.rememberForRun === true && run && this.computerUseApprovalRun === run && approval?.canRemember) {
+          const current = this.computerUseApproval(title, message);
+          if (current?.key === approval.key && current.toolCallId === approval.toolCallId) run.remembered.add(approval.key);
+        }
+        return true;
+      },
+      opts?.timeout,
+      opts?.signal,
+    );
+  }
+
   private createExtensionUiContext(): ExtensionUiContextLike {
     return {
       select: (title, options, opts) => this.requestExtensionUi(
@@ -1893,13 +2189,7 @@ export class AgentSessionWrapper {
         opts?.timeout,
         opts?.signal,
       ),
-      confirm: (title, message, opts) => this.requestExtensionUi(
-        { method: "confirm", title, message, ...(opts?.timeout ? { timeout: opts.timeout } : {}) },
-        false,
-        (response) => "confirmed" in response ? response.confirmed : false,
-        opts?.timeout,
-        opts?.signal,
-      ),
+      confirm: (title, message, opts) => this.confirmExtensionUi(title, message, opts),
       input: (title, placeholder, opts) => this.requestExtensionUi(
         { method: "input", title, ...(placeholder !== undefined ? { placeholder } : {}), ...(opts?.timeout ? { timeout: opts.timeout } : {}) },
         undefined,
@@ -2026,6 +2316,7 @@ export class AgentSessionWrapper {
       },
       switchSession: async () => ({ cancelled: true }),
       reload: async () => {
+        this.computerUseApprovalRun = undefined;
         this.extensionStatuses.clear();
         this.resetExtensionWidgetsForReload();
         await this.inner.settingsManager.reload?.();
@@ -2431,6 +2722,7 @@ export async function startRpcSession(
             noPromptTemplates: true,
             noThemes: true,
             noContextFiles: true,
+            extensionFactories: [createRelaySummaryPolicyExtension()],
             ...(chatOnly
               ? {
                   systemPrompt: " ",
@@ -2440,7 +2732,7 @@ export async function startRpcSession(
             appendSystemPrompt: subagentResources.appendSystemPrompt,
           }
         : chatOnly
-          ? CHAT_ONLY_RESOURCE_LOADER_OPTIONS
+          ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, extensionFactories: [createRelaySummaryPolicyExtension()] }
         : {
             systemPromptOverride: (basePrompt) => basePrompt
               ? rebrandMeteorAgentSystemPrompt(basePrompt)
@@ -2455,6 +2747,8 @@ export async function startRpcSession(
                 () => listSubagentProfiles(sessionCwd),
               ),
               createMeteorAgentBrandExtension(),
+              AgentSessionWrapper.goalExtension(() => registry.get(sessionManager.getSessionId())),
+              createRelaySummaryPolicyExtension(),
             ],
             extensionsOverride: (base) => preferUserBashExtension(preferPiWebSubagentExtension(base)),
           },

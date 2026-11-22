@@ -1,0 +1,130 @@
+.selector,
+.warning {
+  --approval-warning: light-dark(#89501a, #facb82);
+}
+
+.selector {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+  height: 32px;
+  padding: 0 6px;
+  border-radius: 9px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.selector:hover {
+  background: var(--bg-hover);
+}
+
+.selector[data-policy="full"] {
+  background: color-mix(in srgb, var(--approval-warning) 11%, transparent);
+  color: var(--approval-warning);
+}
+
+.selector select {
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.selector select:disabled,
+.actions button:disabled {
+  cursor: default;
+  opacity: .65;
+}
+
+.selector select:focus-visible,
+.actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+.selector option {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.nextRun {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.warning {
+  width: min(360px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  margin: auto;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: 0 14px 42px rgb(0 0 0 / .23);
+}
+
+.warning::backdrop {
+  background: rgb(0 0 0 / .23);
+}
+
+.warningTitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.warningTitle svg {
+  flex-shrink: 0;
+  color: var(--approval-warning);
+}
+
+.warningText {
+  margin-block: 8px 14px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.actions button {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.actions button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.actions .enable,
+.actions .enable:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--approval-warning) 30%, var(--border));
+  background: color-mix(in srgb, var(--approval-warning) 12%, var(--bg-panel));
+  color: var(--approval-warning);
+  font-weight: 600;
+}
+
+@media (pointer: coarse) {
+  .actions button {
+    min-height: 40px;
+  }
+}

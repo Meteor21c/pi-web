@@ -52,7 +52,7 @@ For example:
 
 ```bash
 webagent --help
-webagent -p 8080 -H 0.0.0.0 --no-open
+webagent -p 8080 --no-open
 ```
 
 ### Remote Access

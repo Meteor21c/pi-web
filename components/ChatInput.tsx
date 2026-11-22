@@ -84,6 +84,7 @@ interface Props {
   subagentModeDisabled?: boolean;
   showWorkMode?: boolean;
   workModeDisabled?: boolean;
+  approvalPolicyControl?: React.ReactNode;
   onNewWorkModeChanged?: () => Promise<void>;
   onSessionWorkModeChange?: (mode: WorkMode) => Promise<void>;
   onToolPresetChange?: (preset: ToolPreset) => void;
@@ -718,6 +719,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   workMode, pendingWorkMode, showWorkMode, workModeDisabled, onNewWorkModeChanged, onSessionWorkModeChange, onResolvedWorkMode,
+  approvalPolicyControl,
   subagentMode, onSubagentModeChange, subagentModeDisabled,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
@@ -2808,6 +2810,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               onSessionModeChange={onSessionWorkModeChange}
               onResolvedMode={onResolvedWorkMode}
             />}
+            {approvalPolicyControl}
             {onSubagentModeChange && (
               <label className="chat-subagent-mode" title={t(subagentModeDisabled
                 ? "chat.subagentModeUnavailable"

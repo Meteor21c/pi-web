@@ -1,6 +1,6 @@
 # Compact activity timeline
 
-Date: 2026-11-20. Released in MeteorAgent v0.1.19.
+Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
 
 ## Display policy
 
@@ -9,9 +9,11 @@ Date: 2026-11-20. Released in MeteorAgent v0.1.19.
 - A localized one-line summary describes actual operations and counts, such as
   reading files or running commands. No additional model call is made to
   summarize reasoning, and raw reasoning is not copied into the summary.
-- Assistant text is treated as a user-facing stage update and remains visible
-  in its original position. Direct assistant images and successful tool image
-  results also remain visible. The UI does not infer hidden reasoning from text.
+- Assistant text, direct assistant images, and successful image-generation
+  results remain visible in their original positions. Screenshots and images
+  read by tools stay in the activity group until their tool row is opened.
+- A context compaction displays a single collapsed row. Opening it shows the
+  full summary and its file details.
 - Active groups show the existing runtime phase. The waiting indicator is a
   quiet inline status rather than a separate card.
 - Users open activity details with a click. Search scrolls to visible stage text

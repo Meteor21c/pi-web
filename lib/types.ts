@@ -1,4 +1,5 @@
 // Types mirrored from pi-mono coding-agent session-manager
+import type { WorkMode } from "./prompt-presets";
 
 export interface SessionHeader {
   type: "session";
@@ -53,6 +54,8 @@ export interface UserMessage {
   role: "user";
   content: string | (TextContent | ImageContent)[];
   timestamp?: number;
+  /** Display metadata for the mode used by this turn. */
+  turnWorkMode?: Exclude<WorkMode, "auto">;
 }
 
 export interface AgentUsage {
@@ -130,6 +133,7 @@ export type ExtensionUiRequest =
       method: "confirm";
       title: string;
       message: string;
+      approvalScope?: "computer-use-exact";
       timeout?: number;
       expiresAt?: number;
     }
@@ -198,10 +202,12 @@ export type BlockingExtensionUiRequest = Extract<
   { method: "select" | "confirm" | "input" | "editor" | "custom" }
 >;
 
-export type ExtensionUiResponse =
-  | { type: "extension_ui_response"; id: string; value: string }
-  | { type: "extension_ui_response"; id: string; confirmed: boolean }
-  | { type: "extension_ui_response"; id: string; cancelled: true };
+export type ExtensionUiAnswer =
+  | { value: string }
+  | { confirmed: boolean; rememberForRun?: true }
+  | { cancelled: true };
+
+export type ExtensionUiResponse = ExtensionUiAnswer & { type: "extension_ui_response"; id: string };
 
 export interface ExtensionStatusItem {
   key: string;

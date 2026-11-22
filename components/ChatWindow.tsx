@@ -2,19 +2,23 @@
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
+import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { getAssistantErrorMessage, getAssistantTimelineSegments, isMessageGroupAnchor } from "@/lib/message-display";
+import { getAssistantErrorMessage, getAssistantTimelineSegments, isMessageGroupAnchor, stoppedWithoutFinalAnswer } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
-import { getModelDisplayName, getToolResultImages, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
+import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
 import type { WorkMode } from "@/lib/prompt-presets";
+import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
+import { GOAL_CONTINUATION_TYPE } from "@/lib/session-goal-types";
 import { DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
 import { NewSessionWelcome } from "./NewSessionWelcome";
 import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
+import { ApprovalPolicySelector } from "./ApprovalPolicySelector";
+import { SessionGoalTracker } from "./SessionGoalTracker";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { AnsiText } from "./AnsiText";
@@ -85,7 +89,7 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
         : /^(bash|powershell)$/.test(name) ? "chat.runningCommand"
         : /^(web_search|get_search_content)$/.test(name) ? "chat.activitySearching"
         : name === "image_generate" ? "chat.activityGeneratingImage"
-        : name === "computer_use_tools" ? "chat.activityUsingComputer"
+        : name.startsWith("computer_use_") ? "chat.activityUsingComputer"
         : name.startsWith("document_") ? "chat.activityProcessingDocument"
         : null;
       if (key) return latest.progress ? `${t(key)} · ${latest.progress}` : t(key);
@@ -199,6 +203,7 @@ function activitySummary(blocks: AssistantContentBlock[], commandCount: number, 
       : /^(write|edit)$/.test(name) ? "chat.activityEditSummary"
       : /^(bash|powershell)$/.test(name) ? "chat.activityCommandSummary"
       : /^(web_search|get_search_content)$/.test(name) ? "chat.activitySearchSummary"
+      : name.startsWith("computer_use_") ? "chat.activityComputerSummary"
       : "chat.activityToolSummary";
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
@@ -236,16 +241,23 @@ function ProcessDetailsGroup({ summary, activeLabel, failureCount = 0, children,
   );
 }
 
-function TurnModelLabel({ message, modelNames }: { message: AssistantMessage; modelNames?: Record<string, string> }) {
-  if (!message.provider) return null;
+function TurnLabels({ message, modelNames, modeLabel }: {
+  message?: AssistantMessage;
+  modelNames?: Record<string, string>;
+  modeLabel?: string;
+}) {
+  const model = message?.provider ? getModelDisplayName(message.provider, message.model, modelNames) : null;
   return (
-    <div className="ui-turn-model-label" title={getModelDisplayName(message.provider, message.model, modelNames)}>
-      <span className="ui-stat-chip">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M12 3l1.9 5.4L19 10l-5.1 1.6L12 17l-1.9-5.4L5 10l5.1-1.6L12 3z" />
-        </svg>
-        {getModelDisplayName(message.provider, message.model, modelNames)}
-      </span>
+    <div className="ui-turn-labels">
+      {modeLabel && <span className="ui-turn-mode-label">{modeLabel}</span>}
+      {model && (
+        <span className="ui-stat-chip" title={model}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3l1.9 5.4L19 10l-5.1 1.6L12 17l-1.9-5.4L5 10l5.1-1.6L12 3z" />
+          </svg>
+          {model}
+        </span>
+      )}
     </div>
   );
 }
@@ -257,6 +269,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const completionNotificationsEnabled = !previewOnly && session?.relation?.kind !== "subagent";
   const [subagentMode, setSubagentMode] = useState<SubagentMode>(DEFAULT_SUBAGENT_MODE);
   const [composerWorkMode, setComposerWorkMode] = useState<WorkMode>("auto");
+  const [computerUseApprovalPolicy, setComputerUseApprovalPolicy] = useState<ComputerUseApprovalPolicy>("ask");
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -296,13 +309,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     isAutoModelSelection,
     agentPhase,
     isNew,
+    sessionGoal, goalsEnabled, goalLoading, goalLoadError, loadGoal,
+    activeComputerUseApprovalPolicy,
     sessionIdRef, scrollContainerRef,
     lastUserMsgRef, promptAnchorActive,
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     handleRecallQueue,
     handleBuiltinSlashCommand,
-    handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, loadTools, loadSlashCommands, scrollUserMsgToTop,
+    handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, handleGoalChange, loadTools, loadSlashCommands, scrollUserMsgToTop,
     loadContext, activeLeafId, scrollToBottom, scrollToMessage,
   } = useAgentSession({
     session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
@@ -311,6 +326,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     subagentMode: previewOnly || session?.relation?.kind === "subagent" ? undefined : subagentMode,
     previewOnly,
     composerWorkMode,
+    computerUseApprovalPolicy: completionNotificationsEnabled ? computerUseApprovalPolicy : "ask",
   });
   const persistedSessionId = session?.id ?? sessionIdRef.current ?? undefined;
   const [imageGeneration, setImageGeneration] = useState<{
@@ -1032,6 +1048,12 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       onResolvedWorkMode={setComposerWorkMode}
       showWorkMode={isNew || Boolean(data)}
       workModeDisabled={previewOnly || session?.relation?.kind === "subagent"}
+      approvalPolicyControl={completionNotificationsEnabled && <ApprovalPolicySelector
+        policy={subagentModeUnavailable ? "ask" : computerUseApprovalPolicy}
+        currentRunPolicy={sessionBusy ? activeComputerUseApprovalPolicy ?? "ask" : undefined}
+        onChange={setComputerUseApprovalPolicy}
+        disabled={subagentModeUnavailable}
+      />}
       subagentMode={subagentMode}
       onSubagentModeChange={session?.relation?.kind === "subagent" ? undefined : setSubagentMode}
       subagentModeDisabled={subagentModeUnavailable}
@@ -1138,10 +1160,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       </div>
 
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        {extensionDialog && (
+        {extensionDialog ? (
           <ExtensionDialog key={extensionDialog.id} request={extensionDialog} onRespond={respondToExtensionUi} />
-        )}
-        {extensionCustomUi && (
+        ) : extensionCustomUi && (
           <ExtensionCustomPanel key={extensionCustomUi.id} request={extensionCustomUi} onInput={sendExtensionCustomInput} />
         )}
         {!isEmptyNew && <>
@@ -1255,6 +1276,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
               const rendered: ReactNode[] = [];
               let tailHasActivityGroup = false;
+              // Compaction splits the timeline, but an earlier part of the same turn can deliver an image.
+              let turnStartIdx = 0;
               for (let idx = 0; idx < timelineMessages.length;) {
                 // A lazily loaded history page may start halfway through a turn.
                 const hasAnchor = isMessageGroupAnchor(timelineMessages[idx]);
@@ -1266,7 +1289,17 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
                 const turnMessages = timelineMessages.slice(userIdx + 1, endIdx);
                 const turnModel = turnMessages.find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
-                if (turnModel) rendered.push(<TurnModelLabel key={"turn-model-" + (entryIds[userIdx] ?? userIdx)} message={turnModel} modelNames={modelNames} />);
+                const anchor = timelineMessages[userIdx];
+                if (hasAnchor && anchor?.role === "user") turnStartIdx = idx + 1;
+                const turnWorkMode = anchor?.role === "user" ? anchor.turnWorkMode : undefined;
+                if (turnModel || turnWorkMode) {
+                  rendered.push(<TurnLabels
+                    key={"turn-labels-" + (entryIds[userIdx] ?? userIdx)}
+                    message={turnModel}
+                    modelNames={modelNames}
+                    modeLabel={turnWorkMode ? t(`chat.turnMode.${turnWorkMode}`) : undefined}
+                  />);
+                }
                 let finalAssistantIdx = -1;
                 for (let i = endIdx - 1; i > userIdx; i--) {
                   if (timelineMessages[i].role === "assistant") { finalAssistantIdx = i; break; }
@@ -1303,7 +1336,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 };
                 for (let messageIdx = userIdx + 1; messageIdx < endIdx; messageIdx++) {
                   const message = timelineMessages[messageIdx];
-                  if (message.role === "toolResult") continue;
+                  if (message.role === "toolResult" || (message.role === "custom" && message.customType === GOAL_CONTINUATION_TYPE)) continue;
                   if (message.role === "bashExecution") {
                     if (processViews.length === 0) {
                       processKey = String(entryIds[messageIdx] ?? messageIdx);
@@ -1326,7 +1359,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     isVisibleToolResult: (block) => {
                       const result = toolResultsMap.get(block.toolCallId);
                       if (onOpenSession && block.toolName === "Agent" && isSubagentToolDetails(result?.details)) return true;
-                      return !result?.isError && getToolResultImages(result, block.toolName, messageCwd, persistedSessionId ?? undefined).length > 0;
+                      return getDeliveredToolImages(result, block.toolName, messageCwd, persistedSessionId ?? undefined).length > 0;
                     },
                   });
                   for (const segment of segments) {
@@ -1355,7 +1388,25 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   }
                 }
                 flushProcess(isLiveTail);
-                if (!isLiveTail && finalAssistantIdx !== -1) {
+                const finalAssistant = timelineMessages[finalAssistantIdx];
+                if (!isLiveTail && finalAssistant?.role === "assistant") {
+                  const nextAnchor = timelineMessages[endIdx];
+                  if ((!nextAnchor || nextAnchor.role === "user") && stoppedWithoutFinalAnswer(finalAssistant)) {
+                    const deliveredImage = timelineMessages.slice(turnStartIdx, endIdx).some((message) =>
+                      message.role === "assistant" && message.content.some((block) =>
+                        block.type === "toolCall" && getDeliveredToolImages(
+                          toolResultsMap.get(block.toolCallId), block.toolName, messageCwd, persistedSessionId ?? undefined,
+                        ).length > 0,
+                      ),
+                    );
+                    if (!deliveredImage) {
+                      rendered.push(
+                        <p key={`no-final-answer-${entryIds[finalAssistantIdx] ?? finalAssistantIdx}`} role="status" className="my-3 border-l-2 border-border pl-3 text-[13px] text-text-muted">
+                          {t("chat.stoppedWithoutFinalAnswer")}
+                        </p>,
+                      );
+                    }
+                  }
                   const turnContent = turnMessages.flatMap((message) => message.role === "assistant" ? message.content : []);
                   const imageCharges = entryIds.slice(userIdx + 1, endIdx).flatMap((entryId) => imageBillingByAnchor.get(entryId) ?? []);
                   const turnImageBilling = imageCharges.length === 0 ? undefined : imageCharges.reduce((total, charge) => ({
@@ -1517,6 +1568,21 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
           <div style={{ paddingInlineEnd: showMinimapRail ? CHAT_MINIMAP_WIDTH : 0 }}>
             <div className="chat-column-inset">
               {isEmptyNew && <NewSessionWelcome isMobile={isMobile} chatInputRef={chatInputRef} />}
+              {goalsEnabled && (goalLoadError ? (
+                <div className="chat-reading-column mb-2 flex flex-wrap items-center gap-2 text-xs text-text-muted" role="alert">
+                  {t("chat.goal.loadFailed")}
+                  <button type="button" className="underline" onClick={() => void loadGoal()}>{t("chat.goal.retry")}</button>
+                </div>
+              ) : (
+                <SessionGoalTracker
+                  goal={sessionGoal}
+                  showCreate={composerWorkMode === "goal"}
+                  disabled={goalLoading}
+                  running={sessionBusy}
+                  runningInGoalMode={agentRunning && data?.workMode === "goal"}
+                  onChange={handleGoalChange}
+                />
+              ))}
               {chatInputElement}
             </div>
           </div>
@@ -1644,12 +1710,14 @@ function ExtensionDialog({
   onRespond,
 }: {
   request: ExtensionDialogRequest;
-  onRespond: (request: ExtensionDialogRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true }) => void;
+  onRespond: (request: ExtensionDialogRequest, response: ExtensionUiAnswer) => void;
 }) {
   const { t } = useI18n();
   const [value, setValue] = useState(request.method === "editor" ? request.prefill ?? "" : "");
   const [collapsed, setCollapsed] = useState(false);
+  const [rememberForRun, setRememberForRun] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const canRemember = request.method === "confirm" && request.approvalScope === "computer-use-exact";
   const focusFirstOption = useCallback((element: HTMLDivElement | null) => element?.focus(), []);
   const summary = getExtensionDialogSummary(request);
   const remainingSeconds = request.expiresAt === undefined
@@ -1671,7 +1739,7 @@ function ExtensionDialog({
 
   const submitValue = () => {
     if (request.method === "confirm") {
-      onRespond(request, { confirmed: true });
+      onRespond(request, { confirmed: true, ...(canRemember && rememberForRun ? { rememberForRun: true } : {}) });
     } else {
       onRespond(request, { value });
     }
@@ -1791,7 +1859,9 @@ function ExtensionDialog({
           }}
         >
           {request.method === "confirm" && (
-            <MarkdownBody>{request.message}</MarkdownBody>
+            canRemember
+              ? <pre style={{ margin: 0, fontSize: 12, lineHeight: 1.55, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{request.message}</pre>
+              : <MarkdownBody>{request.message}</MarkdownBody>
           )}
           {request.method === "select" && (
             <div
@@ -1890,6 +1960,27 @@ function ExtensionDialog({
           )}
         </div>
 
+        {canRemember && (
+          <label style={{
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 14px",
+            borderTop: "1px solid var(--border)",
+            color: "var(--text-muted)",
+            fontSize: 12,
+            cursor: "pointer",
+          }}>
+            <input
+              type="checkbox"
+              checked={rememberForRun}
+              onChange={(event) => setRememberForRun(event.target.checked)}
+              style={{ flexShrink: 0, accentColor: "var(--accent)" }}
+            />
+            {t("chat.extensionRememberExactForRun")}
+          </label>
+        )}
         <div style={{ flexShrink: 0, display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
           <button
             autoFocus={request.method === "confirm" || (request.method === "select" && request.options.length === 0)}

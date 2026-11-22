@@ -66,13 +66,14 @@ type PayloadOptions<M> = { maxTokens?: number; onPayload?: (payload: unknown, mo
 
 /**
  * Only the normal relay chat path in Auto omits the OpenAI-style fields.
- * Explicit per-request budgets (such as compaction) and required Anthropic
- * max_tokens keep their semantics, as do all non-relay providers.
+ * Pi calculates the default for summaries. Explicit budgets and the required
+ * Anthropic max_tokens for ordinary chat keep the relay's configured limits.
  */
 export function applyRelayOutputPolicy<M extends Model<Api>, T extends PayloadOptions<M>>(
   model: M,
   options: T | undefined,
   resolvePreferences: (model: M) => RelayOutputPreferences,
+  useSdkSummaryDefault = false,
 ): { model: M; options: T | undefined } {
   if (!isRelayProviderId(model.provider)) return { model, options };
 
@@ -82,6 +83,7 @@ export function applyRelayOutputPolicy<M extends Model<Api>, T extends PayloadOp
   const preferences = resolvePreferences(model);
   const override = readOutputTokenLimit(preferences.meteorAgentMaxOutputTokensOverride);
   const explicitRequest = readOutputTokenLimit(options?.maxTokens);
+  if (useSdkSummaryDefault && override === undefined && explicitRequest === undefined) return { model, options };
 
   if (optional && override === undefined && explicitRequest === undefined) {
     return {

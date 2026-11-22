@@ -12,13 +12,14 @@ const {
   MessageView,
   ThinkingBlock,
   formatUsage,
+  getDeliveredToolImages,
   getModelDisplayName,
   getTokenEstimateText,
   getToolCallInputText,
   replaceUserMessageText,
 } = await jiti.import("./MessageView.tsx");
 const { I18nProvider } = await jiti.import("@/hooks/useI18n");
-const { splitFinalAssistantBlocks } = await jiti.import("@/lib/message-display");
+const { getAssistantTimelineSegments, splitFinalAssistantBlocks } = await jiti.import("@/lib/message-display");
 
 function renderMessage(message, props = {}) {
   return renderToStaticMarkup(
@@ -29,6 +30,18 @@ function renderMessage(message, props = {}) {
     ),
   );
 }
+
+test("shows a collapsed compaction row before mounting the summary and file context", () => {
+  const html = renderMessage({
+    role: "custom",
+    customType: "compaction",
+    content: "Private summary text\n\n<read-files>\nsource.ts\n</read-files>",
+    timestamp: 1700000000000,
+  });
+  assert.match(html, /<details class="chat-compaction"><summary/);
+  assert.match(html, /Conversation compacted/);
+  assert.doesNotMatch(html, /Private summary text|source.ts/);
+});
 
 test("updates a reused message when its written files change", () => {
   const props = { message: { role: "assistant", content: [] } };
@@ -435,6 +448,28 @@ test("renders pi-image-gen detail images inline with tool details closed", () =>
   assert.doesNotMatch(html, /a golden hamster/);
   assert.match(html, /src="\/api\/files\/tmp\/project\/\.pi\/images\/hamster\.png\?type=read&amp;sessionId=session-1"/);
   assert.doesNotMatch(html, /Generated 1 image\(s\): \/tmp\/project\/\.pi\/images\/hamster\.png/);
+});
+
+test("keeps screenshot and image-read results within adjacent tool activity", () => {
+  const toolCalls = ["read", "computer_use_get_window_state", "bash"].map((toolName) => ({
+    type: "toolCall", toolCallId: toolName, toolName, input: {},
+  }));
+  const screenshot = { type: "image", source: { type: "url", url: "/api/sessions/session-1/media" } };
+  const toolResults = new Map(toolCalls.slice(0, 2).map(({ toolCallId, toolName }) => [toolCallId, {
+    role: "toolResult", toolCallId, toolName, content: [screenshot],
+  }]));
+  const message = { role: "assistant", content: [...toolCalls, { type: "text", text: "Finished checking" }] };
+  const segments = getAssistantTimelineSegments(message, {
+    isVisibleToolResult: (block) => getDeliveredToolImages(toolResults.get(block.toolCallId), block.toolName).length > 0,
+  });
+  assert.deepEqual(segments, [
+    { kind: "activity", blockIndices: [0, 1, 2] },
+    { kind: "output", blockIndices: [3] },
+  ]);
+  const html = renderMessage(message, { toolResults });
+  assert.match(html, /computer_use_get_window_state/);
+  assert.match(html, /Finished checking/);
+  assert.doesNotMatch(html, /Preview image|\/api\/sessions\/session-1\/media/);
 });
 
 test("renders image-tool URL details without accepting arbitrary schemes", () => {

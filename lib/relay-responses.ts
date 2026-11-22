@@ -1,4 +1,4 @@
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { InlineExtension, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Api, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { isRelayProviderId, relayModelNeedsResponseRepair } from "./relay-config";
 import { withProviderDefaultThinking } from "./model-auto-reasoning";
@@ -30,6 +30,23 @@ const RECOVERABLE_STRING_EVENTS = new Map([
 ]);
 
 const installedRuntimes = new WeakSet<object>();
+const summarySignals = new WeakSet<AbortSignal>();
+
+/** Pi forwards the same operation signal to the summary request and its retries. */
+export function createRelaySummaryPolicyExtension(): InlineExtension {
+  return {
+    name: "meteoragent-summary-policy",
+    hidden: true,
+    factory(runtime) {
+      runtime.on("session_before_compact", ({ signal }) => {
+        summarySignals.add(signal);
+      });
+      runtime.on("session_before_tree", ({ signal, preparation }) => {
+        if (preparation.userWantsSummary) summarySignals.add(signal);
+      });
+    },
+  };
+}
 
 /** Repair the string portion of a JSON field, including an unterminated tail. */
 function repairJsonStringFragment(encoded: string): string | undefined {
@@ -349,7 +366,8 @@ export function installRelayResponseRepair(modelRuntime: ModelRuntime): void {
 
   const originalStreamSimple = modelRuntime.streamSimple.bind(modelRuntime);
   modelRuntime.streamSimple = ((model, context, options) => {
-    const output = applyRelayOutputPolicy(model, withProviderDefaultThinking(model, options), relayOutputPreferencesForModel);
+    const isSummary = options?.signal !== undefined && summarySignals.has(options.signal);
+    const output = applyRelayOutputPolicy(model, withProviderDefaultThinking(model, options), relayOutputPreferencesForModel, isSummary);
     return originalStreamSimple(output.model, context, needsRepair(model) ? withRelayRepairFetch(output.options) : output.options);
   }) as ModelRuntime["streamSimple"];
 

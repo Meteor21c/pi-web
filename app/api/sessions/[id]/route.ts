@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -22,6 +22,7 @@ import type { SessionEntry } from "@/lib/types";
 import { readSubagentRun, readSubagentSessionResources, SUBAGENT_META_TYPE } from "@/lib/subagents";
 import { readSessionToolSelection } from "@/lib/session-tool-selection";
 import { readSessionWorkMode } from "@/lib/session-work-mode";
+import { deleteSessionWithGoal } from "@/lib/session-goal";
 import { jsonResponse } from "@/lib/json-response";
 
 export async function GET(
@@ -288,11 +289,7 @@ export async function DELETE(
     try { await abortSubagent(id); } catch { /* ordinary session */ }
     await getRpcSession(id)?.shutdown();
     for (const [deletedId, deletedPath] of deletedPaths) {
-      try {
-        unlinkSync(deletedPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
+      await deleteSessionWithGoal(deletedPath);
       invalidateSessionPathCache(deletedId);
     }
     invalidateSessionListCache();

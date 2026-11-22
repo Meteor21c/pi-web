@@ -76,7 +76,7 @@ function agreement<T>(values: T[], key: (value: T) => string): T | undefined {
 }
 
 export function builtinModelCapabilities({ id, provider, baseUrl, api }: ModelLookup): ModelCapabilities {
-  const normalizedId = id.trim().toLowerCase() === "claude-fable-5.1" ? "claude-fable-5-1" : id;
+  const normalizedId = id.trim().toLowerCase().replace(/^claude-fable-5\.1$/, "claude-fable-5-1");
   const matches = exactBuiltinModels(normalizedId);
   const direct = matches.find((model) => model.provider === provider)
     ?? matches.find((model) => baseUrl && hostname(model.baseUrl) === hostname(baseUrl))
@@ -87,7 +87,13 @@ export function builtinModelCapabilities({ id, provider, baseUrl, api }: ModelLo
     thinkingLevelMap: direct.thinkingLevelMap ? { ...direct.thinkingLevelMap } : {},
   };
 
-  if (id.toLowerCase() === "deepseek-v4-flash-vision-exp") {
+  // Pi 1.6 removed this retired catalog ID, but relay groups may still list it.
+  // Preserve its previous text-only default until the relay reports capabilities.
+  if (normalizedId === "deepseek-v4-flash" && matches.length === 0) {
+    return { reasoning: true, input: ["text"] };
+  }
+
+  if (normalizedId === "deepseek-v4-flash-vision-exp") {
     return {
       reasoning: true,
       input: ["text", "image"],
@@ -97,7 +103,7 @@ export function builtinModelCapabilities({ id, provider, baseUrl, api }: ModelLo
 
   // This exact relay alias has been shipped since the M0 catalog. The public
   // SDK lists its individual variants rather than the undifferentiated ID.
-  if (id.toLowerCase() === "gpt-5.6" && matches.length === 0) {
+  if (normalizedId === "gpt-5.6" && matches.length === 0) {
     return { reasoning: true, input: ["text", "image"], thinkingLevelMap: {} };
   }
 

@@ -173,6 +173,20 @@ test("model specs keep catalog-filled prices visible outside advanced settings",
   assert.match(modelDetail, /formatCost\(key\)/);
 });
 
+test("output settings keep raw model caps under collapsed advanced controls", () => {
+  const detail = source.slice(source.indexOf("function ModelDetail"), source.indexOf("// ── OAuth detail"));
+  const disclosure = detail.indexOf("{advancedOpen && (");
+  assert.ok(disclosure > 0);
+  assert.match(detail, /\[advancedOpen, setAdvancedOpen\] = useState\(false\)/);
+  const basic = detail.slice(0, disclosure);
+  const advanced = detail.slice(disclosure);
+  assert.match(basic, /relayContextPolicy && <Field label=\{t\("models\.outputLength"\)\}>\s*<span>\{relayOutputLabel\}<\/span>/);
+  assert.doesNotMatch(basic, /t\("models\.maxOutputTokens"\)|set\("maxTokens",/);
+  assert.match(detail, /relayOutputOverride === undefined\s*\? t\("models\.outputFollowProvider"\)/);
+  assert.match(advanced, /relayContextPolicy \? <Field label=\{t\("models\.outputLimitOverride"\)\}>[\s\S]*?editOutputOverride\(event\.target\.value\)[\s\S]*?: <Field label=\{t\("models\.maxOutputTokens"\)\}>/);
+  assert.match(advanced, /aria-describedby=\{outputHelpId\}[\s\S]*?set\("maxTokens",[\s\S]*?t\("models\.maxOutputTokensHint"\)/);
+});
+
 test("per-model settings use one primary divider before advanced settings", () => {
   const modelDetail = source.slice(
     source.indexOf("function ModelDetail"),

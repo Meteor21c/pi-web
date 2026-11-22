@@ -32,6 +32,12 @@ export function getAssistantErrorMessage(
   return message.errorMessage?.trim() || "Unknown provider error";
 }
 
+export function stoppedWithoutFinalAnswer(message: AssistantMessage): boolean {
+  return message.stopReason === "stop" && message.content.every((block) =>
+    block.type === "thinking" || (block.type === "text" && !block.text.trim()),
+  );
+}
+
 /** Errors produced when a Responses SSE connection ends mid-event. */
 export function isTruncatedResponseError(message: string | null): boolean {
   if (!message) return false;

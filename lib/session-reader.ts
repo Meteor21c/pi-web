@@ -2,7 +2,7 @@ import {
   SessionManager,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { closeSync, type Dirent, fstatSync, openSync, readSync } from "fs";
+import { closeSync, type Dirent, existsSync, fstatSync, openSync, readSync, writeFileSync } from "fs";
 import { readdir } from "fs/promises";
 import { isAbsolute, join, normalize as normalizePath, relative, resolve as resolvePath, sep } from "path";
 import type { AgentMessage, ImageContent, SessionEntry, SessionHeader, SessionInfo, SessionContext } from "./types";
@@ -15,6 +15,7 @@ import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { listSessionsIncremental } from "./session-list-scanner";
 import { readSessionThinkingSelection } from "./session-thinking";
+import { readTurnWorkModes } from "./session-work-mode";
 
 export { getAgentDir };
 
@@ -411,6 +412,21 @@ export function getSessionEntries(filePath: string): SessionEntry[] {
   return entries as unknown as SessionEntry[];
 }
 
+/** Save an intentionally retained draft before Pi persists its first conversation message. */
+export function persistPreparedSession(manager: SessionManager): string | undefined {
+  const file = manager.getSessionFile();
+  if (!file || existsSync(file)) return file;
+  const header = manager.getHeader();
+  if (!header) return;
+
+  const entries = [header, ...manager.getEntries()].map((entry) => JSON.stringify(entry));
+  writeFileSync(file, entries.join("\n") + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  // The active manager must append its first user message to this file, rather
+  // than opening it with "wx" as an unflushed Pi 1.6 session would.
+  (manager as unknown as { flushed: boolean }).flushed = true;
+  return file;
+}
+
 export function getLatestModelChange(entries: SessionEntry[]): SessionContext["model"] {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -471,10 +487,13 @@ export function buildSessionContext(
   // Convert messages and their IDs together to keep fork/navigation targets aligned.
   const messages: AgentMessage[] = [];
   const entryIds: string[] = [];
+  const userIds = new Set(sliced.flatMap((entry) => entry.type === "message" && entry.message.role === "user" ? [entry.id] : []));
+  const workModes = readTurnWorkModes(entries, userIds);
   for (const entry of sliced) {
     const m = entryToUiMessage(entry, options);
     if (m) {
-      messages.push(m);
+      const turnWorkMode = workModes.get(entry.id);
+      messages.push(m.role === "user" && turnWorkMode ? { ...m, turnWorkMode } : m);
       entryIds.push(entry.id);
     }
   }

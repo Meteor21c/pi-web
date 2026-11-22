@@ -5,6 +5,7 @@ import type {
   AgentMessage,
   BlockingExtensionUiRequest,
   ExtensionStatusItem,
+  ExtensionUiAnswer,
   ExtensionUiRequest,
   ExtensionWidgetItem,
   SessionInfo,
@@ -13,6 +14,7 @@ import type {
   UserMessage,
 } from "@/lib/types";
 import { isBlockingExtensionUiRequest } from "@/lib/browser-notifications";
+import { extensionUiQueueReducer } from "./extension-ui-queue";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { AgentCommandError, isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
@@ -28,6 +30,8 @@ import { AgentEventConnection } from "@/lib/agent-event-connection";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
 import { resolveThinkingLevelOption, type ThinkingLevelOption } from "@/lib/model-capabilities";
 import { isWorkMode, type WorkMode } from "@/lib/prompt-presets";
+import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
+import type { SessionGoal, SessionGoalAction } from "@/lib/session-goal-types";
 import type { SessionWorkMode } from "@/lib/session-work-mode";
 import {
   CHAT_SCROLL_REATTACH_TOLERANCE,
@@ -82,6 +86,7 @@ type AgentStateResponse = Partial<SessionWorkMode> & {
   systemPrompt?: string;
   thinkingLevel?: string;
   isStreaming?: boolean;
+  computerUseApprovalPolicy?: ComputerUseApprovalPolicy;
   isPromptRunning?: boolean;
   isBashRunning?: boolean;
   isCompacting?: boolean;
@@ -170,6 +175,7 @@ export interface UseAgentSessionOptions {
   deferInitialScroll?: boolean;
   subagentMode?: SubagentMode;
   composerWorkMode?: SessionData["workMode"];
+  computerUseApprovalPolicy?: ComputerUseApprovalPolicy;
   previewOnly?: boolean;
 }
 
@@ -286,7 +292,7 @@ type SlashCommandsResponse = {
 
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const { t } = useI18n();
-  const { subagentMode, composerWorkMode, previewOnly } = opts;
+  const { subagentMode, composerWorkMode, computerUseApprovalPolicy, previewOnly } = opts;
   const {
     session, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
@@ -295,6 +301,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const isNew = session === null && newSessionCwd !== null;
 
   const [data, setData] = useState<SessionData | null>(null);
+  const [goalState, setGoalState] = useState<{ sid: string; goal: SessionGoal | null } | null>(null);
+  const [goalLoadError, setGoalLoadError] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState<string | null>(null);
   const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
@@ -306,6 +314,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [hasEarlierMessages, setHasEarlierMessages] = useState(false);
   const [streamState, dispatch] = useReducer(streamReducer, INITIAL_STREAMING_STATE);
   const [agentRunning, setAgentRunning] = useState(false);
+  const [activeComputerUseApprovalPolicy, setActiveComputerUseApprovalPolicy] = useState<ComputerUseApprovalPolicy | null>(null);
   const [bashRunning, setBashRunning] = useState(false);
   const [pendingBash, setPendingBash] = useState<{ command: string; excludeFromContext: boolean } | null>(null);
   const [modelNames, setModelNames] = useState<Record<string, string>>({});
@@ -338,8 +347,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [availableTools, setAvailableTools] = useState<ToolEntry[]>([]);
   const [noticeState, dispatchNotice] = useReducer(noticeReducer, { visible: [], pending: [] });
   const [sessionStatsOverride, setSessionStatsOverride] = useState<SessionStatsInfo | null>(null);
-  const [extensionDialog, setExtensionDialog] = useState<ExtensionUiDialogRequest | null>(null);
-  const [extensionCustomUi, setExtensionCustomUi] = useState<ExtensionUiCustomRequest | null>(null);
+  const [extensionUiQueue, dispatchExtensionUi] = useReducer(extensionUiQueueReducer, new Map());
+  const currentExtensionUi = extensionUiQueue.values().next().value;
+  const extensionDialog = currentExtensionUi?.method === "custom" ? undefined : currentExtensionUi;
+  const extensionCustomUi = currentExtensionUi?.method === "custom" ? currentExtensionUi : undefined;
+  const pendingExtensionAnswers = useRef(new Set<string>());
   const [extensionStatuses, setExtensionStatuses] = useState<ExtensionStatusItem[]>([]);
   const [extensionWidgets, setExtensionWidgets] = useState<ExtensionWidgetItem[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessages>({ steering: [], followUp: [] });
@@ -371,6 +383,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const thinkingLevelOverrideRef = useRef<ThinkingLevelOption | null>(null);
   const pendingThinkingChangeRef = useRef<Promise<void> | null>(null);
   const pendingWorkModeChangeRef = useRef<Promise<void> | null>(null);
+  const pendingGoalChangeRef = useRef<Promise<string> | null>(null);
   const workModeRef = useRef<{ sid: string; state: SessionWorkMode } | null>(null);
   const thinkingChangeVersionRef = useRef(0);
   const promptRunIdRef = useRef(0);
@@ -404,6 +417,37 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const setToolPresetState = opts.setToolPreset ?? setToolPreset;
   const existingSessionId = session?.id;
+  const sessionGoal = goalState?.sid === (existingSessionId ?? sessionIdRef.current) ? goalState?.goal ?? null : null;
+  const goalsEnabled = !previewOnly && session?.relation?.kind !== "subagent";
+  const goalLoading = Boolean(existingSessionId && goalState?.sid !== existingSessionId);
+
+  const updateGoalState = useCallback((sid: string, goal: SessionGoal | null) => {
+    if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
+    setGoalState((current) => current?.sid === sid && (current.goal?.revision ?? 0) > (goal?.revision ?? 0)
+      ? current : { sid, goal });
+    setGoalLoadError(false);
+  }, []);
+
+  const loadGoal = useCallback(async (signal?: AbortSignal, sid = existingSessionId) => {
+    if (!goalsEnabled || !sid || sessionIdRef.current !== sid) return;
+    setGoalLoadError(false);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/goal`, { cache: "no-store", signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { goal } = await res.json() as { goal: SessionGoal | null };
+      if (!signal?.aborted) updateGoalState(sid, goal);
+    } catch {
+      if (!signal?.aborted && sessionHookMountedRef.current && sessionIdRef.current === sid) {
+        setGoalLoadError(true);
+      }
+    }
+  }, [existingSessionId, goalsEnabled, updateGoalState]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadGoal(controller.signal);
+    return () => controller.abort();
+  }, [loadGoal]);
 
   useLayoutEffect(() => {
     if (!existingSessionId && (!isNew || sessionIdRef.current)) return;
@@ -557,6 +601,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (sessionIdRef.current !== sid) return null;
 
         const liveState = agentState.state;
+        setActiveComputerUseApprovalPolicy(liveState?.computerUseApprovalPolicy ?? null);
         syncLiveModel(liveState);
         syncLiveWorkMode(sid, liveState);
         if (liveState) {
@@ -835,12 +880,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,
-    response: { value: string } | { confirmed: boolean } | { cancelled: true },
+    response: ExtensionUiAnswer,
   ) => {
     const sid = sessionIdRef.current;
-    setExtensionDialog((current) => current?.id === request.id ? null : current);
-    if (!sid) return;
+    if (!sid || pendingExtensionAnswers.current.has(request.id)) return;
+    pendingExtensionAnswers.current.add(request.id);
     try {
+      // Advance the queue only when the server closes this request. A failed
+      // submission leaves the same question and the user's input in place.
       await sendAgentCommand(sid, {
         type: "extension_ui_response",
         id: request.id,
@@ -848,6 +895,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
     } catch (e) {
       console.error("Failed to send extension UI response:", e);
+    } finally {
+      pendingExtensionAnswers.current.delete(request.id);
     }
   }, []);
 
@@ -879,15 +928,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, []);
 
   const handleExtensionUiRequest = useCallback((request: ExtensionUiRequest) => {
-    if (isBlockingExtensionUiRequest(request)) onAttentionNeeded?.(request);
+    if (request.method === "custom" && request.closed) {
+      dispatchExtensionUi({ type: "closed", id: request.id });
+      return;
+    }
+    if (isBlockingExtensionUiRequest(request)) {
+      dispatchExtensionUi({ type: "request", request });
+      onAttentionNeeded?.(request);
+      return;
+    }
 
     switch (request.method) {
-      case "select":
-      case "confirm":
-      case "input":
-      case "editor":
-        setExtensionDialog(request);
-        break;
       case "notify": {
         addNotice({
           id: request.id,
@@ -922,12 +973,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       case "set_editor_text":
         opts.chatInputRef?.current?.insertText(request.text);
         break;
-      case "custom":
-        setExtensionCustomUi((current) => {
-          if (request.closed) return current?.id === request.id ? null : current;
-          return request;
-        });
-        break;
     }
   }, [addNotice, onAttentionNeeded, opts.chatInputRef]);
 
@@ -935,6 +980,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const wasRunning = agentRunningRef.current;
     agentRunningRef.current = false;
     setAgentRunning(false);
+    setActiveComputerUseApprovalPolicy(null);
     setAgentPhase(null);
     setRetryInfo(null);
     setActiveToolResults(new Map());
@@ -1029,7 +1075,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // must not overwrite the messages of the run currently streaming.
     if (promptRunIdRef.current !== runId) return;
     try {
-      if (sid) await loadSession(sid);
+      if (sid) await Promise.all([loadSession(sid), loadGoal(undefined, sid)]);
     } finally {
       if (promptRunIdRef.current !== runId) return;
       const promptWasPending = rpcPromptPendingRef.current;
@@ -1045,7 +1091,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (sid) scheduleEventStreamClose(sid);
     }
-  }, [loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, settleUiStage]);
+  }, [loadGoal, loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, settleUiStage]);
 
   const waitForPromptSettlement = useCallback(async (sid: string, runId?: number) => {
     await delay(PROMPT_SETTLE_INITIAL_DELAY_MS);
@@ -1127,6 +1173,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const busy = data.running && state
         && (state.isStreaming || state.isPromptRunning || state.isCompacting);
       if (busy) {
+        setActiveComputerUseApprovalPolicy(state.computerUseApprovalPolicy ?? null);
         sdkAgentActiveRef.current = Boolean(state.isStreaming);
         rpcPromptPendingRef.current = Boolean(state.isPromptRunning);
         return;
@@ -1188,8 +1235,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "connected": {
+        if (Array.isArray(event.extensionUiRequestIds)) {
+          dispatchExtensionUi({ type: "snapshot", ids: event.extensionUiRequestIds.filter((id): id is string => typeof id === "string") });
+        }
         dispatch({ type: "end" });
         if (event.isStreaming === true) {
+          setActiveComputerUseApprovalPolicy(event.computerUseApprovalPolicy === "full" ? "full" : "ask");
           cancelEventStreamGrace();
           sdkAgentActiveRef.current = true;
           agentRunningRef.current = true;
@@ -1199,6 +1250,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "agent_start":
+        setActiveComputerUseApprovalPolicy(event.computerUseApprovalPolicy === "full" ? "full" : "ask");
         cancelEventStreamGrace();
         sdkAgentActiveRef.current = true;
         agentRunningRef.current = true;
@@ -1241,6 +1293,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setIsCompacting(false);
         if (sid) {
           void loadSession(sid);
+          void loadGoal(undefined, sid);
           scheduleEventStreamClose(sid);
         }
         if (wasRunning) onAgentEnd?.();
@@ -1256,7 +1309,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (!promptWasPending && !firstNotification) break;
 
           const sid = sessionIdRef.current;
-          if (sid) void loadSession(sid);
+          if (sid) {
+            void loadSession(sid);
+            void loadGoal(undefined, sid);
+          }
           // An extension-injected agent may already have started before the
           // command's prompt_done. Keep that active stage visible and let its
           // agent_settled event perform the next completion transition.
@@ -1322,16 +1378,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           // messages. The run's initial prompt also emits one, but handleSend
           // already appended it optimistically. Consume only the still-adjacent
           // optimistic bubble; later same-text queue deliveries must render.
-          const delivered = normalizeToolCalls(completed);
+          const turnWorkMode = event.turnWorkMode === "plan" || event.turnWorkMode === "goal" ? event.turnWorkMode : undefined;
+          const delivered: UserMessage = { ...completed, turnWorkMode };
           const deliveredKey = userMessageKey(delivered);
           const optimisticKey = optimisticUserMessageKeyRef.current;
           optimisticUserMessageKeyRef.current = null;
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (optimisticKey && last?.role === "user" && userMessageKey(last) === optimisticKey) {
-              return optimisticKey === deliveredKey
-                ? prev
-                : [...prev.slice(0, -1), delivered];
+              if (optimisticKey !== deliveredKey) return [...prev.slice(0, -1), delivered];
+              return last.turnWorkMode === turnWorkMode ? prev : [...prev.slice(0, -1), { ...last, turnWorkMode }];
             }
             return [...prev, delivered];
           });
@@ -1447,17 +1503,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         handleExtensionUiRequest(event as ExtensionUiRequest);
         break;
       case "extension_ui_closed":
-        setExtensionDialog((current) => current?.id === event.id ? null : current);
+        if (typeof event.id === "string") dispatchExtensionUi({ type: "closed", id: event.id });
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t, updateWorkMode]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadGoal, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t, updateWorkMode]);
   handleAgentEventRef.current = handleAgentEvent;
 
-  const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
+  const handleSend = useCallback(async (message: string, images?: AttachedImage[], restoreDraft = true) => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage && !images?.length) return;
     if (agentRunningRef.current || bashRunningRef.current) {
-      restoreSubmission(message, images, composerDraftKey);
+      if (restoreDraft) restoreSubmission(message, images, composerDraftKey);
       return;
     }
     const isSlashCommandPrompt = !images?.length && trimmedMessage.startsWith("/");
@@ -1485,18 +1541,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     rpcPromptPendingRef.current = true;
 
     const imageBlocks = images?.map((img) => ({ type: "image" as const, source: { type: "base64" as const, media_type: img.mimeType, data: img.data } }));
-    const userMsg: AgentMessage = {
+    const modeState = workModeRef.current?.sid === sessionIdRef.current ? workModeRef.current?.state : undefined;
+    const optimisticMode = modeState?.pendingWorkMode ?? modeState?.workMode ?? composerWorkMode;
+    const userMsg: UserMessage = {
       role: "user",
       content: imageBlocks?.length
         ? [...(message.trim() ? [{ type: "text" as const, text: message }] : []), ...imageBlocks]
         : message,
       timestamp: Date.now(),
+      turnWorkMode: optimisticMode === "plan" || optimisticMode === "goal" ? optimisticMode : undefined,
     };
     setMessages((prev) => [...prev, userMsg]);
     optimisticUserMessageKeyRef.current = userMessageKey(userMsg);
     promptRunIdRef.current = promptRunId;
     agentRunningRef.current = true;
     setAgentRunning(true);
+    setActiveComputerUseApprovalPolicy(!isSlashCommandPrompt ? computerUseApprovalPolicy ?? "ask" : "ask");
     setAgentPhase(isSlashCommandPrompt ? { kind: "running_command" } : { kind: "waiting_model" });
     dispatch({ type: "start" });
     pendingScrollToUserRef.current = true;
@@ -1509,11 +1569,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       await pendingThinkingChangeRef.current;
       await pendingWorkModeChangeRef.current;
+      await pendingGoalChangeRef.current;
       const persistedMode = workModeRef.current?.sid === sessionIdRef.current
         ? workModeRef.current?.state : undefined;
       const effectiveSubagentMode = subagentMode && (toolPreset === "none" || toolPreset === "read-only"
         || (persistedMode?.pendingWorkMode ?? persistedMode?.workMode ?? composerWorkMode) === "plan")
         ? "off" : subagentMode;
+      const approval = !isSlashCommandPrompt && computerUseApprovalPolicy === "full"
+        && (persistedMode?.pendingWorkMode ?? persistedMode?.workMode ?? composerWorkMode) !== "plan"
+        && toolPreset !== "none" && toolPreset !== "read-only"
+        ? { computerUseApprovalPolicy } : {};
       if (isNew && newSessionCwd) {
         const selectedModel = newSessionModel;
         const existingSid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
@@ -1532,6 +1597,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(sid, {
           type: "prompt",
           message,
+          ...approval,
           ...(effectiveSubagentMode ? { subagentMode: effectiveSubagentMode } : {}),
           ...(piImages?.length ? { images: piImages } : {}),
         });
@@ -1543,6 +1609,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(session.id, {
           type: "prompt",
           message,
+          ...approval,
           ...(effectiveSubagentMode ? { subagentMode: effectiveSubagentMode } : {}),
           ...(piImages?.length ? { images: piImages } : {}),
         });
@@ -1570,7 +1637,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           : [...prev.slice(0, optimisticIndex), ...prev.slice(optimisticIndex + 1)];
       });
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
-      restoreSubmission(message, images, composerDraftKey);
+      if (restoreDraft) restoreSubmission(message, images, composerDraftKey);
       optimisticUserMessageKeyRef.current = null;
       // Rejection only describes this submission. Another tab or an event we
       // missed may still have a real run active for the same session, so keep
@@ -1582,10 +1649,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       agentRunningRef.current = false;
       closeEvents();
       setAgentRunning(false);
+      setActiveComputerUseApprovalPolicy(null);
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, composerWorkMode, reconcileAgentState, restoreSubmission, subagentMode, toolPreset]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, composerWorkMode, computerUseApprovalPolicy, reconcileAgentState, restoreSubmission, subagentMode, toolPreset]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -2071,6 +2139,47 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [loadTools, previewOnly, session?.relation?.kind, updateWorkMode]);
 
+  const handleGoalChange = useCallback(async (action: SessionGoalAction) => {
+    if (!goalsEnabled || pendingGoalChangeRef.current) return;
+    if (action.type === "resume" && (agentRunningRef.current || bashRunningRef.current)) {
+      throw new Error("The session is busy");
+    }
+    const change = (async () => {
+      const sid = sessionIdRef.current ?? await ensureNewSession();
+      if (!sid || !sessionHookMountedRef.current || sessionIdRef.current !== sid) {
+        throw new Error("No active session for the goal");
+      }
+      if (action.type === "resume" || (isNew && composerWorkMode === "goal")) await handleWorkModeChange("goal");
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/goal`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, expectedRevision: sessionGoal?.revision ?? null }),
+      });
+      const result = await res.json() as { goal?: SessionGoal | null; code?: string };
+      if (res.ok || result.code === "goal_conflict") updateGoalState(sid, result.goal ?? null);
+      if (!res.ok) throw new Error(result.code ?? `HTTP ${res.status}`);
+      if (action.type === "pause" && agentRunningRef.current && sessionIdRef.current === sid
+        && workModeRef.current?.sid === sid && workModeRef.current.state.workMode === "goal") {
+        await sendAgentCommand(sid, { type: "abort" });
+      }
+      if (isNew && sessionHookMountedRef.current && sessionIdRef.current === sid) {
+        await loadSession(sid);
+        promoteNewSession(0, result.goal?.objective);
+      }
+      return sid;
+    })();
+    pendingGoalChangeRef.current = change;
+    let sid: string;
+    try {
+      sid = await change;
+    } finally {
+      if (pendingGoalChangeRef.current === change) pendingGoalChangeRef.current = null;
+    }
+    if (action.type === "resume" && sessionHookMountedRef.current && sessionIdRef.current === sid) {
+      await handleSend(t("chat.goal.continuePrompt"), undefined, false);
+    }
+  }, [composerWorkMode, ensureNewSession, goalsEnabled, handleSend, handleWorkModeChange, isNew, loadSession, promoteNewSession, sessionGoal?.revision, t, updateGoalState]);
+
   const handleToolPresetChange = useCallback(async (preset: ToolPreset) => {
     const toolNames = getToolNamesForPreset(preset);
     setPreferredToolPreset(preset);
@@ -2370,6 +2479,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     agentPhase,
     isNew,
     promptAnchorActive,
+    sessionGoal, goalsEnabled, goalLoading, goalLoadError, loadGoal,
+    activeComputerUseApprovalPolicy,
     // Refs
     sessionIdRef, scrollContainerRef,
     lastUserMsgRef, pendingScrollToUserRef, initialScrollDoneRef,
@@ -2379,7 +2490,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     handleRecallQueue,
     handleBuiltinSlashCommand,
     setNoticePaused: setPausedNoticeId,
-    handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages, loadContext,
+    handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, handleGoalChange, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages, loadContext,
     scrollToBottom, scrollUserMsgToTop, scrollToMessage,
     dispatch, setAgentRunning, setForkingEntryId,
     bashRunning, pendingBash,

@@ -807,7 +807,6 @@ function AssistantMessageView({
       data-message-role="assistant"
       data-entry-id={entryId}
       className="ui-msg-enter"
-      style={{ marginBottom: 16 }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -858,7 +857,7 @@ function AssistantMessageView({
         })()}
       </div>}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div className="chat-assistant-blocks">
         {blockItems.map(({ block, originalIndex }) => (
           <BlockView key={`${entryId ?? "stream"}-${originalIndex}`} block={block} searchTarget={block === searchBlock} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(originalIndex) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} sessionId={sessionId} entryId={entryId} blockIndex={originalIndex} />
         ))}
@@ -1220,26 +1219,21 @@ function SubagentRunRow({ run, onOpenSession }: { run: SubagentToolDetails; onOp
 
 function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number; onOpenSession?: (sessionId: string) => void; cwd?: string; sessionId?: string }) {
   const { t } = useI18n();
-  const inputStr = getToolCallInputText(block);
+  const [expanded, setExpanded] = useState(false);
   const isStreamingInput = block.rawInput !== undefined;
   const isEditTool = isEditToolName(block.toolName);
-  const resultDiff = result && !result.isError ? getResultDiff(result) : null;
+  const resultDiff = expanded && result && !result.isError ? getResultDiff(result) : null;
 
-  // Result display
-  const rawResultText = result
+  const resultText = expanded && result
     ? result.content.filter((b): b is { type: "text"; text: string } => b.type === "text").map((b) => b.text).join("\n")
-    : null;
-  const resultImages = getToolResultImages(result, block.toolName, cwd, sessionId);
+    : "";
+  const deliveredImages = getDeliveredToolImages(result, block.toolName, cwd, sessionId);
+  const resultImages = expanded && deliveredImages.length === 0
+    ? getToolResultImages(result, block.toolName, cwd, sessionId)
+    : deliveredImages;
   const isError = result?.isError ?? false;
-  const hasGeneratedImages = !isError && block.toolName === "image_generate" && resultImages.length > 0;
-  const hasResultImages = !isError && resultImages.length > 0;
-  // The plugin's text payload is a filesystem path intended for the CLI. Once
-  // the browser has a real image URL, keep that implementation detail out of
-  // the ordinary user's result pane.
-  const resultText = hasGeneratedImages ? "" : rawResultText;
-  const resultIsEmpty = resultText === null ? false : (resultText.trim() === "(no output)" || resultText.trim() === "");
+  const resultIsEmpty = resultText.trim() === "(no output)" || resultText.trim() === "";
   const subagent = isSubagentToolDetails(result?.details) ? result.details : null;
-  const [expanded, setExpanded] = useState(false);
 
   if (block.toolName === "Agent" && subagent && onOpenSession) {
     return <SubagentRunRow run={subagent} onOpenSession={onOpenSession} />;
@@ -1247,12 +1241,13 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
 
   return (
     <div
+      className="chat-tool-call"
+      data-expanded={expanded || undefined}
+      data-error={isError || undefined}
       style={{
         borderRadius: 7,
         overflow: "hidden",
         fontSize: 12,
-        border: isError ? "1px solid rgba(248,113,113,0.45)" : "1px solid rgba(34,197,94,0.25)",
-        background: isError ? "rgba(248,113,113,0.05)" : "rgba(34,197,94,0.04)",
       }}
     >
       {/* ── Tool call header ── */}
@@ -1276,11 +1271,11 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
             textAlign: "left",
           }}
         >
-          <span style={{ color: isError ? "#f87171" : "#16a34a", fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 11, flexShrink: 0 }}>
+          <span className="chat-tool-name" style={{ fontFamily: "var(--font-mono)", fontWeight: 600, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {block.toolName}
           </span>
           <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
-            {isStreamingInput ? t("chat.generatingToolInput") : (!hasResultImages || expanded) && getToolPreview(block)}
+            {isStreamingInput ? t("chat.generatingToolInput") : (deliveredImages.length === 0 || expanded) && getToolPreview(block)}
           </span>
           {duration !== undefined && (
             <span style={{ fontSize: 11, color: "var(--text-dim)", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{duration}s</span>
@@ -1318,14 +1313,13 @@ function ToolCallBlock({ block, result, duration, onOpenSession, cwd, sessionId 
             wordBreak: "break-all",
           }}
         >
-          {inputStr}
+          {getToolCallInputText(block)}
         </pre>
       )}
 
-      {/* Successful images are visible independently from command and tool details. */}
-      {(hasResultImages || (expanded && result && !resultDiff)) && (
+      {(resultImages.length > 0 || (expanded && result && !resultDiff)) && (
         <PairedResult
-          text={resultText ?? ""}
+          text={resultText}
           images={resultImages}
           showText={expanded && !resultDiff && (!resultIsEmpty || resultImages.length === 0)}
           isEmpty={resultIsEmpty}
@@ -1644,53 +1638,37 @@ function PairedResult({ text, images, showText, isEmpty, isError }: {
 
 function CompactionMessageView({ message }: { message: CustomMessage }) {
   const { t } = useI18n();
-  const summary = getMessageText(message.content);
-  const parsedSummary = useMemo(() => parseCompactionSummary(summary), [summary]);
+  const [open, setOpen] = useState(false);
+  const parsedSummary = useMemo(
+    () => open ? parseCompactionSummary(getMessageText(message.content)) : null,
+    [message.content, open],
+  );
   const time = formatTime(message.timestamp);
 
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div
-        style={{
-          border: "1px solid var(--border)",
-          borderRadius: 8,
-          overflow: "hidden",
-          background: "var(--bg)",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "7px 10px",
-            borderBottom: "1px solid var(--border)",
-            background: "var(--bg-panel)",
-            color: "var(--text-muted)",
-          }}
-        >
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 650 }}>
-            compaction
-          </span>
-          {time && <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 10 }}>{time}</span>}
-        </div>
-
-        <div style={{ padding: "11px 13px 12px" }}>
-          <div style={{ color: "var(--text)", fontSize: "calc(15px + var(--chat-font-size-offset, 0px))", fontWeight: 700, lineHeight: 1.35 }}>
-             {t("i18n.conversationCompacted")}
-          </div>
-          <div style={{ marginTop: 3, marginBottom: 10, color: "var(--text)", fontSize: "calc(14px + var(--chat-font-size-offset, 0px))", lineHeight: 1.5 }}>
-             {t("i18n.compactionDescription")}
-          </div>
+    <details className="chat-compaction" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className="chat-compaction-toggle">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M4 5h16M8 9h8m-6 0v3m4-3v3m-6 3h8M4 19h16" />
+        </svg>
+        <span>{t("i18n.conversationCompacted")}</span>
+        {time && <span className="chat-compaction-time">{time}</span>}
+        <svg className="chat-compaction-chevron" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+          <path d="m4 2.5 3.5 3.5L4 9.5" />
+        </svg>
+      </summary>
+      {parsedSummary && (
+        <div className="chat-compaction-body">
+          <p className="chat-compaction-description">{t("i18n.compactionDescription")}</p>
           {parsedSummary.body ? (
             <MarkdownBody className="markdown-compaction-message">{parsedSummary.body}</MarkdownBody>
           ) : (
-             <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("i18n.noSummary")}</span>
+            <span className="chat-compaction-description">{t("i18n.noSummary")}</span>
           )}
           <CompactionFileMetadata readFiles={parsedSummary.readFiles} modifiedFiles={parsedSummary.modifiedFiles} />
         </div>
-      </div>
-    </div>
+      )}
+    </details>
   );
 }
 
@@ -1700,12 +1678,12 @@ function CompactionFileMetadata({ readFiles, modifiedFiles }: { readFiles: strin
   if (total === 0) return null;
 
   const parts = [];
-  if (readFiles.length > 0) parts.push(`${readFiles.length} read`);
-  if (modifiedFiles.length > 0) parts.push(`${modifiedFiles.length} modified`);
+  if (readFiles.length > 0) parts.push(t("i18n.compactionReadCount", { count: readFiles.length }));
+  if (modifiedFiles.length > 0) parts.push(t("i18n.compactionModifiedCount", { count: modifiedFiles.length }));
 
   return (
     <details className="compaction-file-details">
-       <summary>{t("i18n.fileContext", { details: parts.join(", ") })}</summary>
+       <summary>{t("i18n.fileContext", { details: parts.join(" · ") })}</summary>
        {modifiedFiles.length > 0 && <CompactionFileList title={t("i18n.modifiedFiles")} files={modifiedFiles} />}
        {readFiles.length > 0 && <CompactionFileList title={t("i18n.readFiles")} files={readFiles} />}
     </details>
@@ -1902,7 +1880,17 @@ function getMessageImages(content: CustomMessage["content"] | UserMessage["conte
   return content.filter((b): b is ImageContent => b.type === "image");
 }
 
-export function getToolResultImages(
+export function getDeliveredToolImages(
+  result: ToolResultMessage | undefined,
+  toolName: string,
+  cwd?: string,
+  sessionId?: string,
+): ImageContent[] {
+  if (!result || result.isError || toolName !== "image_generate") return [];
+  return getToolResultImages(result, toolName, cwd, sessionId);
+}
+
+function getToolResultImages(
   result: ToolResultMessage | undefined,
   toolName: string,
   cwd?: string,

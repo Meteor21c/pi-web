@@ -1461,11 +1461,8 @@ function ModelDetail({
               )}
             </span>
           </Field>
-          {relayContextPolicy ? <Field label={t("models.outputLength")}>
+          {relayContextPolicy && <Field label={t("models.outputLength")}>
             <span>{relayOutputLabel}</span>
-          </Field> : <Field label={t("models.maxOutputTokens")}>
-            <NumInput value={model.maxTokens !== undefined ? String(model.maxTokens) : ""}
-              onChange={(v) => set("maxTokens", v ? parseInt(v) : undefined)} placeholder="16384" />
           </Field>}
         </div>
 
@@ -1541,7 +1538,7 @@ function ModelDetail({
 
         {advancedOpen && (
           <div id={advancedSettingsId} style={{ display: "flex", flexDirection: "column", gap: 14, padding: "4px 0 16px" }}>
-            {relayContextPolicy && <Field label={t("models.outputLimitOverride")}>
+            {relayContextPolicy ? <Field label={t("models.outputLimitOverride")}>
               <input
                 aria-label={t("models.outputLimitOverride")}
                 aria-describedby={outputHelpId}
@@ -1553,6 +1550,19 @@ function ModelDetail({
               />
               <span id={outputHelpId} style={{ fontSize: 10, color: "var(--text-dim)" }}>
                 {t("models.outputLimitOverrideHelp")}
+              </span>
+            </Field> : <Field label={t("models.maxOutputTokens")}>
+              <input
+                type="number"
+                min={0}
+                aria-label={t("models.maxOutputTokens")}
+                aria-describedby={outputHelpId}
+                value={model.maxTokens === undefined ? "" : String(model.maxTokens)}
+                onChange={(event) => set("maxTokens", event.target.value ? parseInt(event.target.value) : undefined)}
+                style={inputStyle}
+              />
+              <span id={outputHelpId} style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                {t("models.maxOutputTokensHint")}
               </span>
             </Field>}
             {!relayMode && <>

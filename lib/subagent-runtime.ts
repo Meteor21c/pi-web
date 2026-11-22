@@ -1,5 +1,4 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { writeFileSync } from "node:fs";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
@@ -10,6 +9,8 @@ import {
   type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike } from "./pi-types";
+import { createRelaySummaryPolicyExtension } from "./relay-responses";
+import { persistPreparedSession } from "./session-reader";
 import {
   subagentFinalText,
   subagentToolDetails,
@@ -105,14 +106,7 @@ function getSubagentQueue(): SubagentQueue<SubagentRunInfo> {
 }
 
 function persistNewChild(sessionManager: SessionManager): void {
-  const file = sessionManager.getSessionFile();
-  const header = sessionManager.getHeader();
-  if (!file || !header) throw new Error("Subagent session cannot be saved");
-  const lines = [header, ...sessionManager.getEntries()].map((entry) => JSON.stringify(entry));
-  writeFileSync(file, `${lines.join("\n")}\n`, { flag: "wx", mode: 0o600 });
-  // The SDK normally postpones flushing until the first assistant response.
-  // A child must be inspectable while queued, even if it never gets a response.
-  (sessionManager as unknown as { flushed: boolean }).flushed = true;
+  if (!persistPreparedSession(sessionManager)) throw new Error("Subagent session cannot be saved");
 }
 
 function subagentPromptWasAborted(sessionManager: SessionManager, fromEntryIndex: number): boolean {
@@ -251,6 +245,7 @@ export function createSubagentController(
           noPromptTemplates: true,
           noThemes: true,
           noContextFiles: true,
+          extensionFactories: [createRelaySummaryPolicyExtension()],
           ...(chatOnly || promptPlan.exactSystemPrompt !== undefined
             ? {
                 systemPrompt: " ",
