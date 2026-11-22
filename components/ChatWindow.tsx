@@ -12,7 +12,7 @@ import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, Mes
 import type { WorkMode } from "@/lib/prompt-presets";
 import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
-import { DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
+import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
 import { NewSessionWelcome } from "./NewSessionWelcome";
 import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
@@ -1306,6 +1306,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 if (hasAnchor) rendered.push(renderMessage(userIdx));
 
                 const turnMessages = timelineMessages.slice(userIdx + 1, endIdx);
+                const retryOffset = turnMessages.findIndex((message) =>
+                  message.role === "custom" && message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE);
+                const retryIndex = retryOffset < 0 ? -1 : userIdx + 1 + retryOffset;
                 const turnModel = turnMessages.find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
                 const anchor = timelineMessages[userIdx];
                 const turnWorkMode = anchor?.role === "user" ? anchor.turnWorkMode : undefined;
@@ -1350,7 +1353,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   rendered.push(
                     <div key={"process-" + processKey} data-entry-id={processEntryId} data-process-entry-ids={[...processEntryIds].join(" ")} ref={(el) => { for (const refIndex of refIndices) messageRefs.current[refIndex] = el; }}>
                       <ProcessDetailsGroup
-                        summary={activitySummary(processBlocks, processCommands, t, isGoalTurn)}
+                        summary={activitySummary(processBlocks, processCommands, t, isGoalTurn || retryIndex >= 0)}
                         activeLabel={active ? phaseLabel(agentPhase, t) ?? t("chat.thinking") : undefined}
                         failureCount={processFailures}
                         t={t}
@@ -1368,7 +1371,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 for (let messageIdx = userIdx + 1; messageIdx < endIdx; messageIdx++) {
                   const message = timelineMessages[messageIdx];
                   if (message.role === "toolResult" || isGoalOutcomeMessage(message)
-                    || (message.role === "custom" && message.customType === GOAL_CONTINUATION_TYPE)) continue;
+                    || (message.role === "custom" && (message.customType === GOAL_CONTINUATION_TYPE
+                      || message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE))) continue;
                   if (message.role === "bashExecution") {
                     if (processViews.length === 0) {
                       processKey = String(entryIds[messageIdx] ?? messageIdx);
@@ -1388,7 +1392,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   const isStreamingMessage = streamState.isStreaming && messageIdx === messages.length;
                   const segments = getAssistantTimelineSegments(message, {
                     isStreaming: isStreamingMessage,
-                    goalText: !isGoalTurn ? undefined : canShowGoalFinal && messageIdx === finalAssistantIdx ? "final" : "activity",
+                    goalText: isGoalTurn
+                      ? canShowGoalFinal && messageIdx === finalAssistantIdx ? "final" : "activity"
+                      : messageIdx < retryIndex ? "activity" : undefined,
                     isVisibleToolResult: (block) => {
                       const result = toolResultsMap.get(block.toolCallId);
                       if (onOpenSession && block.toolName === "Agent" && isSubagentToolDetails(result?.details)) return true;
