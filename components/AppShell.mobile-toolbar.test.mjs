@@ -19,9 +19,14 @@ test("uses a compact narrow-mobile toolbar with a floating action layer", () => 
     /data-mobile-toolbar-actions="true"[\s\S]*?position: "absolute"[\s\S]*?right: 0,[\s\S]*?left: TOP_BAR_ICON_BUTTON_SIZE/,
   );
 
-  for (const action of ["history", "name", "agents", "branches", "system", "tools", "plugins"]) {
+  for (const action of ["name", "agents", "branches", "system", "tools", "plugins"]) {
     assert.match(source, new RegExp(`data-mobile-toolbar-action=(?:\\{mobile \\? )?"${action}"`));
   }
+});
+
+test("offers HTML export in session info for saved sessions only", () => {
+  assert.doesNotMatch(source, /history\.full|handleViewFullHistory|export\?inline=1/);
+  assert.match(source, /className="session-info-popover"[\s\S]*?\{selectedSession && !selectedSession\.transient && \([\s\S]*?href=\{`\/api\/sessions\/\$\{encodeURIComponent\(selectedSession\.id\)\}\/export`\}\s+download[\s\S]*?translate\("session\.exportHtml"\)/);
 });
 
 test("only renders the Agents switcher when the active session family has subagents", () => {
@@ -65,10 +70,9 @@ test("closes the mobile action layer on outside click, Escape, layout changes, a
 
 test("keeps the mobile action layer open after using an expanded action", () => {
   const toggleTopPanel = source.match(/const toggleTopPanel = useCallback\([\s\S]*?\n  \}, \[isMobile, isNarrowMobile\]\);/)?.[0];
-  const historyHandler = source.match(/onClick=\{\(\) => \{[\s\S]*?handleViewFullHistory\(\);[\s\S]*?\n          \}\}/)?.[0];
   const autoNameHandler = source.match(/onClick=\{\(\) => \{[\s\S]*?void handleAutoName\(\);[\s\S]*?\n              \}\}/)?.[0];
 
-  for (const handler of [toggleTopPanel, historyHandler, autoNameHandler]) {
+  for (const handler of [toggleTopPanel, autoNameHandler]) {
     assert.ok(handler);
     assert.doesNotMatch(handler, /setMobileToolbarMoreOpen\(false\)/);
     assert.match(handler, /setMobileToolbarMoreOpen\(true\)/);

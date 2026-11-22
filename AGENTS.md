@@ -223,7 +223,7 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 - Browser autoplay policy means sound must be unlocked from a user gesture; `ChatInput` calls the unlock hook from interactive controls, and `ChatWindow` plays the tone from `onAgentEnd`.
 
 ### Exported session HTML
-- `/api/sessions/[id]/export` delegates to pi's export helper, then patches recursive tree helpers in the generated HTML to iterative versions so very deep linear sessions do not overflow the browser call stack.
+- The session info panel downloads HTML from `/api/sessions/[id]/export`. Pi 1.6 generates the HTML and uses iterative tree traversal for long sessions.
 
 ## Pi Session File Format
 
