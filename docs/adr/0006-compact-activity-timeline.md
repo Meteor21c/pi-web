@@ -6,6 +6,9 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
 
 - Live and saved conversations use the same ordered timeline. Consecutive
   thinking blocks, tool calls, and command executions form one collapsed group.
+- A delivered user message replaces its own local placeholder even when Pi
+  sends a system update first. Separate submissions with identical text each
+  keep their own bubble.
 - A localized one-line summary describes actual operations and counts, such as
   reading files or running commands. No additional model call is made to
   summarize reasoning, and raw reasoning is not copied into the summary.

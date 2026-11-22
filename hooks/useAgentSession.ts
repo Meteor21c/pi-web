@@ -25,7 +25,7 @@ import type { SubagentMode } from "@/lib/subagent-mode";
 import type { SubagentToolDetails } from "@/lib/subagent-extension";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
-import { userMessageKey } from "@/lib/prompt-recovery";
+import { reconcileDeliveredUserMessage } from "@/lib/prompt-recovery";
 import { AgentEventConnection } from "@/lib/agent-event-connection";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
 import { resolveThinkingLevelOption, type ThinkingLevelOption } from "@/lib/model-capabilities";
@@ -387,7 +387,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const workModeRef = useRef<{ sid: string; state: SessionWorkMode } | null>(null);
   const thinkingChangeVersionRef = useRef(0);
   const promptRunIdRef = useRef(0);
-  const optimisticUserMessageKeyRef = useRef<string | null>(null);
+  const optimisticUserMessageRef = useRef<UserMessage | null>(null);
   const modelSwitchPendingRef = useRef(false);
   const draftKeyAliasesRef = useRef(new Map<string, string>());
   const sessionHookMountedRef = useRef(true);
@@ -1082,7 +1082,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const agentWasActive = sdkAgentActiveRef.current;
       rpcPromptPendingRef.current = false;
       sdkAgentActiveRef.current = false;
-      optimisticUserMessageKeyRef.current = null;
+      optimisticUserMessageRef.current = null;
       const wasRunning = settleUiStage();
       if (promptWasPending) {
         notifyPromptStage(runId);
@@ -1304,7 +1304,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const runId = promptRunIdRef.current;
           const promptWasPending = rpcPromptPendingRef.current;
           rpcPromptPendingRef.current = false;
-          optimisticUserMessageKeyRef.current = null;
+          optimisticUserMessageRef.current = null;
           const firstNotification = notifyPromptStage(runId);
           if (!promptWasPending && !firstNotification) break;
 
@@ -1374,23 +1374,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (!agentRunningRef.current) break;
         const completed = event.message as AgentMessage | undefined;
         if (completed && completed.role === "user") {
-          // Delivered steering/follow-up messages surface here as user
-          // messages. The run's initial prompt also emits one, but handleSend
-          // already appended it optimistically. Consume only the still-adjacent
-          // optimistic bubble; later same-text queue deliveries must render.
+          // Pi can emit a system/loadout update before acknowledging the user
+          // prompt. Match the local placeholder even when it isn't last.
           const turnWorkMode = event.turnWorkMode === "plan" || event.turnWorkMode === "goal" ? event.turnWorkMode : undefined;
           const delivered: UserMessage = { ...completed, turnWorkMode };
-          const deliveredKey = userMessageKey(delivered);
-          const optimisticKey = optimisticUserMessageKeyRef.current;
-          optimisticUserMessageKeyRef.current = null;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (optimisticKey && last?.role === "user" && userMessageKey(last) === optimisticKey) {
-              if (optimisticKey !== deliveredKey) return [...prev.slice(0, -1), delivered];
-              return last.turnWorkMode === turnWorkMode ? prev : [...prev.slice(0, -1), { ...last, turnWorkMode }];
-            }
-            return [...prev, delivered];
-          });
+          const optimistic = optimisticUserMessageRef.current;
+          optimisticUserMessageRef.current = null;
+          setMessages((prev) => reconcileDeliveredUserMessage(prev, optimistic, delivered));
         } else if (completed) {
           setMessages((prev) => [...prev, normalizeToolCalls(completed)]);
         }
@@ -1552,7 +1542,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       turnWorkMode: optimisticMode === "plan" || optimisticMode === "goal" ? optimisticMode : undefined,
     };
     setMessages((prev) => [...prev, userMsg]);
-    optimisticUserMessageKeyRef.current = userMessageKey(userMsg);
+    optimisticUserMessageRef.current = userMsg;
     promptRunIdRef.current = promptRunId;
     agentRunningRef.current = true;
     setAgentRunning(true);
@@ -1638,7 +1628,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
       if (restoreDraft) restoreSubmission(message, images, composerDraftKey);
-      optimisticUserMessageKeyRef.current = null;
+      optimisticUserMessageRef.current = null;
       // Rejection only describes this submission. Another tab or an event we
       // missed may still have a real run active for the same session, so keep
       // its SSE connection until server state says the wrapper is idle.
