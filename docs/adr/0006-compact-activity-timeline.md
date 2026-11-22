@@ -17,8 +17,10 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
   read by tools stay in the activity group until their tool row is opened.
 - A context compaction displays a single collapsed row. Opening it shows the
   full summary and its file details.
-- Active groups show the existing runtime phase. The waiting indicator is a
-  quiet inline status rather than a separate card.
+- A compact row above the composer shows the current phase and elapsed time
+  for the active task. After 45 seconds without an activity event it reports
+  that no new output has arrived. Reconnecting restores the server's last
+  activity time and active tools.
 - Users open activity details with a click. Search scrolls to visible stage text
   or the corresponding activity summary. Stored block indices keep deferred
   thinking linked to its original message.
@@ -27,7 +29,10 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
 - Failed tools are counted visibly on the summary. Provider errors remain
   outside collapsed groups.
 - Completed turns retain one aggregate usage/cost footer, image charges,
-  written-file links, and copying of the final assistant message.
+  written-file links, and copying of the final assistant message. New runs save
+  their measured elapsed time once at settlement, including tool waits and
+  automatic continuations. The timer excludes idle time between runs. Tool
+  rows use the execution duration recorded by Pi.
 - A completed turn with file outputs shows one file summary with distinct
   paths from its successful tools. Each row opens in the right panel. Edit
   and write results, local image artifacts, and observed literal shell
@@ -39,7 +44,7 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
 
 ## Scope
 
-This is a presentation change. It does not alter provider requests, system
-prompts, agent iterations, tools, stored messages, or billing calculations.
-Stage updates use the text the model returned. The old preference for always
-expanding thinking is ignored.
+Stage updates use text returned by the model. Run timing is stored as hidden
+metadata. Shell tools still use Pi's execution and cancellation behavior. The
+Bash tool description asks the model to stream progress, select a timeout
+appropriate for network work, and check what finished before retrying.

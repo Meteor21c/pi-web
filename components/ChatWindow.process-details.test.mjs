@@ -15,3 +15,10 @@ test("a hidden Goal outcome belongs to the previous assistant reply within the s
   assert.match(source, /const goalOutcome = goalOutcomeByAssistant\.get\(finalAssistantIdx\)/);
   assert.match(source, /if \(message\.role === "toolResult" \|\| isGoalOutcomeMessage\(message\)/);
 });
+
+test("keeps live run timing above the composer and shows recorded duration after settlement", () => {
+  const composer = source.slice(source.indexOf('<div className="relative shrink-0">'));
+  assert.match(composer, /<AgentActivityCard[\s\S]*?startedAt=\{activeRunStartedAt\}[\s\S]*?lastActivityAt=\{runLastActivityAt\}[\s\S]*?\{chatInputElement\}/);
+  assert.match(source, /message\.customType === TURN_TIMING_TYPE\) \{\s*turnDurationMs = readTurnDurationMs\(message\.details\)/);
+  assert.match(source, /if \(!isLiveTail && turnDurationMs !== undefined\) \{[\s\S]*?t\("chat\.turnElapsed"/);
+});

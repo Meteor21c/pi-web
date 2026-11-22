@@ -21,6 +21,7 @@ export type ClientAssistantMessageEvent =
 
 export type ClientMessageUpdateEvent = Omit<JsonMessageUpdateEvent, "assistantMessageEvent"> & {
   assistantMessageEvent: ClientAssistantMessageEvent;
+  activityAt?: number;
 };
 
 const OMITTED_EVENT_TYPES = new Set([
@@ -59,6 +60,7 @@ export function toClientAgentEvent(
   event: AgentEventLike,
 ): AgentEventLike | ClientMessageUpdateEvent | null {
   if (OMITTED_EVENT_TYPES.has(event.type)) return null;
+  const activity = typeof event.activityAt === "number" ? { activityAt: event.activityAt } : {};
 
   if (event.type === "message_update") {
     const assistantMessageEvent = event.assistantMessageEvent;
@@ -71,6 +73,7 @@ export function toClientAgentEvent(
     if (!("partial" in assistantMessageEvent)) {
       return {
         type: "message_update",
+        ...activity,
         assistantMessageEvent,
       } as ClientMessageUpdateEvent;
     }
@@ -80,6 +83,7 @@ export function toClientAgentEvent(
     void _partial;
     return {
       type: "message_update",
+      ...activity,
       assistantMessageEvent: metadata ? { ...deltaEvent, ...metadata } : deltaEvent,
     } as ClientMessageUpdateEvent;
   }
@@ -87,6 +91,7 @@ export function toClientAgentEvent(
   if (event.type === "tool_execution_update") {
     return {
       type: "tool_execution_update",
+      ...activity,
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       partialResult: event.partialResult,

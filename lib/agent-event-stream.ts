@@ -7,10 +7,12 @@ import { acquireSessionLivenessLease } from "./session-liveness";
 import { isBlockingExtensionUiRequest } from "./browser-notifications";
 import type { ExtensionUiRequest } from "./types";
 import type { ComputerUseApprovalPolicy } from "./computer-use-approval-policy";
+import type { RunActivity } from "./session-timing";
 
 export interface AgentEventStreamSession {
   readonly isStreaming: boolean;
   readonly streamingMessage: unknown;
+  readonly runActivity?: RunActivity;
   readonly activeComputerUseApprovalPolicy?: ComputerUseApprovalPolicy;
   onEvent(listener: (event: AgentEventLike) => void): () => void;
 }
@@ -97,6 +99,7 @@ export function createAgentEventStream(
           unsubscribe = stopListening;
 
           const snapshot = session.streamingMessage;
+          const activity = session.runActivity;
           const extensionUiRequestIds = bufferedEvents.flatMap((event) =>
             event.type === "extension_ui_request" && typeof event.id === "string"
               && isBlockingExtensionUiRequest(event as ExtensionUiRequest) ? [event.id] : [],
@@ -106,12 +109,14 @@ export function createAgentEventStream(
             sessionId,
             isStreaming: session.isStreaming,
             extensionUiRequestIds,
+            ...(activity ? { runActivity: activity } : {}),
             ...(session.isStreaming && session.activeComputerUseApprovalPolicy
               ? { computerUseApprovalPolicy: session.activeComputerUseApprovalPolicy } : {}),
           });
           for (const event of bufferedEvents) forwardEvent(event, snapshot);
           if (snapshot !== undefined && snapshot !== null) {
-            encode({ type: "message_start", message: snapshot });
+            encode({ type: "message_start", message: snapshot,
+              ...(activity ? { activityAt: activity.lastActivityAt } : {}) });
           }
           snapshotPublished = true;
         } catch (error) {

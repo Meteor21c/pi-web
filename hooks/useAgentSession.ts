@@ -28,6 +28,7 @@ import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
 import { reconcileDeliveredUserMessage } from "@/lib/prompt-recovery";
 import { AgentEventConnection } from "@/lib/agent-event-connection";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
+import type { RunActivity } from "@/lib/session-timing";
 import { resolveThinkingLevelOption, type ThinkingLevelOption } from "@/lib/model-capabilities";
 import { isWorkMode, type WorkMode } from "@/lib/prompt-presets";
 import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
@@ -90,6 +91,7 @@ type AgentStateResponse = Partial<SessionWorkMode> & {
   isPromptRunning?: boolean;
   isBashRunning?: boolean;
   isCompacting?: boolean;
+  runActivity?: RunActivity;
   extensionStatuses?: ExtensionStatusItem[];
   extensionWidgets?: ExtensionWidgetItem[];
   queuedMessages?: { steering?: string[]; followUp?: string[] } | null;
@@ -130,6 +132,12 @@ export type AgentPhase =
   | { kind: "running_command" }
   | { kind: "running_tools"; tools: { id: string; name: string; progress?: string }[] }
   | null;
+
+type RunClock = Pick<RunActivity, "startedAt" | "lastActivityAt"> & { authoritative: boolean };
+
+function clearModelActivityPhase(phase: AgentPhase): AgentPhase {
+  return phase?.kind === "running_tools" ? phase : null;
+}
 
 export interface CompactResultInfo {
   reason: "manual" | "threshold" | "overflow" | "auto" | string;
@@ -341,6 +349,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [compactError, setCompactError] = useState<string | null>(null);
   const [compactResult, setCompactResult] = useState<CompactResultInfo | null>(null);
   const [agentPhase, setAgentPhase] = useState<AgentPhase>(null);
+  const [runClock, setRunClock] = useState<RunClock | null>(null);
   const [promptAnchorActive, setPromptAnchorActive] = useState(false);
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([]);
   const [slashCommandsLoading, setSlashCommandsLoading] = useState(false);
@@ -363,6 +372,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const sessionPropIdRef = useRef<string | null>(session?.id ?? null);
   const agentRunningRef = useRef(false);
+  const runClockRef = useRef<RunClock | null>(null);
+  const publishedActivityAtRef = useRef(0);
+  const settledRunStartedAtRef = useRef(0);
   const sdkAgentActiveRef = useRef(false);
   const rpcPromptPendingRef = useRef(false);
   const notifiedPromptRunIdRef = useRef(-1);
@@ -476,6 +488,53 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       ? { provider: state.model.provider, modelId: state.model.id }
       : null);
   }, []);
+
+  const publishRunClock = useCallback((clock: RunClock | null) => {
+    runClockRef.current = clock;
+    publishedActivityAtRef.current = clock?.lastActivityAt ?? 0;
+    setRunClock(clock);
+  }, []);
+
+  const syncRunActivity = useCallback((activity?: RunActivity, fallback: "waiting_model" | "running_command" = "waiting_model") => {
+    const current = runClockRef.current;
+    if (activity && activity.startedAt <= settledRunStartedAtRef.current) return false;
+    if (activity && current?.authoritative && (
+      activity.startedAt < current.startedAt
+      || (activity.startedAt === current.startedAt && activity.lastActivityAt < current.lastActivityAt)
+    )) return true;
+
+    if (activity) {
+      if (!current?.authoritative || current.startedAt !== activity.startedAt || current.lastActivityAt !== activity.lastActivityAt) {
+        publishRunClock({ startedAt: activity.startedAt, lastActivityAt: activity.lastActivityAt, authoritative: true });
+      }
+    } else if (!current) {
+      const now = Date.now();
+      publishRunClock({ startedAt: now, lastActivityAt: now, authoritative: false });
+    }
+
+    setAgentPhase((previous) => {
+      if (!activity && previous?.kind === "running_tools") return previous;
+      const tools = activity?.tools;
+      if (!tools?.length) return previous?.kind === fallback ? previous : { kind: fallback };
+      const previousTools = previous?.kind === "running_tools" ? previous.tools : [];
+      if (tools.length === previousTools.length && tools.every((tool, i) =>
+        tool.id === previousTools[i].id && tool.name === previousTools[i].name)) return previous;
+      return { kind: "running_tools", tools: tools.map((tool) => ({
+        ...tool, progress: previousTools.find(({ id }) => id === tool.id)?.progress,
+      })) };
+    });
+    return true;
+  }, [publishRunClock]);
+
+  const touchRunActivity = useCallback((activityAt: unknown) => {
+    const current = runClockRef.current;
+    if (!current || typeof activityAt !== "number" || !Number.isFinite(activityAt)
+      || activityAt <= current.lastActivityAt) return;
+    const next = { ...current, lastActivityAt: activityAt };
+    runClockRef.current = next;
+    // Model deltas can arrive much faster than the visible one-second counter.
+    if (activityAt - publishedActivityAtRef.current >= 1_000) publishRunClock(next);
+  }, [publishRunClock]);
 
   const resolveComposerDraftKey = useCallback((key: string | undefined) => {
     if (!key) return undefined;
@@ -976,7 +1035,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice, onAttentionNeeded, opts.chatInputRef]);
 
-  const settleUiStage = useCallback(() => {
+  const settleUiStage = useCallback((markSettled = true) => {
     const wasRunning = agentRunningRef.current;
     agentRunningRef.current = false;
     setAgentRunning(false);
@@ -984,9 +1043,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setAgentPhase(null);
     setRetryInfo(null);
     setActiveToolResults(new Map());
+    const current = runClockRef.current;
+    if (markSettled && current?.authoritative) settledRunStartedAtRef.current = current.startedAt;
+    publishRunClock(null);
     dispatch({ type: "end" });
     return wasRunning;
-  }, []);
+  }, [publishRunClock]);
 
   const wasObservingPreview = useRef(false);
   useEffect(() => {
@@ -994,7 +1056,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (wasObservingPreview.current && !observeSession) {
       sdkAgentActiveRef.current = false;
       rpcPromptPendingRef.current = false;
-      settleUiStage();
+      settleUiStage(false);
       void loadSession(session.id);
     }
     wasObservingPreview.current = observeSession;
@@ -1036,14 +1098,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const state = data.state;
         syncLiveModel(state);
         const promptActive = Boolean(data.running && state && (state.isStreaming || state.isPromptRunning));
-        if (promptActive) {
+        if (promptActive && syncRunActivity(state?.runActivity, state?.isStreaming ? "waiting_model" : "running_command")) {
           eventStreamGraceActiveRef.current = false;
           eventStreamGraceTimerRef.current = null;
           sdkAgentActiveRef.current = Boolean(state?.isStreaming);
           rpcPromptPendingRef.current = Boolean(state?.isPromptRunning);
           agentRunningRef.current = true;
           setAgentRunning(true);
-          setAgentPhase(state?.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" });
           return;
         }
 
@@ -1068,16 +1129,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
 
     eventStreamGraceTimerRef.current = setTimeout(() => void checkServerIdle(), EVENT_STREAM_IDLE_GRACE_MS);
-  }, [cancelEventStreamGrace, closeEvents, syncLiveModel]);
+  }, [cancelEventStreamGrace, closeEvents, syncLiveModel, syncRunActivity]);
 
   const finishPromptWithoutStream = useCallback(async (sid: string | null = sessionIdRef.current, runId = promptRunIdRef.current) => {
     // Bail out before loadSession too: a stale finish for a previous run
     // must not overwrite the messages of the run currently streaming.
-    if (promptRunIdRef.current !== runId) return;
+    if (!sessionHookMountedRef.current || promptRunIdRef.current !== runId || sessionIdRef.current !== sid) return;
     try {
       if (sid) await Promise.all([loadSession(sid), loadGoal(undefined, sid)]);
     } finally {
-      if (promptRunIdRef.current !== runId) return;
+      if (!sessionHookMountedRef.current || promptRunIdRef.current !== runId || sessionIdRef.current !== sid) return;
       const promptWasPending = rpcPromptPendingRef.current;
       const agentWasActive = sdkAgentActiveRef.current;
       rpcPromptPendingRef.current = false;
@@ -1103,19 +1164,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
         if (res.ok) {
           const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
+          if (!sessionHookMountedRef.current || sessionIdRef.current !== sid
+            || (runId !== undefined && promptRunIdRef.current !== runId)) return;
           const state = data.state;
           syncLiveModel(state);
           if (!data.running || !state || (!state.isStreaming && !state.isPromptRunning)) {
             await finishPromptWithoutStream(sid, runId);
             return;
           }
+          if (state.runActivity) syncRunActivity(state.runActivity);
         }
       } catch {
         // SSE remains the primary completion path.
       }
       await delay(PROMPT_SETTLE_POLL_MS);
     }
-  }, [finishPromptWithoutStream, syncLiveModel]);
+  }, [finishPromptWithoutStream, syncLiveModel, syncRunActivity]);
 
   const waitForBashSettlement = useCallback(async (sid: string) => {
     const recoveryId = bashRecoveryIdRef.current + 1;
@@ -1161,7 +1225,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // A slow response can straddle a run boundary (previous run finished
       // and the user already started the next one while this request was in
       // flight) — everything in it is stale, drop it.
-      if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
       const state = data.state;
       syncLiveModel(state);
       syncLiveWorkMode(sid, state);
@@ -1173,6 +1237,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const busy = data.running && state
         && (state.isStreaming || state.isPromptRunning || state.isCompacting);
       if (busy) {
+        if (state.runActivity && !syncRunActivity(state.runActivity)) return;
         setActiveComputerUseApprovalPolicy(state.computerUseApprovalPolicy ?? null);
         sdkAgentActiveRef.current = Boolean(state.isStreaming);
         rpcPromptPendingRef.current = Boolean(state.isPromptRunning);
@@ -1189,7 +1254,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } catch {
       // Network still down — the next poll / visibility / online tick retries.
     }
-  }, [finishPromptWithoutStream, syncLiveModel, syncLiveWorkMode]);
+  }, [finishPromptWithoutStream, syncLiveModel, syncLiveWorkMode, syncRunActivity]);
 
   // Recovery net for missed SSE events: while the agent is running, verify
   // against the server periodically and whenever the tab returns to the
@@ -1220,6 +1285,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [agentRunning]);
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
+    if (!sessionHookMountedRef.current) return;
+    touchRunActivity(event.activityAt);
     switch (event.type) {
       case "work_mode_changed": {
         const sid = sessionIdRef.current;
@@ -1239,17 +1306,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           dispatchExtensionUi({ type: "snapshot", ids: event.extensionUiRequestIds.filter((id): id is string => typeof id === "string") });
         }
         dispatch({ type: "end" });
-        if (event.isStreaming === true) {
+        const activity = event.runActivity as RunActivity | undefined;
+        if ((event.isStreaming === true || activity) && syncRunActivity(activity)) {
           setActiveComputerUseApprovalPolicy(event.computerUseApprovalPolicy === "full" ? "full" : "ask");
           cancelEventStreamGrace();
           sdkAgentActiveRef.current = true;
           agentRunningRef.current = true;
           setAgentRunning(true);
-          setAgentPhase({ kind: "waiting_model" });
         }
         break;
       }
       case "agent_start": {
+        if (!syncRunActivity(event.runActivity as RunActivity | undefined)) break;
         const sid = sessionIdRef.current;
         if (sid && event.resumedGoal) updateGoalState(sid, event.resumedGoal as SessionGoal);
         setActiveComputerUseApprovalPolicy(event.computerUseApprovalPolicy === "full" ? "full" : "ask");
@@ -1257,7 +1325,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         sdkAgentActiveRef.current = true;
         agentRunningRef.current = true;
         setAgentRunning(true);
-        setAgentPhase({ kind: "waiting_model" });
         dispatch({ type: "start" });
         break;
       }
@@ -1345,16 +1412,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (msg?.role === "user") break;
           if (msg?.role === "assistant") {
             dispatch({ type: "snapshot", message: msg });
-            if (msg.content.length > 0) setAgentPhase(null);
+            if (msg.content.length > 0) setAgentPhase(clearModelActivityPhase);
           } else if (msg) {
-            setAgentPhase(null);
+            setAgentPhase(clearModelActivityPhase);
           }
         } else {
           const delta = event.assistantMessageEvent as ClientAssistantMessageEvent | undefined;
           if (delta) {
             dispatch({ type: "delta", event: delta });
             if (delta.type !== "toolcall_start" && delta.type !== "toolcall_delta") {
-              setAgentPhase(null);
+              setAgentPhase(clearModelActivityPhase);
             }
           }
         }
@@ -1388,7 +1455,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           setMessages((prev) => [...prev, normalizeToolCalls(completed)]);
         }
         dispatch({ type: "end" });
-        setAgentPhase({ kind: "waiting_model" });
+        setAgentPhase((previous) => previous?.kind === "running_tools" ? previous : { kind: "waiting_model" });
         break;
       }
       case "subagent_status": {
@@ -1403,6 +1470,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         addNotice({ type: "warning", message: t("chat.subagentRequiredUnmet") });
         break;
       case "tool_execution_start": {
+        if (!agentRunningRef.current) break;
         const id = event.toolCallId as string;
         const name = event.toolName as string;
         setAgentPhase((prev) => {
@@ -1413,6 +1481,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "tool_execution_update": {
+        if (!agentRunningRef.current) break;
         const id = event.toolCallId as string;
         const name = event.toolName as string;
         const partialResult = event.partialResult as Partial<ToolResultMessage> | undefined;
@@ -1448,6 +1517,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "tool_execution_end": {
+        if (!agentRunningRef.current) break;
         const id = event.toolCallId as string;
         setActiveToolResults((prev) => {
           if (!prev.has(id)) return prev;
@@ -1499,7 +1569,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (typeof event.id === "string") dispatchExtensionUi({ type: "closed", id: event.id });
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadGoal, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, t, updateGoalState, updateWorkMode]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadGoal, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, syncRunActivity, t, touchRunActivity, updateGoalState, updateWorkMode]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[], restoreDraft = true) => {
@@ -1550,7 +1620,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     agentRunningRef.current = true;
     setAgentRunning(true);
     setActiveComputerUseApprovalPolicy(!isSlashCommandPrompt ? computerUseApprovalPolicy ?? "ask" : "ask");
-    setAgentPhase(isSlashCommandPrompt ? { kind: "running_command" } : { kind: "waiting_model" });
+    syncRunActivity(undefined, isSlashCommandPrompt ? "running_command" : "waiting_model");
     dispatch({ type: "start" });
     pendingScrollToUserRef.current = true;
     setPromptAnchorActive(true);
@@ -1623,6 +1693,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         return;
       }
       rpcPromptPendingRef.current = false;
+      if (!runClockRef.current?.authoritative) publishRunClock(null);
       setMessages((prev) => {
         const optimisticIndex = prev.lastIndexOf(userMsg);
         return optimisticIndex === -1
@@ -1639,14 +1710,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         void reconcileAgentState(sentSessionId);
         return;
       }
-      agentRunningRef.current = false;
       closeEvents();
-      setAgentRunning(false);
-      setActiveComputerUseApprovalPolicy(null);
-      setAgentPhase(null);
-      dispatch({ type: "end" });
+      settleUiStage();
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, composerWorkMode, computerUseApprovalPolicy, reconcileAgentState, restoreSubmission, subagentMode, toolPreset]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, composerWorkMode, computerUseApprovalPolicy, publishRunClock, reconcileAgentState, restoreSubmission, settleUiStage, subagentMode, syncRunActivity, toolPreset]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -2278,14 +2345,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (session) {
       sessionIdRef.current = session.id;
       loadSession(session.id, true, true).then((agentState) => {
+        if (!sessionHookMountedRef.current || sessionIdRef.current !== session.id) return;
         if (agentState?.running) {
           if (!previewOnly) loadTools(session.id);
-          if (agentState.state?.isStreaming || agentState.state?.isPromptRunning) {
+          if ((agentState.state?.isStreaming || agentState.state?.isPromptRunning)
+            && syncRunActivity(agentState.state.runActivity, agentState.state.isStreaming ? "waiting_model" : "running_command")) {
             sdkAgentActiveRef.current = Boolean(agentState.state.isStreaming);
             rpcPromptPendingRef.current = Boolean(agentState.state.isPromptRunning);
             agentRunningRef.current = true;
             setAgentRunning(true);
-            setAgentPhase(agentState.state.isStreaming ? { kind: "waiting_model" } : { kind: "running_command" });
             dispatch({ type: "resume" });
             if (!agentState.state.isStreaming && agentState.state.isPromptRunning) {
               void waitForPromptSettlement(session.id);
@@ -2470,6 +2538,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     notices: noticeState.visible, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     isAutoModelSelection: isNew && newSessionModel === null,
     agentPhase,
+    activeRunStartedAt: runClock?.startedAt ?? null,
+    runLastActivityAt: runClock?.lastActivityAt ?? null,
     isNew,
     promptAnchorActive,
     sessionGoal, goalsEnabled, goalLoading, goalLoadError, loadGoal,

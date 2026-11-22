@@ -90,6 +90,8 @@ export interface ToolResultMessage {
   content: (TextContent | ImageContent)[];
   isError?: boolean;
   details?: unknown;
+  /** Time measured by Pi around this tool's execution. */
+  durationMs?: number;
   timestamp?: number;
   usage?: AgentUsage;
 }

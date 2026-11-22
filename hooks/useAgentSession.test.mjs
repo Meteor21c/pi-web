@@ -313,7 +313,7 @@ test("delegates event stream readiness and keeps live activity visible", () => {
   assert.match(chatWindowSource, /const hasStreamingContent = Boolean\(streamState\.streamingMessage\?\.content\.length\)/);
   assert.match(chatWindowSource, /streamState\.isStreaming && hasStreamingContent && streamState\.streamingMessage/);
   assert.match(chatWindowSource, /agentRunning && !bashRunning/);
-  assert.match(chatWindowSource, /<AgentActivityCard phase=\{agentPhase\}/);
+  assert.match(chatWindowSource, /<AgentActivityCard\s+phase=\{agentPhase\}/);
   assert.match(chatWindowSource, /return null;/);
 });
 

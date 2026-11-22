@@ -13,6 +13,7 @@ import type { WorkMode } from "@/lib/prompt-presets";
 import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
 import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
+import { readTurnDurationMs, TURN_TIMING_TYPE } from "@/lib/session-timing";
 import { NewSessionWelcome } from "./NewSessionWelcome";
 import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
@@ -108,35 +109,55 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
   return null;
 }
 
-function AgentActivityCard({ phase, streamingStage, t }: {
+const RUN_QUIET_THRESHOLD_MS = 45_000;
+
+function formatRunDuration(ms: number, t: (key: string, params?: Record<string, string | number>) => string): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) return t("chat.runDurationHours", { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
+  if (minutes > 0) return t("chat.runDurationMinutes", { minutes, seconds });
+  return t("chat.runDurationSeconds", { seconds });
+}
+
+function AgentActivityCard({ phase, streamingStage, startedAt, lastActivityAt, waitingForInput, compacting, t }: {
   phase: AgentPhase;
   streamingStage?: AssistantContentBlock["type"];
+  startedAt: number | null;
+  lastActivityAt: number | null;
+  waitingForInput: boolean;
+  compacting: boolean;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
-  const [startedAt] = useState(() => Date.now());
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [startedAt]);
-  const step = phase?.kind === "running_tools" || phase?.kind === "running_command"
-    ? phaseLabel(phase, t)
-    : streamingStage === "thinking"
-      ? t("chat.activityModelThinking")
-      : streamingStage === "toolCall"
-        ? t("chat.generatingToolInput")
-        : streamingStage === "text"
-          ? t("chat.activityWriting")
-          : phaseLabel(phase, t) ?? t("chat.waitingModel");
+  }, []);
 
+  let step = phaseLabel(phase, t) ?? t("chat.activityTitle");
+  if (waitingForInput) step = t("chat.activityWaitingForInput");
+  else if (compacting) step = t("chat.compacting");
+  else if (phase?.kind !== "running_tools" && phase?.kind !== "running_command") {
+    if (streamingStage === "thinking") step = t("chat.activityModelThinking");
+    else if (streamingStage === "toolCall") step = t("chat.generatingToolInput");
+    else if (streamingStage === "text") step = t("chat.activityWriting");
+  }
+
+  const activityAt = lastActivityAt ?? startedAt;
+  const quiet = !waitingForInput && !compacting && activityAt !== null && now - activityAt >= RUN_QUIET_THRESHOLD_MS;
   return (
-    <div role="status" className="ui-agent-activity" style={{
-      display: "flex", alignItems: "center", gap: 10, width: "fit-content", maxWidth: "100%",
-      margin: "4px 0 14px", padding: "3px 0", color: "var(--text-muted)",
-    }}>
-      <span aria-hidden="true" style={{ width: 9, height: 9, flexShrink: 0, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent)", animation: "pulse 1.5s ease-in-out infinite" }} />
-      <span style={{ minWidth: 0, fontSize: 12, lineHeight: 1.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{step}</span>
-      {elapsedSeconds > 0 && <span aria-hidden="true" style={{ marginLeft: 5, alignSelf: "flex-start", color: "var(--text-dim)", fontSize: 11, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{elapsedSeconds}s</span>}
+    <div className="chat-reading-column ui-agent-activity mb-2 flex min-w-0 items-center gap-2.5 px-1 text-xs text-text-muted">
+      <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-accent motion-safe:animate-[pulse_1.5s_ease-in-out_infinite]" />
+      <span role="status" className="min-w-0">
+        <span className="block truncate" title={step}>{step}</span>
+        {quiet && <span className="mt-0.5 block text-text-dim">{t("chat.activityQuiet")}</span>}
+      </span>
+      {startedAt !== null && (
+        <span className="ml-auto shrink-0 tabular-nums text-text-dim">
+          {t("chat.runningElapsed", { duration: formatRunDuration(now - startedAt, t) })}
+        </span>
+      )}
     </div>
   );
 }
@@ -312,7 +333,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     slashCommands, slashCommandsLoading, availableTools, queuedMessages,
     notices, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput, setNoticePaused,
     isAutoModelSelection,
-    agentPhase,
+    agentPhase, activeRunStartedAt, runLastActivityAt,
     isNew,
     sessionGoal, goalsEnabled, goalLoading, goalLoadError, loadGoal,
     activeComputerUseApprovalPolicy,
@@ -1288,7 +1309,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               };
 
               const rendered: ReactNode[] = [];
-              let tailHasActivityGroup = false;
               // Compaction splits the display, while mode and delivered images belong to the full turn.
               let turnStartIdx = 0;
               const goalUnavailable = goalsEnabled && (goalLoading || goalLoadError);
@@ -1347,6 +1367,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 let processEntryIds = new Set<string>();
                 let processRefIndices = new Set<number>();
                 const goalFinalText: AssistantContentBlock[] = [];
+                let turnDurationMs: number | undefined;
                 const flushProcess = (active = false) => {
                   if (processViews.length === 0) return;
                   const refIndices = processRefIndices;
@@ -1360,7 +1381,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                       >{processViews}</ProcessDetailsGroup>
                     </div>,
                   );
-                  if (active) tailHasActivityGroup = true;
                   processViews = [];
                   processBlocks = [];
                   processCommands = 0;
@@ -1370,6 +1390,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 };
                 for (let messageIdx = userIdx + 1; messageIdx < endIdx; messageIdx++) {
                   const message = timelineMessages[messageIdx];
+                  if (message.role === "custom" && message.customType === TURN_TIMING_TYPE) {
+                    turnDurationMs = readTurnDurationMs(message.details);
+                    continue;
+                  }
                   if (message.role === "toolResult" || isGoalOutcomeMessage(message)
                     || (message.role === "custom" && (message.customType === GOAL_CONTINUATION_TYPE
                       || message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE))) continue;
@@ -1472,6 +1496,13 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     writtenFiles: extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd),
                   }));
                 }
+                if (!isLiveTail && turnDurationMs !== undefined) {
+                  rendered.push(
+                    <div key={`turn-duration-${entryIds[userIdx] ?? userIdx}`} className="mb-3 mt-1 text-xs tabular-nums text-text-dim">
+                      {t("chat.turnElapsed", { duration: formatRunDuration(turnDurationMs, t) })}
+                    </div>,
+                  );
+                }
                 idx = endIdx;
               }
               const { startIndex } = getVisibleRenderWindow(rendered.length, visibleCount);
@@ -1484,7 +1515,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     </div>
                   )}
                   {rendered.slice(startIndex)}
-                  {agentRunning && !bashRunning && !tailHasActivityGroup && <AgentActivityCard phase={agentPhase} streamingStage={streamState.streamingMessage?.content.at(-1)?.type} t={t} />}
                 </>
               );
             })()}
@@ -1610,6 +1640,21 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       )}
 
       <div className="relative shrink-0">
+        {agentRunning && !bashRunning && (
+          <div style={{ paddingInlineEnd: showMinimapRail ? CHAT_MINIMAP_WIDTH : 0 }}>
+            <div className="chat-column-inset">
+              <AgentActivityCard
+                phase={agentPhase}
+                streamingStage={streamState.streamingMessage?.content.at(-1)?.type}
+                startedAt={activeRunStartedAt}
+                lastActivityAt={runLastActivityAt}
+                waitingForInput={Boolean(extensionDialog || extensionCustomUi)}
+                compacting={isCompacting}
+                t={t}
+              />
+            </div>
+          </div>
+        )}
         {!previewOnly && (
           <div style={{ paddingInlineEnd: showMinimapRail ? CHAT_MINIMAP_WIDTH : 0 }}>
             <div className="chat-column-inset">

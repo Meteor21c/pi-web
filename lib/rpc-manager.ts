@@ -72,6 +72,7 @@ import { readPromptPresetSettings } from "./prompt-preset-store";
 import { readSessionGoal, updateSessionGoal, updateSessionGoalFromRun, type SessionGoal } from "./session-goal";
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE, type GoalOutcomeStatus } from "./session-goal-types";
 import { stoppedWithoutFinalAnswer } from "./message-display";
+import { TURN_TIMING_TYPE, type RunActivity } from "./session-timing";
 import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
   isWorkMode, promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection, type WorkMode,
@@ -94,6 +95,27 @@ export interface AgentEvent {
 
 type EventListener = (event: AgentEvent) => void;
 type AgentRunCompleteListener = (sessionId: string) => void;
+
+type RunTiming = {
+  startedAt: number;
+  startedMonotonic: number;
+  lastActivityAt: number;
+  sawUser: boolean;
+};
+
+const RUN_ACTIVITY_EVENTS = new Set([
+  "agent_start", "message_start", "message_update", "message_end",
+  "tool_execution_start", "tool_execution_end", "auto_retry_start", "auto_retry_end",
+  "auto_compaction_start", "auto_compaction_end", "compaction_start", "compaction_end",
+]);
+
+function hasRunActivity(event: AgentEvent): boolean {
+  if (RUN_ACTIVITY_EVENTS.has(event.type)) return true;
+  if (event.type !== "tool_execution_update") return false;
+  const result = event.partialResult as Partial<ToolResultMessage> | undefined;
+  return Boolean(result?.content?.some((block) => block.type === "image" || (block.type === "text" && block.text.trim()))
+    || result?.details);
+}
 
 type ComputerUseApprovalRun = {
   policy: ComputerUseApprovalPolicy;
@@ -323,6 +345,7 @@ export class AgentSessionWrapper {
   private activeMutatingCommands = 0;
   private sessionReplacement: "fork" | "clone" | null = null;
   private agentRunNeedsCompletion = false;
+  private runTiming?: RunTiming;
   private runGoalSnapshot: SessionGoal | null | undefined;
   private goalRun?: GoalRun;
   private promptAdmissionTail: Promise<void> = Promise.resolve();
@@ -658,10 +681,42 @@ export class AgentSessionWrapper {
     if (computerUsePermissionCheck(result, "accessibility")) run.computerPermissions.delete("accessibility");
   }
 
+  get runActivity(): RunActivity | undefined {
+    const timing = this.runTiming;
+    if (!timing) return;
+    const tools: RunActivity["tools"] = [];
+    for (const [id, event] of this.activeToolEvents) {
+      if (typeof event.toolName === "string") tools.push({ id, name: event.toolName });
+    }
+    return { startedAt: timing.startedAt, lastActivityAt: timing.lastActivityAt, tools };
+  }
+
+  private beginRunTiming(): void {
+    if (this.runTiming) return;
+    const startedAt = Date.now();
+    this.runTiming = { startedAt, startedMonotonic: performance.now(), lastActivityAt: startedAt, sawUser: false };
+  }
+
+  private finishRunTiming(): void {
+    const timing = this.runTiming;
+    this.runTiming = undefined;
+    if (!timing?.sawUser) return;
+    const details = { durationMs: Math.max(0, Math.round(performance.now() - timing.startedMonotonic)) };
+    try {
+      this.inner.sessionManager.appendCustomMessageEntry(TURN_TIMING_TYPE, "", false, details);
+      this.emit({ type: "message_end", message: {
+        role: "custom", customType: TURN_TIMING_TYPE, content: "", display: false, details, timestamp: Date.now(),
+      } });
+    } catch (error) {
+      console.error("[meteoragent] could not save turn timing:", error);
+    }
+  }
+
   start(): void {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
       if (event.type === "agent_start") {
         this.agentRunNeedsCompletion = true;
+        this.beginRunTiming();
         this.computerUseApprovalRun ??= { policy: "ask", remembered: new Set() };
         if (this.runGoalSnapshot === undefined && this.workModeState.workMode === "goal" && !this.suppressCompletionNotifications) {
           // Freeze the objective for the entire run, including retries and queued messages.
@@ -676,6 +731,14 @@ export class AgentSessionWrapper {
             console.error("[meteoragent] could not read the session goal:", error);
           }
         }
+      }
+      if (this.runTiming && hasRunActivity(event)) {
+        const activityAt = Math.max(this.runTiming.lastActivityAt, Date.now());
+        this.runTiming.lastActivityAt = activityAt;
+        if (event.type === "message_end" && (event.message as { role?: string } | undefined)?.role === "user") {
+          this.runTiming.sawUser = true;
+        }
+        event = { ...event, activityAt };
       }
       if (event.type === "message_end" && this.goalRun) {
         const message = event.message as AssistantMessage | ToolResultMessage | { role?: string } | undefined;
@@ -730,12 +793,15 @@ export class AgentSessionWrapper {
         }
       }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
-      if (event.type === "agent_settled") this.computerUseApprovalRun = undefined;
+      if (event.type === "agent_settled") {
+        this.computerUseApprovalRun = undefined;
+        this.finishRunTiming();
+      }
       if (event.type === "agent_start") {
         const resumedGoal = this.goalRun?.resumedGoal;
         if (this.goalRun) this.goalRun.resumedGoal = undefined;
         this.emit({ ...event, computerUseApprovalPolicy: this.activeComputerUseApprovalPolicy,
-          ...(resumedGoal ? { resumedGoal } : {}) });
+          runActivity: this.runActivity, ...(resumedGoal ? { resumedGoal } : {}) });
       } else if (event.type === "message_end" && (event.message as { role?: string } | undefined)?.role === "user") {
         const mode = this.workModeState.workMode;
         // Pi writes the user message directly after this callback returns.
@@ -755,6 +821,7 @@ export class AgentSessionWrapper {
 
   private notifyAgentRunCompleteIfIdle(): void {
     if (this.isRunning()) return;
+    this.finishRunTiming();
     this.computerUseApprovalRun = undefined;
     this.runGoalSnapshot = undefined;
     this.goalRun = undefined;
@@ -921,7 +988,7 @@ export class AgentSessionWrapper {
     this.inner.agent.transformContext = async (messages, signal) => {
       const current = messages.filter((message) => {
         if (message.role !== "custom") return true;
-        if (message.customType === GOAL_OUTCOME_TYPE) return false;
+        if (message.customType === GOAL_OUTCOME_TYPE || message.customType === TURN_TIMING_TYPE) return false;
         const runId = (message.details as { runId?: string } | undefined)?.runId;
         if (message.customType === GOAL_CONTINUATION_TYPE) return Boolean(this.goalRun && runId === this.goalRun.id);
         if (message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE) {
@@ -1439,6 +1506,7 @@ export class AgentSessionWrapper {
               preflightResult: (disposition) => {
                 if (disposition === "started") {
                   this.agentRunNeedsCompletion = true;
+                  this.beginRunTiming();
                   if (approvalRun && !this.extensionUiAbortController.signal.aborted) {
                     this.computerUseApprovalRun = approvalRun;
                   }
@@ -1517,6 +1585,7 @@ export class AgentSessionWrapper {
           isStreaming: this.inner.isStreaming,
           computerUseApprovalPolicy: this.activeComputerUseApprovalPolicy,
           isPromptRunning: this.pendingPromptCount > 0,
+          runActivity: this.runActivity,
           isBashRunning: this.inner.isBashRunning,
           isCompacting: this.inner.isCompacting,
           autoCompactionEnabled: this.inner.autoCompactionEnabled,

@@ -1,3 +1,17 @@
+export const TURN_TIMING_TYPE = "meteoragent:turn-timing";
+
+export interface RunActivity {
+  startedAt: number;
+  lastActivityAt: number;
+  tools: { id: string; name: string }[];
+}
+
+export function readTurnDurationMs(details: unknown): number | undefined {
+  if (!details || typeof details !== "object" || !("durationMs" in details)) return;
+  const { durationMs } = details;
+  if (typeof durationMs === "number" && Number.isSafeInteger(durationMs) && durationMs >= 0) return durationMs;
+}
+
 interface TimingEntry {
   type: string;
   timestamp: string;

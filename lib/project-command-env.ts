@@ -95,6 +95,9 @@ export function createProjectCommandBashExtension(options: {
       const displayDefinition = createBashToolDefinition(options.cwd);
       pi.registerTool({
         ...displayDefinition,
+        description: displayDefinition.description
+          + " Stream stdout and stderr for long downloads, installs, and builds. Use tail only after the command exits."
+          + " Set a suitable explicit timeout for network-dependent commands, preserve the command's exit status, and verify what completed before retrying.",
         execute(toolCallId, params, signal, onUpdate, context) {
           const executionDefinition = createBashToolDefinition(options.cwd, {
             commandPrefix: options.settings.getShellCommandPrefix(),

@@ -136,6 +136,31 @@ test("renders intermediate usage as small text without stat chips", () => {
   assert.doesNotMatch(html, /ui-stat-chip[^-]/);
 });
 
+test("tool badges use measured duration when the runtime recorded it", () => {
+  const toolCallId = "call-bash";
+  const message = {
+    role: "assistant",
+    content: [{ type: "toolCall", toolCallId, toolName: "bash", input: { command: "printf done" } }],
+    timestamp: 7000,
+  };
+  const result = {
+    role: "toolResult",
+    toolCallId,
+    toolName: "bash",
+    content: [{ type: "text", text: "done" }],
+    timestamp: 91000,
+  };
+
+  const measured = renderMessage(message, {
+    toolResults: new Map([[toolCallId, { ...result, durationMs: 2200 }]]),
+  });
+  assert.match(measured, />2s<\/span>/);
+  assert.doesNotMatch(measured, />84s<\/span>/);
+
+  const legacy = renderMessage(message, { toolResults: new Map([[toolCallId, result]]) });
+  assert.doesNotMatch(legacy, />84s<\/span>/);
+});
+
 test("matches response model aliases and otherwise includes the provider", () => {
   const names = {
     "gateway:claude-sonnet-5": "Sonnet 5",
