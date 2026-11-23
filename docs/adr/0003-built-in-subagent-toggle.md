@@ -2,26 +2,28 @@
 
 MeteorAgent registers its integrated delegation tools for ordinary main sessions.
 The composer supplies `subagentMode` on each new prompt. At High, XHigh, or Max
-reasoning, `auto` requires the parent to delegate at least one focused task and
-review the result. The parent chooses how many tasks to delegate within the
-configured concurrency limit. At other levels, including provider Auto, the
-parent decides whether to delegate. `off` hides and blocks delegation tools.
-`on` requires delegation at any reasoning level.
+reasoning, `auto` asks the parent to identify independent work early and
+delegate it when that helps. At other levels, including provider Auto, the
+parent delegates as needed. `off` hides and blocks delegation tools. `on`
+requires at least one delegated task at any reasoning level. The parent
+chooses how many tasks to delegate within the configured concurrency limit.
 
 Steered and queued messages share the running prompt's choice. Chat only, Plan,
 read-only mode, and child sessions cannot delegate. Requests without a mode
 use the legacy `builtInEnabled` setting in `~/.pi/agent/agents/settings.json` to
 determine whether Auto delegation is available.
 
-An ordinary delegation can omit its profile. The built-in general-purpose
-profile uses the parent's model by default and has access only to tools the
-parent can use. Required delegation runs child calls in the foreground so their
-results reach the parent before it continues.
+An ordinary delegation can omit its profile. Built-in profiles default to
+background execution, use the parent's model by default, and have access only
+to tools the parent can use. The parent can work on another part of the task
+as soon as `Agent` returns. It can wait for a specific dependency with
+`get_subagent_result` or request foreground execution for a serial step.
 
-If a regular turn would finish without a successful launch under Auto with
-high reasoning, the parent gets one automatic retry within that turn. The
-parent emits `subagent_required_unmet` when it finishes without launching a
-child despite a delegation requirement.
+Before settling, a parent run gathers unread child results into one hidden
+continuation. The Goal report requires the parent to receive the results before
+recording completion. Stop or an interrupted run cancels its queued and running
+children. A forced run that finishes without dispatching emits
+`subagent_required_unmet`.
 
 The queue enforces the configured running limit per parent and an absolute
 shared limit of 20. Extra jobs wait for a slot. Completed jobs do not consume
@@ -31,5 +33,4 @@ current state for active children.
 
 The integrated tools take precedence over a recognized legacy `pi-subagents`
 extension that registers `Agent`, `get_subagent_result`, or `steer_subagent`.
-Unrelated extensions remain loaded. Existing child sessions remain readable
-and already-running children can finish when a later prompt turns delegation off.
+Unrelated extensions remain loaded. Existing child sessions remain readable.

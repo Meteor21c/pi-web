@@ -53,6 +53,7 @@ export async function PUT(req: Request, { params }: RouteContext) {
     if (conflict) {
       return json({ error: "Session goal has changed", code: "goal_conflict", goal }, 409);
     }
+    getRpcSession(id)?.onUserGoalChange?.(goal);
     return json({ goal });
   } catch (error) {
     if (error instanceof SessionGoalError) return json({ error: error.message }, error.status);

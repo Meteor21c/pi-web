@@ -43,8 +43,11 @@ import type {
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS, type HeadlessCustomUiTui } from "./custom-ui-terminal";
 import {
   createSubagentExtension,
+  isActiveSubagentStatus,
   preferPiWebSubagentExtension,
+  subagentFinalText,
   subagentToolDetails,
+  type SubagentToolDetails,
 } from "./subagent-extension";
 import {
   listSubagentProfiles,
@@ -55,7 +58,8 @@ import {
 } from "./subagents";
 import { createSubagentController } from "./subagent-runtime";
 import { isBuiltInSubagentsEnabled } from "./subagent-settings";
-import { AUTOMATIC_SUBAGENT_RETRY_TYPE, isSubagentMode, type SubagentMode } from "./subagent-mode";
+import { AUTOMATIC_SUBAGENT_RETRY_TYPE, SUBAGENT_RESULTS_TYPE, isSubagentMode, type SubagentMode } from "./subagent-mode";
+import { SubagentTask } from "./subagent-task";
 import { getPresetFromToolNames } from "./tool-presets";
 import { isComputerUseApprovalPolicy, type ComputerUseApprovalPolicy } from "./computer-use-approval-policy";
 import { computerUseCaptureFailed, computerUsePermissionCheck, deniedComputerUsePermission, type ComputerUsePermission } from "./computer-use-permissions";
@@ -123,15 +127,6 @@ type ComputerUseApprovalRun = {
   remembered: Set<string>;
 };
 
-type SubagentRequirement = {
-  id: string;
-  automatic: boolean;
-  delegated: boolean;
-  sawFinalAssistant: boolean;
-  retryUsed: boolean;
-  retryBlocked: boolean;
-};
-
 type GoalReport = { status: "progress" | "complete" | "blocked"; detail: string; userAction?: string };
 
 type GoalRun = {
@@ -152,7 +147,7 @@ type GoalRun = {
   stopped: boolean;
   deliveredImage: boolean;
   lastAssistant?: AssistantMessage;
-  report?: GoalReport;
+  report?: GoalReport & { subagentLaunchCount?: number };
 };
 
 const GOAL_REPORT_TOOL = "meteoragent_report_goal";
@@ -304,8 +299,9 @@ class PlainTextTheme extends Theme {
 const PLAIN_TEXT_THEME = new PlainTextTheme();
 const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
 const SUBAGENT_CONTROL_TOOLS = new Set<string>(SUBAGENT_CONTROL_TOOL_NAMES);
-const REQUIRE_SUBAGENT_INSTRUCTIONS = "Delegation is required for this task. Call Agent at least once with a focused subtask and clear acceptance criteria. Choose how many independent subtasks are useful. Review their results and verify the work before summarizing the outcome for the user.";
-const RETRY_SUBAGENT_INSTRUCTIONS = "No subagent was started. Delegate a focused part of the current task with Agent, such as an independent verification of work already done, and use the result before answering. Verify the current state before repeating any operation. If you need information or permission from the user, explain what you need.";
+const REQUIRE_SUBAGENT_INSTRUCTIONS = "Delegation is required for this task. Call Agent at least once as soon as you can define a focused task.";
+const PROACTIVE_SUBAGENT_INSTRUCTIONS = "Look for independent work at the start of this task. Use Agent early when it can reduce completion time or provide an independent check. Handle a small or tightly sequential task yourself.";
+const PARALLEL_SUBAGENT_INSTRUCTIONS = "Give each child a concrete deliverable and a distinct scope. Use background execution for independent work and start your own part immediately. Wait for a specific result when it becomes a dependency. Choose the number of children based on the work, and verify the combined outcome.";
 
 function subagentStatusEvent(run: SubagentRunInfo): AgentEvent {
   return { type: "subagent_status", toolCallId: run.parentToolCallId, subagent: subagentToolDetails(run) };
@@ -360,7 +356,8 @@ export class AgentSessionWrapper {
   private useDefaultPlanTools = false;
   private activeQueueSubmissions = 0;
   private subagentMode?: SubagentMode;
-  private subagentRequirement?: SubagentRequirement;
+  private currentSubagentTask?: SubagentTask;
+  private subagentWait?: AbortController;
   private readonly chatOnly: boolean;
   private readonly onAgentRunComplete?: AgentRunCompleteListener;
   private readonly suppressCompletionNotifications: boolean;
@@ -443,17 +440,14 @@ export class AgentSessionWrapper {
     return this.subagentMode ?? (isBuiltInSubagentsEnabled() ? "auto" : "off");
   }
 
-  subagentExecutionMode(): SubagentMode {
-    const mode = this.effectiveSubagentMode();
-    // Required children return their results in the same tool turn.
-    return mode === "auto" && this.subagentRequirement ? "on" : mode;
-  }
+  get subagentTask(): SubagentTask | undefined { return this.currentSubagentTask; }
 
   publishSubagentStatus(run: SubagentRunInfo): void {
-    if (this.subagentRequirement && run.status === "queued" && this.activeToolEvents.has(run.parentToolCallId)) {
-      this.subagentRequirement.delegated = true;
+    const activityAt = Date.now();
+    if (this.runTiming) {
+      this.runTiming.lastActivityAt = Math.max(this.runTiming.lastActivityAt, activityAt);
     }
-    this.emit(subagentStatusEvent(run));
+    this.emit({ ...subagentStatusEvent(run), activityAt });
   }
 
   static goalExtension(getWrapper: () => AgentSessionWrapper | undefined): InlineExtension {
@@ -464,7 +458,7 @@ export class AgentSessionWrapper {
         pi.on("agent_start", () => getWrapper()?.resumeGoalOnUserReply());
         pi.on("agent_before_settle", (event) => {
           const wrapper = getWrapper();
-          return wrapper?.continueGoalRun(event) ?? wrapper?.retryAutomaticDelegation(event);
+          return wrapper?.joinSubagents(event) ?? wrapper?.continueGoalRun(event);
         });
         // Pi dispatches nested calls via the extension runner, independently of
         // Agent.beforeToolCall. Apply the same policy to each nested operation.
@@ -472,7 +466,7 @@ export class AgentSessionWrapper {
         pi.registerTool(defineTool({
           name: GOAL_REPORT_TOOL,
           label: "Goal progress",
-          description: "Record a concrete checkpoint, verified completion, or a blocker that requires the user to act. Call this before ending a goal round.",
+          description: "Record a concrete checkpoint, verified completion, or a blocker that requires the user to act. Review the results of any delegated work before reporting completion.",
           parameters: Type.Object({
             status: Type.Union([Type.Literal("progress"), Type.Literal("complete"), Type.Literal("blocked")]),
             detail: Type.String({ minLength: 1, maxLength: 2_000, description: "Concrete evidence for progress or completion, or the reason the goal is blocked." }),
@@ -510,43 +504,102 @@ export class AgentSessionWrapper {
     if (!detail) throw new Error("Provide evidence or explain the blocker before reporting goal progress.");
     const userAction = report.status === "blocked" ? report.userAction?.trim() : undefined;
     if (report.status === "blocked" && !userAction) throw new Error("Describe exactly what the user needs to do or answer before you can continue.");
-    if (run.report?.status === "complete" || run.report?.status === "blocked") {
+    if (this.isCurrentGoalCompletion(run.report) || run.report?.status === "blocked") {
       throw new Error("A final report has already been recorded for this run.");
     }
-    run.report = { status: report.status, detail, ...(userAction ? { userAction } : {}) };
+    if (report.status === "complete" && this.subagentTask?.hasUnreadResults) {
+      throw new Error("Review outstanding subagent results before reporting completion. Use get_subagent_result when you need a specific result.");
+    }
+    run.report = {
+      status: report.status,
+      detail,
+      ...(userAction ? { userAction } : {}),
+      subagentLaunchCount: this.subagentTask?.launchCount,
+    };
+  }
+
+  private isCurrentGoalCompletion(report: GoalRun["report"]): boolean {
+    return report?.status === "complete" && report.subagentLaunchCount === this.subagentTask?.launchCount
+      && !this.subagentTask?.hasUnreadResults;
   }
 
   private canContinueRun(event: AgentBeforeSettleEvent): boolean {
-    return event.outcome === "completed" && !event.continue && event.context.pendingMessages.length === 0
+    return this._alive && !this.shutdownPromise
+      && event.outcome === "completed" && !event.continue && event.context.pendingMessages.length === 0
       && this.activeQueueSubmissions === 0 && !this.hasQueuedUserMessages() && this.pendingUiRequests.size === 0
       && !this.extensionUiAbortController.signal.aborted && this.workModeState.pendingWorkMode === null;
   }
 
-  private retryAutomaticDelegation(event: AgentBeforeSettleEvent): AgentBeforeSettleEventResult | undefined {
-    const requirement = this.subagentRequirement;
-    if (!requirement?.automatic || requirement.delegated || requirement.retryUsed || requirement.retryBlocked
-      || !requirement.sawFinalAssistant || !this.canContinueRun(event)
-      || this.effectiveSubagentMode() !== "auto" || !this.inner.getActiveToolNames().includes("Agent")) return;
-
+  private joinSubagents(event: AgentBeforeSettleEvent): Promise<AgentBeforeSettleEventResult | undefined> | undefined {
+    const task = this.subagentTask;
     const goal = this.goalRun;
-    if (goal?.revision !== undefined) {
-      if (goal.stopped || goal.report?.status === "blocked" || goal.approvalRequired || goal.computerPermissions.size > 0
-        || goal.continuations >= MAX_GOAL_CONTINUATIONS || !this.goalRunIsCurrent(goal)) return;
-      goal.continuations += 1;
-      // Verify again once the delegated result is available.
-      if (goal.report?.status === "complete") goal.report = undefined;
+    if (!task?.hasUnreadResults || !task.sawFinalAssistant || task.signal.aborted || task.waitingForUser
+      || !this.canContinueRun(event)) return;
+    return this.waitForSubagentBatch(task, goal, event);
+  }
+
+  private async waitForSubagentBatch(
+    task: SubagentTask,
+    goal: GoalRun | undefined,
+    event: AgentBeforeSettleEvent,
+  ): Promise<AgentBeforeSettleEventResult | undefined> {
+    const mayJoin = () => this.subagentTask === task && !task.signal.aborted && !task.waitingForUser
+      && this.canContinueRun(event) && (!goal || (this.goalRun === goal && !goal.stopped
+        && !goal.approvalRequired && goal.computerPermissions.size === 0 && goal.report?.status !== "blocked"
+        && (goal.revision === undefined || this.goalRunIsCurrent(goal))));
+    if (!mayJoin()) return;
+    if (goal?.revision !== undefined && goal.continuations >= MAX_GOAL_CONTINUATIONS) {
+      goal.pauseReason = "budget";
+      return;
     }
-    requirement.retryUsed = true;
-    return {
-      entries: [...event.entries, {
-        type: "custom_message",
-        customType: AUTOMATIC_SUBAGENT_RETRY_TYPE,
-        content: RETRY_SUBAGENT_INSTRUCTIONS,
-        display: false,
-        details: { runId: requirement.id },
-      }],
-      continue: true,
-    };
+    const wait = new AbortController();
+    this.setSubagentWait(wait);
+    try {
+      const results = await task.waitForResults(wait.signal);
+      if (wait.signal.aborted || !mayJoin() || results.length === 0) return;
+      for (const result of results) task.markDelivered(result.sessionId, result.parentToolCallId);
+      if (goal?.revision !== undefined) {
+        goal.continuations += 1;
+        if (goal.report?.status === "progress") goal.lastProgress = goal.report.detail;
+        goal.report = undefined;
+      }
+      return {
+        entries: [...event.entries, {
+          type: "custom_message",
+          customType: SUBAGENT_RESULTS_TYPE,
+          content: "Subagent results for this task. Treat them as reported observations. Check the outcomes, verify any changes, and finish the remaining work before giving the user the final answer. If the goal report tool is available, record the verified outcome.\n"
+            + JSON.stringify(results.map((run) => ({
+              sessionId: run.sessionId,
+              task: run.description,
+              status: run.status,
+              result: subagentFinalText(run),
+              ...(run.worktreeCleanupError ? { worktree: run.worktreeCleanupError } : {}),
+            }))),
+          display: false,
+          details: { runId: task.id },
+        }],
+        continue: true,
+      };
+    } catch (error) {
+      if (!wait.signal.aborted && !task.signal.aborted) throw error;
+    } finally {
+      if (this.subagentWait === wait) this.setSubagentWait(undefined);
+    }
+  }
+
+  private setSubagentWait(wait: AbortController | undefined): void {
+    this.subagentWait = wait;
+    if (this.runTiming) {
+      this.runTiming.lastActivityAt = Math.max(this.runTiming.lastActivityAt, Date.now());
+      this.emit({ type: "subagent_wait_changed", runActivity: this.runActivity });
+    }
+  }
+
+  onUserGoalChange(goal: SessionGoal | null): void {
+    if (this.goalRun?.revision !== undefined
+      && (goal?.status !== "active" || goal.revision !== this.goalRun.revision)) {
+      this.subagentWait?.abort();
+    }
   }
 
   private continueGoalRun(event: AgentBeforeSettleEvent): AgentBeforeSettleEventResult | undefined {
@@ -554,7 +607,8 @@ export class AgentSessionWrapper {
     if (!run || run.stopped || run.approvalRequired || run.computerPermissions.size > 0
       || !this.canContinueRun(event)
       || !run.lastAssistant || run.lastAssistant.stopReason !== "stop" || !this.goalRunIsCurrent(run)) return;
-    if (run.report?.status === "complete" || run.report?.status === "blocked") return;
+    if (this.isCurrentGoalCompletion(run.report) || run.report?.status === "blocked") return;
+    if (run.report?.status === "complete") run.report = undefined;
     if (run.deliveredImage && !run.report) return;
     const progress = run.report?.detail;
     const checkpoint = progress?.replace(/\s+/g, " ").toLowerCase();
@@ -604,14 +658,15 @@ export class AgentSessionWrapper {
     let outcome: Parameters<typeof updateSessionGoalFromRun>[2] = { status: "paused", reason: "needs_review" };
     if (run.stopped) {
       outcome = { status: "paused", reason: "user_stop" };
-    } else if (!failed && report?.status === "complete" && (!this.subagentRequirement || this.subagentRequirement.delegated)) {
-      outcome = { status: "completed", evidence: report.detail };
     } else if (run.computerPermissions.size > 0) {
       outcome = { status: "blocked", reason: run.computerPermissions.values().next().value };
     } else if (run.approvalRequired) {
       outcome = { status: "blocked", reason: "approval_required" };
     } else if (report?.status === "blocked") {
       outcome = { status: "blocked", reason: "blocked", detail: report.detail, userAction: report.userAction };
+    } else if (!failed && report?.status === "complete" && this.isCurrentGoalCompletion(report)
+      && (this.subagentTask?.preference !== "required" || this.subagentTask.launchCount > 0)) {
+      outcome = { status: "completed", evidence: report.detail };
     } else if (stopReason === "length") {
       outcome = { status: "paused", reason: "output_limit" };
     } else if (failed) {
@@ -690,7 +745,10 @@ export class AgentSessionWrapper {
     for (const [id, event] of this.activeToolEvents) {
       if (typeof event.toolName === "string") tools.push({ id, name: event.toolName });
     }
-    return { startedAt: timing.startedAt, lastActivityAt: timing.lastActivityAt, tools };
+    return {
+      startedAt: timing.startedAt, lastActivityAt: timing.lastActivityAt, tools,
+      ...(this.subagentWait ? { waitingForSubagents: true } : {}),
+    };
   }
 
   private beginRunTiming(): void {
@@ -761,13 +819,13 @@ export class AgentSessionWrapper {
           }
         }
       }
-      if (event.type === "message_end" && this.subagentRequirement) {
+      if (event.type === "message_end" && this.subagentTask) {
         const message = event.message as AssistantMessage | ToolResultMessage | { role?: string } | undefined;
         if (message?.role === "assistant") {
-          this.subagentRequirement.sawFinalAssistant = (message as AssistantMessage).stopReason === "stop";
-        } else if (message?.role === "toolResult" && this.subagentRequirement.automatic
+          this.subagentTask.sawFinalAssistant = (message as AssistantMessage).stopReason === "stop";
+        } else if (message?.role === "toolResult"
           && this.goalRun?.revision === undefined && deniedComputerUsePermission(message as ToolResultMessage)) {
-          this.subagentRequirement.retryBlocked = true;
+          this.subagentTask.waitingForUser = true;
         }
       }
       if (event.type === "agent_end") {
@@ -1004,14 +1062,25 @@ export class AgentSessionWrapper {
       const current = messages.filter((message) => {
         if (message.role !== "custom") return true;
         if (message.customType === GOAL_OUTCOME_TYPE || message.customType === TURN_TIMING_TYPE) return false;
+        if (message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE) return false;
         const runId = (message.details as { runId?: string } | undefined)?.runId;
         if (message.customType === GOAL_CONTINUATION_TYPE) return Boolean(this.goalRun && runId === this.goalRun.id);
-        if (message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE) {
-          return Boolean(this.subagentRequirement && runId === this.subagentRequirement.id);
-        }
+        if (message.customType === SUBAGENT_RESULTS_TYPE) return Boolean(this.subagentTask && runId === this.subagentTask.id);
         return true;
       });
       const transformed = previousTransform ? await previousTransform(current, signal) : current;
+      const subagentTask = this.subagentTask;
+      if (subagentTask?.hasUnreadResults) {
+        // A sibling goal-report tool in the same batch has not seen these results.
+        // Count explicit retrieval only when the next model request includes them.
+        for (const message of transformed) {
+          if (message.role !== "toolResult" || !SUBAGENT_CONTROL_TOOLS.has(message.toolName)) continue;
+          const details = message.details as SubagentToolDetails | undefined;
+          if (details?.kind === "pi-web-subagent" && details.parentToolCallId && !isActiveSubagentStatus(details.status)) {
+            subagentTask.markDelivered(details.sessionId, details.parentToolCallId);
+          }
+        }
+      }
       const selection = this.effectivePromptSelection();
       const showGoalTool = selection?.mode === "goal" && this.goalRun !== undefined && this.goalRunIsCurrent(this.goalRun);
       let projectedMessages = transformed;
@@ -1094,16 +1163,19 @@ export class AgentSessionWrapper {
         toolsAdded: message.toolsAdded?.filter(allowsTool),
         toolsRemoved: message.toolsRemoved?.filter(allowsTool),
       } : message);
-      if (mode !== "off" && this.subagentRequirement && !this.subagentRequirement.delegated) {
+      if (mode !== "off" && subagentTask && subagentTask.launchCount === 0
+        && subagentTask.preference !== "optional" && this.inner.getActiveToolNames().includes("Agent")) {
         // Put the instruction after all existing prompt sections while keeping
         // their tool changes in place. This projection is transient per request.
+        const instruction = (subagentTask.preference === "required"
+          ? REQUIRE_SUBAGENT_INSTRUCTIONS : PROACTIVE_SUBAGENT_INSTRUCTIONS) + " " + PARALLEL_SUBAGENT_INSTRUCTIONS;
         const index = projectedMessages.findLastIndex((message) => message.role === "system");
         if (index === -1) return [
-          { role: "system", content: "", sections: { meteoragentDelegation: REQUIRE_SUBAGENT_INSTRUCTIONS }, timestamp: Date.now() },
+          { role: "system", content: "", sections: { meteoragentDelegation: instruction }, timestamp: Date.now() },
           ...projectedMessages,
         ];
         return projectedMessages.map((message, messageIndex) => messageIndex === index && message.role === "system"
-          ? { ...message, sections: { ...message.sections, meteoragentDelegation: REQUIRE_SUBAGENT_INSTRUCTIONS } }
+          ? { ...message, sections: { ...message.sections, meteoragentDelegation: instruction } }
           : message);
       }
       return projectedMessages;
@@ -1155,6 +1227,7 @@ export class AgentSessionWrapper {
     const next = { workMode, pendingWorkMode, workModeRevision: previous.workModeRevision + 1 };
     appendSessionWorkMode(this.inner.sessionManager, next);
     this.workModeState = next;
+    if (pendingWorkMode !== null) this.subagentWait?.abort();
     if (workMode !== previous.workMode) this.applyActiveToolSelection();
     this.emit({ type: "work_mode_changed", ...next });
     return next;
@@ -1235,6 +1308,7 @@ export class AgentSessionWrapper {
     try {
       if (behavior === "steer") await this.inner.steer(message, images, { source: "rpc" });
       else await this.inner.followUp(message, images, { source: "rpc" });
+      if (this.hasQueuedUserMessages()) this.subagentWait?.abort();
     } finally {
       this.activeQueueSubmissions -= 1;
     }
@@ -1415,7 +1489,6 @@ export class AgentSessionWrapper {
           if (requestedSubagentMode !== undefined && !isSubagentMode(requestedSubagentMode)) {
             throw new Error("subagentMode must be auto, off, or on");
           }
-          let requirement: typeof this.subagentRequirement = undefined;
           if (freshPrompt) {
             if (requestedSubagentMode === "on" && (nextWorkMode === "plan" || this.chatOnly || this.suppressCompletionNotifications
               || getPresetFromToolNames(this.configuredToolNames ?? this.inner.getActiveToolNames()) === "read-only")) {
@@ -1438,21 +1511,9 @@ export class AgentSessionWrapper {
                 this.inner.setActiveToolsByName(next);
               }
             }
-            const forceDelegation = requestedSubagentMode === "on";
-            const automaticDelegation = this.effectiveSubagentMode() === "auto"
-              && ["high", "xhigh", "max"].includes(this.currentThinkingLevel())
-              && !/^\s*\//.test(String(command.message ?? ""));
-            if (forceDelegation || automaticDelegation) {
-              if (this.inner.getActiveToolNames().includes("Agent")) {
-                requirement = {
-                  id: randomUUID(), automatic: automaticDelegation, delegated: false,
-                  sawFinalAssistant: false, retryUsed: false, retryBlocked: false,
-                };
-              } else if (forceDelegation) {
-                throw new Error("The Agent tool is unavailable. Reload the session before requiring a subagent.");
-              }
+            if (requestedSubagentMode === "on" && !this.inner.getActiveToolNames().includes("Agent")) {
+              throw new Error("The Agent tool is unavailable. Reload the session before requiring a subagent.");
             }
-            this.subagentRequirement = requirement;
           }
           // Only the foreground user's standalone prompt can start a full-access
           // run. Queued messages use the current run's policy.
@@ -1474,6 +1535,7 @@ export class AgentSessionWrapper {
             : undefined;
           let preflightSettled = false;
           let promptSettled = false;
+          let subagentTask: SubagentTask | undefined;
           let acceptPreflight!: () => void;
           let rejectPreflight!: (error: unknown) => void;
           const preflight = new Promise<void>((resolve, reject) => {
@@ -1493,17 +1555,16 @@ export class AgentSessionWrapper {
             if (promptSettled) return;
             promptSettled = true;
             if (approvalRun && this.computerUseApprovalRun === approvalRun) this.computerUseApprovalRun = undefined;
-            if (requirement && this.subagentRequirement === requirement) {
-              this.subagentRequirement = undefined;
-              const automaticInterrupted = requirement.automatic && (
-                goalRun?.report?.status === "blocked" || goalRun?.computerPermissions.size || goalRun?.approvalRequired
-                || this.workModeState.pendingWorkMode !== null || this.activeQueueSubmissions || this.hasQueuedUserMessages()
-              );
-              if (completed && requirement.sawFinalAssistant && !requirement.delegated && !automaticInterrupted
-                && !requirement.retryBlocked && !this.extensionUiAbortController.signal.aborted) {
+            if (subagentTask && this.currentSubagentTask === subagentTask) {
+              if (completed && subagentTask.preference === "required" && subagentTask.sawFinalAssistant
+                && !subagentTask.launchCount && !subagentTask.waitingForUser && !subagentTask.signal.aborted
+                && goalRun?.report?.status !== "blocked" && !goalRun?.computerPermissions.size
+                && this.workModeState.pendingWorkMode === null) {
                 this.emit({ type: "subagent_required_unmet" });
               }
+              this.currentSubagentTask = undefined;
             }
+            subagentTask?.cancel();
             this.pendingPromptCount = Math.max(0, this.pendingPromptCount - 1);
             this.resetIdleTimer();
             this.notifyAgentRunCompleteIfIdle();
@@ -1523,9 +1584,18 @@ export class AgentSessionWrapper {
                 if (disposition === "started") {
                   this.agentRunNeedsCompletion = true;
                   this.beginRunTiming();
+                  const mode = this.effectiveSubagentMode();
+                  if (mode !== "off" && !this.extensionUiAbortController.signal.aborted) {
+                    const prioritizeDelegation = ["high", "xhigh", "max"].includes(this.currentThinkingLevel())
+                      && !/^\s*\//.test(String(command.message ?? ""));
+                    subagentTask = new SubagentTask(mode === "on" ? "required" : prioritizeDelegation ? "proactive" : "optional");
+                    this.currentSubagentTask = subagentTask;
+                  }
                   if (approvalRun && !this.extensionUiAbortController.signal.aborted) {
                     this.computerUseApprovalRun = approvalRun;
                   }
+                } else if (disposition === "queued") {
+                  this.subagentWait?.abort();
                 }
                 acceptPreflight();
               },
@@ -1544,6 +1614,7 @@ export class AgentSessionWrapper {
             if (!streamingBehavior) this.emit({ type: "prompt_done" });
           }, async (error) => {
             rejectPreflight(error);
+            subagentTask?.cancel();
             if (preflightAccepted && goalRun) await this.settleGoalRun(goalRun, true);
             finishPrompt();
             invalidateSessionListCache();
@@ -1581,6 +1652,7 @@ export class AgentSessionWrapper {
         this.forceShutdownOnIdle = true;
         this.computerUseApprovalRun = undefined;
         if (this.goalRun) this.goalRun.stopped = true;
+        this.subagentTask?.cancel();
         // Stop must unwind extension commands that have not started the agent yet.
         this.extensionUiAbortController.abort(new DOMException("Extension UI cancelled by Stop", "AbortError"));
         try {
@@ -1949,6 +2021,7 @@ export class AgentSessionWrapper {
   destroy(): void {
     if (!this._alive) return;
     this._alive = false;
+    this.subagentTask?.cancel();
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.inner.isBashRunning) this.inner.abortBash();
     this.unsubscribe?.();
@@ -1999,6 +2072,7 @@ export class AgentSessionWrapper {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     if (!this._alive) return;
+    this.subagentTask?.cancel();
 
     this.shutdownPromise = (async () => {
       try {
@@ -2383,7 +2457,7 @@ export class AgentSessionWrapper {
     if (stopSignal.aborted) return Promise.reject(stopSignal.reason);
     const abortSignal = signal ? AbortSignal.any([signal, stopSignal]) : stopSignal;
     const goalRun = this.goalRun;
-    const subagentRequirement = this.subagentRequirement;
+    const subagentTask = this.subagentTask;
 
     const id = randomUUID();
     const fullRequest = {
@@ -2408,9 +2482,7 @@ export class AgentSessionWrapper {
         settled = true;
         if (request.method === "confirm" && value === false && !abortSignal.aborted) {
           if (goalRun && this.goalRun === goalRun) goalRun.approvalRequired = true;
-          if (subagentRequirement?.automatic && this.subagentRequirement === subagentRequirement) {
-            subagentRequirement.retryBlocked = true;
-          }
+          if (subagentTask && this.subagentTask === subagentTask) subagentTask.waitingForUser = true;
         }
         cleanup();
         if (stopSignal.aborted) reject(stopSignal.reason);
@@ -2691,7 +2763,8 @@ const SUBAGENT_CONTROLLER = createSubagentController({
     (await startRpcSession(sessionId, sessionFile, undefined)).session,
   resolveSessionPath,
   invalidateSessionList: invalidateSessionListCache,
-  subagentMode: (parentId) => getRegistry().get(parentId)?.subagentExecutionMode() ?? "off",
+  subagentMode: (parentId) => getRegistry().get(parentId)?.effectiveSubagentMode() ?? "off",
+  subagentTask: (parentId) => getRegistry().get(parentId)?.subagentTask,
   publishStatus: (run) => getRegistry().get(run.parentSessionId)?.publishSubagentStatus(run),
 });
 

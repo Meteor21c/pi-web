@@ -3,6 +3,7 @@ export type SubagentMode = typeof SUBAGENT_MODES[number];
 
 export const DEFAULT_SUBAGENT_MODE: SubagentMode = "auto";
 export const AUTOMATIC_SUBAGENT_RETRY_TYPE = "meteoragent:subagent-retry";
+export const SUBAGENT_RESULTS_TYPE = "meteoragent:subagent-results";
 export const DEFAULT_SUBAGENT_MAX_CONCURRENT = 10;
 export const MAX_SUBAGENT_MAX_CONCURRENT = 20;
 

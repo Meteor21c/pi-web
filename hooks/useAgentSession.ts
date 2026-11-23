@@ -129,6 +129,7 @@ type NoticeAction =
 
 export type AgentPhase =
   | { kind: "waiting_model" }
+  | { kind: "waiting_subagents" }
   | { kind: "running_command" }
   | { kind: "running_tools"; tools: { id: string; name: string; progress?: string }[] }
   | null;
@@ -515,6 +516,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
     setAgentPhase((previous) => {
       if (!activity && previous?.kind === "running_tools") return previous;
+      if (activity?.waitingForSubagents) {
+        return previous?.kind === "waiting_subagents" ? previous : { kind: "waiting_subagents" };
+      }
       const tools = activity?.tools;
       if (!tools?.length) return previous?.kind === fallback ? previous : { kind: fallback };
       const previousTools = previous?.kind === "running_tools" ? previous.tools : [];
@@ -1473,6 +1477,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "subagent_status": {
+        touchRunActivity(event.activityAt);
         const details = event.subagent as SubagentToolDetails | undefined;
         if (typeof event.toolCallId === "string" && details?.kind === "pi-web-subagent") {
           const id = event.toolCallId;
@@ -1480,6 +1485,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         break;
       }
+      case "subagent_wait_changed":
+        if (agentRunningRef.current) syncRunActivity(event.runActivity as RunActivity | undefined);
+        break;
       case "subagent_required_unmet":
         addNotice({ type: "warning", message: t("chat.subagentRequiredUnmet") });
         break;

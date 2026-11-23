@@ -73,7 +73,9 @@ export interface SubagentSessionResources {
   exactSystemPrompt?: string;
 }
 
-export interface SubagentResultMetadata {
+type SubagentInvocation = Pick<SubagentMetadata, "parentToolCallId" | "description" | "task" | "runInBackground">;
+
+export interface SubagentResultMetadata extends Partial<SubagentInvocation> {
   version: 1;
   status: Exclude<SubagentStatus, "starting" | "running" | "queued" | "interrupted">;
   completedAt: string;
@@ -82,7 +84,7 @@ export interface SubagentResultMetadata {
   worktreeCleanupError?: string;
 }
 
-export interface SubagentStatusMetadata {
+export interface SubagentStatusMetadata extends Partial<SubagentInvocation> {
   version: 1;
   status: Extract<SubagentStatus, "queued" | "running">;
 }
@@ -156,7 +158,7 @@ const BUILTIN_PROFILES: SubagentProfile[] = [
     loadExtensions: false,
     promptMode: "append",
     inheritContext: false,
-    runInBackground: false,
+    runInBackground: true,
     enabled: true,
     scope: "builtin",
   },
@@ -170,7 +172,7 @@ const BUILTIN_PROFILES: SubagentProfile[] = [
     loadExtensions: false,
     promptMode: "append",
     inheritContext: false,
-    runInBackground: false,
+    runInBackground: true,
     enabled: true,
     scope: "builtin",
   },
@@ -184,7 +186,7 @@ const BUILTIN_PROFILES: SubagentProfile[] = [
     loadExtensions: false,
     promptMode: "append",
     inheritContext: false,
-    runInBackground: false,
+    runInBackground: true,
     enabled: true,
     scope: "builtin",
   },
@@ -582,6 +584,10 @@ export function readSubagentRun(entries: readonly SessionEntry[], sessionId: str
     ? lifecycleEntry
     : undefined;
   const statusData = statusEntry?.type === "custom" && isRecord(statusEntry.data) ? statusEntry.data : undefined;
+  const invocation = result ?? statusData;
+  const parentToolCallId = invocation?.parentToolCallId ?? data.parentToolCallId;
+  const description = invocation?.description ?? data.description;
+  const task = invocation?.task ?? data.task;
   const persistedStatus = result && (result.status === "completed" || result.status === "failed" || result.status === "aborted")
     ? result.status
     : statusData?.version === 1 && (statusData.status === "queued" || statusData.status === "running")
@@ -591,11 +597,11 @@ export function readSubagentRun(entries: readonly SessionEntry[], sessionId: str
     sessionId,
     sessionPath,
     parentSessionId: data.parentSessionId,
-    parentToolCallId: typeof data.parentToolCallId === "string" ? data.parentToolCallId : "",
+    parentToolCallId: typeof parentToolCallId === "string" ? parentToolCallId : "",
     profile: typeof data.profile === "string" ? data.profile : "general-purpose",
-    description: typeof data.description === "string" ? data.description : "Subagent",
-    task: typeof data.task === "string" ? data.task : "",
-    runInBackground: data.runInBackground === true,
+    description: typeof description === "string" ? description : "Subagent",
+    task: typeof task === "string" ? task : "",
+    runInBackground: booleanValue(invocation?.runInBackground, data.runInBackground === true),
     status: persistedStatus,
     createdAt: typeof data.createdAt === "string" ? data.createdAt : "",
     ...(result && typeof result.completedAt === "string" ? { completedAt: result.completedAt } : {}),

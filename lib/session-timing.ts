@@ -4,6 +4,7 @@ export interface RunActivity {
   startedAt: number;
   lastActivityAt: number;
   tools: { id: string; name: string }[];
+  waitingForSubagents?: boolean;
 }
 
 export function readTurnDurationMs(details: unknown): number | undefined {

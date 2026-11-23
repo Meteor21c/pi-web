@@ -12,7 +12,7 @@ import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, Mes
 import type { WorkMode } from "@/lib/prompt-presets";
 import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
-import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
+import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, SUBAGENT_RESULTS_TYPE, type SubagentMode } from "@/lib/subagent-mode";
 import { readTurnDurationMs, TURN_TIMING_TYPE } from "@/lib/session-timing";
 import { SUBAGENT_NOTIFICATION_TYPE } from "@/lib/subagent-display";
 import { NewSessionWelcome } from "./NewSessionWelcome";
@@ -90,6 +90,7 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
         : /^(edit|write)$/.test(name) ? "chat.activityEditing"
         : /^(bash|powershell)$/.test(name) ? "chat.runningCommand"
         : /^(web_search|get_search_content)$/.test(name) ? "chat.activitySearching"
+        : name === "get_subagent_result" ? "chat.waitingSubagents"
         : name === "image_generate" ? "chat.activityGeneratingImage"
         : name.startsWith("computer_use_") ? "chat.activityUsingComputer"
         : name.startsWith("document_") ? "chat.activityProcessingDocument"
@@ -106,6 +107,7 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
     return t("chat.runningToolsMore", { names: names.slice(0, 2).join(", "), count: names.length - 2 });
   }
   if (phase?.kind === "waiting_model") return t("chat.waitingModel");
+  if (phase?.kind === "waiting_subagents") return t("chat.waitingSubagents");
   if (phase?.kind === "running_command") return t("chat.runningCommand");
   return null;
 }
@@ -139,7 +141,7 @@ function AgentActivityCard({ phase, streamingStage, startedAt, lastActivityAt, w
   let step = phaseLabel(phase, t) ?? t("chat.activityTitle");
   if (waitingForInput) step = t("chat.activityWaitingForInput");
   else if (compacting) step = t("chat.compacting");
-  else if (phase?.kind !== "running_tools" && phase?.kind !== "running_command") {
+  else if (phase?.kind !== "running_tools" && phase?.kind !== "running_command" && phase?.kind !== "waiting_subagents") {
     if (streamingStage === "thinking") step = t("chat.activityModelThinking");
     else if (streamingStage === "toolCall") step = t("chat.generatingToolInput");
     else if (streamingStage === "text") step = t("chat.activityWriting");
@@ -1515,6 +1517,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   }
                   if (message.role === "toolResult" || isGoalOutcomeMessage(message)
                     || (message.role === "custom" && (message.customType === GOAL_CONTINUATION_TYPE
+                      || message.customType === SUBAGENT_RESULTS_TYPE
                       || message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE))) continue;
                   const messageKey = String(entryIds[messageIdx] ?? messageIdx);
                   if (message.role === "bashExecution") {
