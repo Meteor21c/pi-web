@@ -8,7 +8,9 @@ export function isModelThinkingLevel(value: unknown): value is ModelThinkingLeve
 }
 
 export function resolveThinkingLevelOption(level: ThinkingLevelOption, supported: readonly string[]): ThinkingLevelOption {
-  return supported.includes(level) ? level : "auto";
+  if (level === "auto" || supported.includes(level)) return level;
+  const lower = MODEL_THINKING_LEVELS[MODEL_THINKING_LEVELS.indexOf(level) - 1];
+  return lower && lower !== "off" && supported.includes(lower) ? lower : "auto";
 }
 
 export type ModelInput = "text" | "image";

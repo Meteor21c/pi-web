@@ -30,6 +30,7 @@ export interface ContextUsage {
 export interface ModelLike {
   id: string;
   provider: string;
+  contextWindow?: number;
 }
 
 export interface ToolInfo {
@@ -155,6 +156,7 @@ export interface AgentSessionLike {
     beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
     afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
     state?: {
+      model?: ModelLike;
       systemPrompt?: string;
       thinkingLevel?: string;
       streamingMessage?: PiAgentMessage;

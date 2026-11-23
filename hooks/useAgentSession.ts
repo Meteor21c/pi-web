@@ -1210,6 +1210,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [loadSession, syncLiveModel]);
 
+  const refreshLiveContextUsage = useCallback(async (sid: string, signal?: AbortSignal) => {
+    const runId = promptRunIdRef.current;
+    const response = await fetch(`/api/agent/${encodeURIComponent(sid)}`, { signal });
+    if (!response.ok) return;
+    const { state } = await response.json() as { state?: AgentStateResponse };
+    if (sessionHookMountedRef.current && sessionIdRef.current === sid && promptRunIdRef.current === runId
+      && state?.contextUsage !== undefined) setContextUsage(state.contextUsage);
+  }, []);
+
   // Reconcile client streaming state with the server. When SSE events are
   // missed (network drop, mobile tab backgrounded, half-open connection),
   // agent_end never arrives and the UI stays in streaming state forever.
@@ -1342,7 +1351,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             .then((r) => r.json())
             .then((d: { state?: AgentStateResponse }) => {
               syncLiveModel(d.state);
-              if (d.state?.contextUsage !== undefined) setContextUsage(d.state.contextUsage ?? null);
+              if (agentRunningRef.current && d.state?.contextUsage !== undefined) setContextUsage(d.state.contextUsage);
               if (d.state?.systemPrompt !== undefined) setSystemPrompt(d.state.systemPrompt ?? null);
               if (d.state?.extensionStatuses !== undefined) setExtensionStatuses(d.state.extensionStatuses ?? []);
               if (d.state?.extensionWidgets !== undefined) setExtensionWidgets(d.state.extensionWidgets ?? []);
@@ -1364,6 +1373,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (sid) {
           void loadSession(sid);
           void loadGoal(undefined, sid);
+          void refreshLiveContextUsage(sid).catch(() => {});
           scheduleEventStreamClose(sid);
         }
         if (wasRunning) onAgentEnd?.();
@@ -1388,7 +1398,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           // agent_settled event perform the next completion transition.
           if (!sdkAgentActiveRef.current) {
             settleUiStage();
-            if (sid) scheduleEventStreamClose(sid);
+            if (sid) {
+              void refreshLiveContextUsage(sid).catch(() => {});
+              scheduleEventStreamClose(sid);
+            }
           }
         }
         break;
@@ -1569,7 +1582,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (typeof event.id === "string") dispatchExtensionUi({ type: "closed", id: event.id });
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadGoal, loadSession, loadTools, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, syncRunActivity, t, touchRunActivity, updateGoalState, updateWorkMode]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadGoal, loadSession, loadTools, notifyPromptStage, onAgentEnd, refreshLiveContextUsage, scheduleEventStreamClose, scrollToBottom, settleUiStage, syncLiveModel, syncRunActivity, t, touchRunActivity, updateGoalState, updateWorkMode]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[], restoreDraft = true) => {
@@ -1833,6 +1846,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [loadContext]);
 
+  const notifyThinkingFallback = useCallback((level: ThinkingLevelOption, effective: ThinkingLevelOption) => {
+    if (effective === level) return;
+    const fallback = effective === "auto" ? t("chat.thinkingAuto") : effective;
+    addNotice({ message: t("chat.thinkingFellBack", { level, fallback }) });
+  }, [addNotice, t]);
+
   const handleModelChange = useCallback(async (provider: string, modelId: string) => {
     if (isNew) {
       const selectedModel = { provider, modelId };
@@ -1843,10 +1862,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (!sid) {
         const level = thinkingLevelOverrideRef.current;
         const available = modelThinkingLevels[`${provider}:${modelId}`];
-        if (level && available && resolveThinkingLevelOption(level, available) !== level) {
-          thinkingLevelOverrideRef.current = "auto";
-          setThinkingLevel("auto");
-          addNotice({ message: t("chat.thinkingFellBack", { level }) });
+        if (level && available) {
+          const effective = resolveThinkingLevelOption(level, available);
+          thinkingLevelOverrideRef.current = effective;
+          setThinkingLevel(effective);
+          notifyThinkingFallback(level, effective);
         }
         return;
       }
@@ -1854,9 +1874,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const result = await sendAgentCommand<{ thinkingLevel?: ThinkingLevelOption }>(sid, { type: "set_model", provider, modelId });
         if (result.thinkingLevel) {
           setThinkingLevel(result.thinkingLevel);
-          if (result.thinkingLevel === "auto" && thinkingLevelOverrideRef.current && thinkingLevelOverrideRef.current !== "auto") {
-            addNotice({ message: t("chat.thinkingFellBack", { level: thinkingLevelOverrideRef.current }) });
-            thinkingLevelOverrideRef.current = "auto";
+          const level = thinkingLevelOverrideRef.current;
+          if (level) {
+            thinkingLevelOverrideRef.current = result.thinkingLevel;
+            notifyThinkingFallback(level, result.thinkingLevel);
           }
         }
       } catch (e) {
@@ -1874,8 +1895,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const selected = await sendAgentCommand<{ provider: string; id: string; thinkingLevel?: ThinkingLevelOption }>(sid, { type: "set_model", provider, modelId });
       setLiveModel({ provider: selected.provider, modelId: selected.id });
-      if (selected.thinkingLevel === "auto" && thinkingLevel !== "auto") {
-        addNotice({ message: t("chat.thinkingFellBack", { level: thinkingLevel }) });
+      const available = modelThinkingLevels[`${provider}:${modelId}`];
+      if (selected.thinkingLevel && (selected.thinkingLevel === "auto"
+        || (available && resolveThinkingLevelOption(thinkingLevel, available) !== thinkingLevel))) {
+        notifyThinkingFallback(thinkingLevel, selected.thinkingLevel);
       }
       // Pi persists model_change synchronously. Reload the canonical session so
       // the model, thinking level, and active leaf all advance together.
@@ -1896,7 +1919,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       modelSwitchPendingRef.current = false;
       setModelSwitching(false);
     }
-  }, [addNotice, currentModelOverride, isNew, loadSession, modelThinkingLevels, t, thinkingLevel]);
+  }, [addNotice, currentModelOverride, isNew, loadSession, modelThinkingLevels, notifyThinkingFallback, thinkingLevel]);
 
   const handleCompact = useCallback(async () => {
     const sid = sessionIdRef.current;
@@ -2156,7 +2179,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const effective = available ? resolveThinkingLevelOption(level, available) : level;
       thinkingLevelOverrideRef.current = effective;
       setThinkingLevel(effective);
-      if (effective !== level) addNotice({ message: t("chat.thinkingFellBack", { level }) });
+      notifyThinkingFallback(level, effective);
       return;
     }
     const change = Promise.resolve(pendingThinkingChangeRef.current).then(async () => {
@@ -2167,7 +2190,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (sessionIdRef.current !== sid || thinkingChangeVersionRef.current !== version) return;
         setThinkingLevel(result.thinkingLevel);
         if (isNew) thinkingLevelOverrideRef.current = result.thinkingLevel;
-        if (result.thinkingLevel !== level) addNotice({ message: t("chat.thinkingFellBack", { level }) });
+        notifyThinkingFallback(level, result.thinkingLevel);
       } catch (e) {
         console.error("Failed to set thinking level:", e);
         if (thinkingChangeVersionRef.current === version) addNotice({ type: "error", message: t("chat.thinkingChangeFailed") });
@@ -2176,7 +2199,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     pendingThinkingChangeRef.current = change;
     await change;
     if (pendingThinkingChangeRef.current === change) pendingThinkingChangeRef.current = null;
-  }, [addNotice, isNew, modelThinkingLevels, newSessionDefaultModel, t]);
+  }, [addNotice, isNew, modelThinkingLevels, newSessionDefaultModel, notifyThinkingFallback, t]);
 
   const handleWorkModeChange = useCallback(async (mode: WorkMode) => {
     const sid = sessionIdRef.current;
@@ -2443,7 +2466,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   useEffect(() => {
     if (previewOnly) return;
     const controller = new AbortController();
-    const updated = () => { void loadModels(controller.signal).catch(() => {}); };
+    const updated = () => {
+      void loadModels(controller.signal).catch(() => {});
+      const sid = sessionIdRef.current;
+      if (sid) void refreshLiveContextUsage(sid, controller.signal).catch(() => {});
+    };
     window.addEventListener("relay-config-updated", updated);
     window.addEventListener("models-config-updated", updated);
     return () => {
@@ -2451,7 +2478,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       window.removeEventListener("relay-config-updated", updated);
       window.removeEventListener("models-config-updated", updated);
     };
-  }, [loadModels, previewOnly]);
+  }, [loadModels, previewOnly, refreshLiveContextUsage]);
 
   // Load the model list with bounded retries; loadModels exposes each failure.
   useEffect(() => {

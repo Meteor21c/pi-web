@@ -2,9 +2,8 @@ import type { InlineExtension, ModelRuntime } from "@earendil-works/pi-coding-ag
 import type { Api, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { isRelayProviderId, relayModelNeedsResponseRepair } from "./relay-config";
 import { withProviderDefaultThinking } from "./model-auto-reasoning";
-import { capabilityRecord } from "./model-capabilities";
 import { canonicalAnthropicThinkingCompat, canonicalModelOutputTokenLimit } from "./model-capability-catalog";
-import { readModelsConfig } from "./models-config-store";
+import { readConfiguredModel } from "./models-config-store";
 import { applyRelayOutputPolicy, readRelayOutputPreferences } from "./relay-output-policy";
 
 const RECOVERABLE_DELTA_EVENTS = new Set([
@@ -351,11 +350,7 @@ function withRelayAnthropicThinking<M extends Model<Api>>(model: M): M {
 function relayOutputPreferencesForModel(model: Model<Api>) {
   // Pi projects known schema fields into Model; read app-specific preferences
   // from this exact provider and model instead of relying on preserved fields.
-  const providers = capabilityRecord(readModelsConfig().providers);
-  const storedModels = capabilityRecord(providers?.[model.provider])?.models;
-  const storedModel = Array.isArray(storedModels)
-    ? storedModels.find((entry) => capabilityRecord(entry)?.id === model.id) : undefined;
-  const preferences = readRelayOutputPreferences(storedModel);
+  const preferences = readRelayOutputPreferences(readConfiguredModel(model.provider, model.id));
   if (preferences.meteorAgentMaxOutputTokensLimit === undefined) {
     // Legacy files have no source marker; use an available builtin model
     // ceiling even before the user saves or re-synchronizes their group.

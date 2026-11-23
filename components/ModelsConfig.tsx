@@ -56,8 +56,7 @@ import { isRelayProviderId } from "@/lib/relay-config";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import {
   readContextWindowTokens,
-  relayContextWindowCeiling,
-  relayContextWindowLimit,
+  relayDefaultContextWindow,
   resolveRelayContextWindow,
 } from "@/lib/relay-model-policy";
 
@@ -1193,14 +1192,9 @@ function ModelDetail({
   const customContextWindow = readContextWindowTokens(
     relayContextPolicy ? model.meteorAgentContextWindowOverride : model.contextWindow,
   );
-  const defaultContextWindow = relayContextPolicy ? relayContextWindowLimit(model.id, relayFirstTierContextWindow) : 128_000;
-  const contextCeiling = relayContextPolicy ? relayContextWindowCeiling(model.id, relayFirstTierContextWindow) : undefined;
-  const effectiveContextWindow = relayContextPolicy
-    ? resolveRelayContextWindow(model.id, customContextWindow, relayFirstTierContextWindow)
-    : customContextWindow ?? defaultContextWindow;
-  const matchingContextPreset = CONTEXT_WINDOW_PRESETS.find(
-    ({ tokens }) => tokens === customContextWindow && tokens === effectiveContextWindow,
-  );
+  const firstTier = relayContextPolicy ? readContextWindowTokens(relayFirstTierContextWindow) : undefined;
+  const defaultContextWindow = relayContextPolicy ? relayDefaultContextWindow(model.id, firstTier) : 128_000;
+  const matchingContextPreset = CONTEXT_WINDOW_PRESETS.find(({ tokens }) => tokens === customContextWindow);
   const showCustomContextWindow = editingCustomContextWindow || (customContextWindow !== undefined && !matchingContextPreset);
   const autoContextWindowLabel = t("models.contextWindowAuto", { count: defaultContextWindow.toLocaleString(locale) });
   const setContextWindow = (next: number | undefined) => {
@@ -1208,7 +1202,7 @@ function ModelDetail({
       onChange({
         ...model,
         meteorAgentContextWindowOverride: next,
-        contextWindow: resolveRelayContextWindow(model.id, next, relayFirstTierContextWindow),
+        contextWindow: resolveRelayContextWindow(model.id, next, firstTier),
       });
     } else {
       set("contextWindow", next);
@@ -1427,7 +1421,7 @@ function ModelDetail({
             >
               <option value="auto">{autoContextWindowLabel}</option>
               {CONTEXT_WINDOW_PRESETS.map(({ label, tokens }) => (
-                <option key={tokens} value={tokens} disabled={contextCeiling !== undefined && tokens > contextCeiling}>
+                <option key={tokens} value={tokens}>
                   {label}
                 </option>
               ))}
@@ -1445,20 +1439,10 @@ function ModelDetail({
               />
             )}
             <span id={contextHelpId} style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 10 }}>
-              {contextCeiling !== undefined
-                ? t(
-                    readContextWindowTokens(relayFirstTierContextWindow) === undefined
-                      ? "models.contextWindowProtectiveLimit" : "models.contextWindowFirstTier",
-                    { count: contextCeiling.toLocaleString(locale) },
-                  )
+              {firstTier !== undefined
+                ? t("models.contextWindowFirstTier", { count: firstTier.toLocaleString(locale) })
                 : t("models.contextWindowCompaction")}
               {showCustomContextWindow && <> {t("models.contextWindowBlank")}</>}
-              {customContextWindow !== undefined && effectiveContextWindow !== customContextWindow && (
-                <> {t("models.contextWindowClamped", { count: effectiveContextWindow.toLocaleString(locale) })}</>
-              )}
-              {relayContextPolicy && contextCeiling === undefined && customContextWindow !== undefined && customContextWindow > defaultContextWindow && (
-                <> {t("models.contextWindowUnverified")}</>
-              )}
             </span>
           </Field>
           {relayContextPolicy && <Field label={t("models.outputLength")}>
@@ -2768,7 +2752,7 @@ export function ModelsConfig({ onClose, embedded = false, onOpenPlugins }: {
           const gpt = /gpt|codex/i.test(id);
           models.push({
             ...discoveredModel,
-            contextWindow: relayContextWindowLimit(
+            contextWindow: relayDefaultContextWindow(
               id,
               relayGroups.find((group) => group.providerId === providerName)?.contextWindows?.[id],
             ),

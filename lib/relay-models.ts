@@ -16,9 +16,9 @@ import { relayModelCapabilityCompat, type ModelCapabilities } from "./model-capa
 import type { ModelCatalogEntry } from "./model-catalog";
 import {
   RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
-  RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW,
+  RELAY_GPT_DEFAULT_CONTEXT_WINDOW,
   RELAY_OTHER_DEFAULT_CONTEXT_WINDOW,
-  clampRelayContextWindow,
+  relayDefaultContextWindow,
 } from "./relay-model-policy";
 import { isRelayImageGenerationModel } from "./relay-image-generation";
 import {
@@ -33,7 +33,7 @@ export interface RelayModelDef extends ModelCapabilities, RelayOutputPreferences
   name?: string;
   cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow?: number;
-  /** Explicit user preference, before applying the group's first-tier ceiling. */
+  /** Explicit context window chosen by the user. */
   meteorAgentContextWindowOverride?: number;
   maxTokens?: number;
   api?: string;
@@ -46,10 +46,10 @@ export interface RelayModelUpstreamMetadata extends ModelCapabilities {
   maxOutputTokens?: number;
 }
 
-const GPT_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
-const GPT_CODEX_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 100_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
-const GPT_MINI_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 } } as const;
-const GPT_FLAGSHIP_FAMILY = { contextWindow: RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 } } as const;
+const GPT_FAMILY = { contextWindow: RELAY_GPT_DEFAULT_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
+const GPT_CODEX_FAMILY = { contextWindow: RELAY_GPT_DEFAULT_CONTEXT_WINDOW, maxTokens: 100_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
+const GPT_MINI_FAMILY = { contextWindow: RELAY_GPT_DEFAULT_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 } } as const;
+const GPT_FLAGSHIP_FAMILY = { contextWindow: RELAY_GPT_DEFAULT_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 } } as const;
 const OPUS_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } } as const;
 const SONNET_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } as const;
 const HAIKU_FAMILY = { contextWindow: RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } } as const;
@@ -127,7 +127,7 @@ function relayModelFallback(family: "gpt" | "claude" | "other", id: string): Rel
   return TABLE_BY_FAMILY[family].get(id) ?? {
     ...FALLBACK,
     id,
-    contextWindow: family === "gpt" ? RELAY_GPT_FIRST_TIER_CONTEXT_WINDOW : RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
+    contextWindow: relayDefaultContextWindow(id),
   };
 }
 
@@ -178,7 +178,7 @@ export function resolveMixedRelayModels(
       meteorAgentMaxOutputTokensLimit: limit,
       meteorAgentMaxOutputTokensSource: relayLimit === undefined ? "catalog" : "relay",
     };
-    const contextWindow = clampRelayContextWindow(id, model.contextWindow);
+    const contextWindow = model.contextWindow ?? relayDefaultContextWindow(id);
     const compat = api === "anthropic-messages" ? canonicalAnthropicThinkingCompat(id) : relayModelCapabilityCompat(id);
     return [{
       ...model,

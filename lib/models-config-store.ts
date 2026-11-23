@@ -157,6 +157,22 @@ export function readModelsConfig(
   }
 }
 
+export function readConfiguredModel(providerId: string, modelId: string): Record<string, unknown> | undefined {
+  const { providers } = readModelsConfig();
+  const provider = isRecord(providers) ? providers[providerId] : undefined;
+  if (!isRecord(provider) || !Array.isArray(provider.models)) return undefined;
+  return provider.models.find((model) => isRecord(model) && model.id === modelId);
+}
+
+/** Restore manual values that older versions stored alongside a capped runtime window. */
+export function withSavedRelayContextWindow<M extends { provider: string; id: string; contextWindow?: number }>(model: M): M {
+  if (!isRelayProviderId(model.provider)) return model;
+  const stored = readConfiguredModel(model.provider, model.id);
+  const contextWindow = readContextWindowTokens(stored?.meteorAgentContextWindowOverride)
+    ?? readContextWindowTokens(stored?.contextWindow);
+  return contextWindow !== undefined && contextWindow !== model.contextWindow ? { ...model, contextWindow } : model;
+}
+
 export function writeModelsConfig(
   data: Record<string, unknown>,
   modelsPath = getModelsConfigPath(),

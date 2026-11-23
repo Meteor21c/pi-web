@@ -9,6 +9,7 @@ import { existsSync, realpathSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
+import { withSavedRelayContextWindow } from "./models-config-store";
 import { createMeteorAgentBrandExtension, METEORAGENT_REPLY_GUIDANCE, rebrandMeteorAgentSystemPrompt } from "./meteoragent-brand";
 import {
   filterModelScopeByProviders,
@@ -385,6 +386,7 @@ export class AgentSessionWrapper {
       (inner.sessionManager?.getEntries?.() ?? []) as unknown as SessionEntry[],
       this.promptSelection?.mode,
     );
+    this.refreshRelayContextWindow();
     this.installExactSystemPromptContinuation();
     this.installPromptPresetProjection();
     this.installThinkingSelection();
@@ -956,8 +958,18 @@ export class AgentSessionWrapper {
     return branch ? readSessionThinkingSelection(branch) : undefined;
   }
 
+  private refreshRelayContextWindow(): void {
+    const model = this.inner.model;
+    const state = this.inner.agent.state;
+    if (!model || !state) return;
+    const resolved = withSavedRelayContextWindow(model);
+    if (resolved !== model) state.model = resolved;
+  }
+
   private currentThinkingLevel(): ThinkingLevelOption {
-    const level = this.getThinkingSelection() ?? this.inner.agent.state?.thinkingLevel;
+    const selection = this.getThinkingSelection();
+    if (selection) return resolveThinkingLevelOption(selection, this.inner.getAvailableThinkingLevels());
+    const level = this.inner.agent.state?.thinkingLevel;
     return level === "auto" || isModelThinkingLevel(level) ? level : "off";
   }
 
@@ -966,10 +978,13 @@ export class AgentSessionWrapper {
     if (!stream) return;
     this.inner.agent.streamFunction = (model, context, options) => {
       const selection = this.getThinkingSelection();
-      if (!selection || resolveThinkingLevelOption(selection, getSupportedThinkingLevels(model)) !== "auto") {
-        return stream(model, context, options);
+      if (!selection) return stream(model, context, options);
+      const effective = resolveThinkingLevelOption(selection, getSupportedThinkingLevels(model));
+      if (effective === "auto") {
+        return stream(model, context, withProviderDefaultThinking(model, { ...options, reasoning: undefined }, true));
       }
-      return stream(model, context, withProviderDefaultThinking(model, { ...options, reasoning: undefined }, true));
+      if (effective === selection) return stream(model, context, options);
+      return stream(model, context, { ...options, reasoning: effective === "off" ? undefined : effective });
     };
   }
 
@@ -1379,6 +1394,7 @@ export class AgentSessionWrapper {
           if (this.inner.model) {
             this.assertRelayModelAuthorized(this.inner.model.provider, this.inner.model.id);
           }
+          if (freshPrompt) this.refreshRelayContextWindow();
           if (this.extensionUiAbortController.signal.aborted) {
             this.extensionUiAbortController = new AbortController();
           }
@@ -1576,6 +1592,7 @@ export class AgentSessionWrapper {
 
       case "get_state": {
         this.refreshUnstartedPromptSelection();
+        if (!this.isRunning()) this.refreshRelayContextWindow();
         const model = this.inner.model;
         const contextUsage = this.inner.getContextUsage();
         const visibleSystemPrompt = this.getBaseSystemPromptForDisplay();
@@ -1622,7 +1639,7 @@ export class AgentSessionWrapper {
         if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
         const selection = this.getThinkingSelection();
         const previousLevel = this.currentThinkingLevel();
-        await this.inner.setModel(model);
+        await this.inner.setModel(withSavedRelayContextWindow(model));
         const mustFallBack = previousLevel !== "off"
           && resolveThinkingLevelOption(previousLevel, this.inner.getAvailableThinkingLevels()) !== previousLevel;
         const thinkingLevel = selection || mustFallBack
@@ -1742,6 +1759,7 @@ export class AgentSessionWrapper {
 
       case "compact": {
         try {
+          if (!this.isRunning()) this.refreshRelayContextWindow();
           return await this.withFinalIdleReset(() =>
             this.inner.compact(command.customInstructions as string | undefined)
           );
@@ -3091,11 +3109,12 @@ export async function startRpcSession(
     const startupThinking = requestedThinking && startupModel
       ? resolveThinkingLevelOption(requestedThinking, getSupportedThinkingLevels(startupModel))
       : requestedThinking;
+    const sdkThinking = startupThinking ?? initial?.thinkingLevel;
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,
       ...(startupModel ? { model: startupModel } : {}),
-      ...(startupThinking !== "auto" && initial?.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
+      ...(sdkThinking !== undefined && sdkThinking !== "auto" ? { thinkingLevel: sdkThinking } : {}),
       ...(scope.scopedModels.length > 0 ? { scopedModels: [...scope.scopedModels] } : {}),
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
       ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES] } : {}),
