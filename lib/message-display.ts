@@ -39,6 +39,11 @@ export function stoppedWithoutFinalAnswer(message: AssistantMessage): boolean {
   );
 }
 
+export function hasFinalAssistantStop(message: AssistantMessage): boolean {
+  return message.stopReason === "stop"
+    || (message.stopReason === undefined && !message.content.some((block) => block.type === "toolCall"));
+}
+
 /** Errors produced when a Responses SSE connection ends mid-event. */
 export function isTruncatedResponseError(message: string | null): boolean {
   if (!message) return false;
@@ -107,9 +112,7 @@ export function getAssistantTimelineSegments(
     isProgressToolResult?: (block: ToolCallContent) => boolean;
   } = {},
 ): AssistantTimelineSegment[] {
-  const hasFinalStop = message.stopReason === "stop"
-    || (message.stopReason === undefined && !message.content.some((block) => block.type === "toolCall"));
-  const finalTextFrom = options.textMode === "final" && (!options.isStreaming || options.allowStreamingFinal) && hasFinalStop
+  const finalTextFrom = options.textMode === "final" && (!options.isStreaming || options.allowStreamingFinal) && hasFinalAssistantStop(message)
     ? message.content.findLastIndex((block) =>
         !isFinalAnswerBlock(block) && !isEmptyThinkingBlock(block, options),
       ) + 1

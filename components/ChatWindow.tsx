@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, CustomMessage, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { getAssistantErrorMessage, getAssistantTimelineSegments, isMessageGroupAnchor, readGoalOutcomeStatus, shouldShowSettledGoalFinal, stoppedWithoutFinalAnswer } from "@/lib/message-display";
+import { getAssistantErrorMessage, getAssistantTimelineSegments, hasFinalAssistantStop, isMessageGroupAnchor, readGoalOutcomeStatus, shouldShowSettledGoalFinal, stoppedWithoutFinalAnswer } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
@@ -1356,6 +1356,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 actualCost?: number;
                 imageBilling?: ImageBillingSummary;
                 writtenFiles?: WrittenFile[];
+                canForkReply?: boolean;
               } = {}): ReactNode => {
                 const msg = options.messageOverride ?? timelineMessages[idx];
                 const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
@@ -1376,6 +1377,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   }
                 }
                 if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
+                const onFork = options.canForkReply && !previewOnly && !sessionBusy && !isNew ? handleFork : undefined;
                 const view = (
                   <MessageView
                     key={`${keyPrefix}-view-${messageKey}`}
@@ -1390,8 +1392,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     onOpenSession={onOpenSession}
                     entryId={entryIds[idx]}
                     searchBlock={entryIds[idx] === pendingSearchScroll?.entryId ? searchBlock : undefined}
-                    onFork={previewOnly || sessionBusy || isNew ? undefined : handleFork}
-                    forking={forkingEntryId === entryIds[idx]}
+                    onFork={onFork}
+                    forkingEntryId={onFork ? forkingEntryId : undefined}
                     onNavigate={previewOnly || sessionBusy ? undefined : handleNavigate}
                     onEditContent={previewOnly ? undefined : handleEditContent}
                     showTimestamp={showTimestamp}
@@ -1600,22 +1602,23 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 }
                 const finalAssistant = timelineMessages[finalAssistantIdx];
                 if (!isLiveTurn && finalAssistant?.role === "assistant") {
-                  if (canShowFinal && stoppedWithoutFinalAnswer(finalAssistant)) {
-                    const deliveredImage = turnMessages.some((message) =>
-                      message.role === "assistant" && message.content.some((block) =>
-                        block.type === "toolCall" && getDeliveredToolImages(
-                          toolResultsMap.get(block.toolCallId), block.toolName, messageCwd, persistedSessionId ?? undefined,
-                        ).length > 0,
-                      ),
+                  const stoppedWithoutAnswer = canShowFinal && stoppedWithoutFinalAnswer(finalAssistant);
+                  const deliveredImage = stoppedWithoutAnswer && turnMessages.some((message) =>
+                    message.role === "assistant" && message.content.some((block) =>
+                      block.type === "toolCall" && getDeliveredToolImages(
+                        toolResultsMap.get(block.toolCallId), block.toolName, messageCwd, persistedSessionId ?? undefined,
+                      ).length > 0,
+                    ),
+                  );
+                  if (stoppedWithoutAnswer && !deliveredImage) {
+                    rendered.push(
+                      <p key={`no-final-answer-${entryIds[finalAssistantIdx] ?? finalAssistantIdx}`} role="status" className="my-3 border-l-2 border-border pl-3 text-[13px] text-text-muted">
+                        {t("chat.stoppedWithoutFinalAnswer")}
+                      </p>,
                     );
-                    if (!deliveredImage) {
-                      rendered.push(
-                        <p key={`no-final-answer-${entryIds[finalAssistantIdx] ?? finalAssistantIdx}`} role="status" className="my-3 border-l-2 border-border pl-3 text-[13px] text-text-muted">
-                          {t("chat.stoppedWithoutFinalAnswer")}
-                        </p>,
-                      );
-                    }
                   }
+                  const canForkReply = canShowFinal && hasFinalAssistantStop(finalAssistant)
+                    && (finalText.length > 0 || deliveredImage || finalAssistant.content.some((block) => block.type === "image"));
                   const turnContent = turnMessages.flatMap((message) => message.role === "assistant" ? message.content : []);
                   const imageCharges = entryIds.slice(userIdx + 1, endIdx).flatMap((entryId) => imageBillingByAnchor.get(entryId) ?? []);
                   const turnImageBilling = imageCharges.length === 0 ? undefined : imageCharges.reduce((total, charge) => ({
@@ -1626,6 +1629,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   }), { imageCount: 0, chargeCount: 0, matchedChargeCount: 0, actualCost: 0 });
                   rendered.push(renderMessage(finalAssistantIdx, {
                     keyPrefix: "turn-summary",
+                    canForkReply,
                     attachRef: false,
                     blockIndices: [],
                     // Copy only the report visible outside the operation record.

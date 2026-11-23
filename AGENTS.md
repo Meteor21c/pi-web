@@ -133,14 +133,11 @@ hooks/
 - `globalThis` survives Next.js hot-reload; plain module-level Map does not
 - Idle timeout: 10 minutes. Concurrent `startRpcSession()` calls share a single start Promise (`globalThis.__piStartLocks`)
 
-### Fork must destroy the wrapper immediately
-`AgentSession.fork()` **mutates the wrapper's inner state in-place** — after fork, `inner.sessionId` is the *new* session's id. If the wrapper stays alive in the registry under the old id, the next request gets the already-forked state and subsequent forks produce a corrupt `parentSession` chain.
+### Conversation branches
 
-**Fix**: `send("fork")` captures `newSessionId`, then calls `this.destroy()` before returning. The next request for the original session reloads a clean AgentSession from the original file.
-
-### Two kinds of branching — don't confuse them
-- **Fork** ("New session" on user message): creates a new independent `.jsonl` file. Shown as a child in the sidebar tree via `parentSession` header field.
-- **In-session branch** ("Edit from here" / BranchNavigator): calls `navigate_tree` within the same file. Multiple entries share the same `parentId`. Switching between them calls `/api/sessions/[id]/context?leafId=`.
+- The assistant reply action calls `fork_branch` to copy the conversation through the selected reply. The new session has its own `.jsonl` file and a `parentSession` link for the sidebar. The source session keeps its current leaf. `/clone` copies through the active leaf.
+- “Edit from here” calls `navigate_tree` to move before the selected user message. Resending creates a branch within that session. BranchNavigator switches between saved leaves with `/api/sessions/[id]/context?leafId=`.
+- The legacy `fork` command copies the path before its entry and shuts down the source wrapper after creating the child.
 
 ### Session files can be fully rewritten
 `parentSession` in the header is **display metadata only** — has zero effect on chat content. Safe to `writeFileSync` the entire file (pi does this itself during migrations). Used when cascade-reparenting children on delete.

@@ -202,7 +202,7 @@ interface Props {
   /** Segment views leave errors and the turn summary to the parent footer. */
   hideMetadata?: boolean;
   onFork?: (entryId: string) => void;
-  forking?: boolean;
+  forkingEntryId?: string | null;
   onNavigate?: (entryId: string) => Promise<boolean>;
   onEditContent?: (message: UserMessage) => void;
   showTimestamp?: boolean;
@@ -299,12 +299,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, blockIndices, hideMetadata, onFork, forking, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, blockIndices, hideMetadata, onFork, forkingEntryId, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
   if (message.role === "user") {
-    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} onEditContent={onEditContent} />;
+    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} blockIndices={blockIndices} hideMetadata={hideMetadata} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} blockIndices={blockIndices} hideMetadata={hideMetadata} onFork={onFork} forkingEntryId={forkingEntryId} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -339,7 +339,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.blockIndices?.join(",") === next.blockIndices?.join(",")
     && prev.hideMetadata === next.hideMetadata
     && prev.onFork === next.onFork
-    && prev.forking === next.forking
+    && prev.forkingEntryId === next.forkingEntryId
     && prev.onNavigate === next.onNavigate
     && prev.onEditContent === next.onEditContent
     && prev.showTimestamp === next.showTimestamp
@@ -353,13 +353,11 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.sessionId === next.sessionId;
 });
 
-function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, onNavigate, onEditContent }: {
+function UserMessageView({ message, cwd, onOpenFile, entryId, onNavigate, onEditContent }: {
   message: UserMessage;
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
   entryId?: string;
-  onFork?: (entryId: string) => void;
-  forking?: boolean;
   onNavigate?: (entryId: string) => Promise<boolean>;
   onEditContent?: (message: UserMessage) => void;
 }) {
@@ -391,7 +389,6 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
     : "";
 
   const time = formatTime(message.timestamp);
-  const canFork = !!entryId && !!onFork;
   const copyTarget = commandText ?? content;
   const editTarget = commandText ? replaceUserMessageText(message, commandText) : message;
 
@@ -524,114 +521,75 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
       </div>
 
       {/* Bottom row: action buttons + timestamp */}
-      {(time || canFork || canNavigate || true) && (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "flex-end",
+        gap: 6, marginTop: 3,
+      }}>
         <div style={{
-          display: "flex", alignItems: "center", justifyContent: "flex-end",
-          gap: 6, marginTop: 3,
+          display: "flex", gap: 3,
+          opacity: hovered ? 1 : 0,
+          pointerEvents: hovered ? "auto" : "none",
+          transition: "opacity 0.12s",
         }}>
-          <div style={{
-            display: "flex", gap: 3,
-            opacity: hovered ? 1 : 0,
-            pointerEvents: hovered ? "auto" : "none",
-            transition: "opacity 0.12s",
-          }}>
+          <button
+            onClick={copyContent}
+             title={t("i18n.copyMessage")}
+            style={{
+              display: "flex", alignItems: "center", gap: 4,
+              padding: "3px 8px", height: 22,
+              background: "none", border: "none",
+              borderRadius: 5,
+              color: copied ? "var(--accent)" : "var(--text-dim)",
+              cursor: "pointer",
+              fontSize: 11, fontWeight: 400,
+              whiteSpace: "nowrap",
+              transition: "color 0.12s",
+            }}
+            onMouseEnter={(e) => { if (!copied) e.currentTarget.style.color = "var(--accent)"; }}
+            onMouseLeave={(e) => { if (!copied) e.currentTarget.style.color = "var(--text-dim)"; }}
+          >
+            {copied ? (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            )}
+             {copied ? t("i18n.copied") : t("i18n.copy")}
+          </button>
+          {canNavigate && (
             <button
-              onClick={copyContent}
-               title={t("i18n.copyMessage")}
+              onClick={() => void onNavigate!(entryId!).then((navigated) => {
+                if (navigated) onEditContent?.(editTarget);
+              })}
+               title={t("i18n.editFromHereTitle")}
               style={{
                 display: "flex", alignItems: "center", gap: 4,
                 padding: "3px 8px", height: 22,
                 background: "none", border: "none",
                 borderRadius: 5,
-                color: copied ? "var(--accent)" : "var(--text-dim)",
+                color: "var(--text-dim)",
                 cursor: "pointer",
                 fontSize: 11, fontWeight: 400,
                 whiteSpace: "nowrap",
                 transition: "color 0.12s",
               }}
-              onMouseEnter={(e) => { if (!copied) e.currentTarget.style.color = "var(--accent)"; }}
-              onMouseLeave={(e) => { if (!copied) e.currentTarget.style.color = "var(--text-dim)"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; }}
             >
-              {copied ? (
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              ) : (
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                </svg>
-              )}
-               {copied ? t("i18n.copied") : t("i18n.copy")}
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 10 20 15 15 20" />
+                <path d="M4 4v7a4 4 0 0 0 4 4h12" />
+              </svg>
+               {t("i18n.editFromHere")}
             </button>
-          </div>
-          {(canFork || canNavigate) && (
-            <div style={{
-              display: "flex", gap: 3,
-              opacity: (hovered || forking) ? 1 : 0,
-              pointerEvents: (hovered || forking) ? "auto" : "none",
-              transition: "opacity 0.12s",
-            }}>
-              {canNavigate && (
-                <button
-                  onClick={() => void onNavigate!(entryId!).then((navigated) => {
-                    if (navigated) onEditContent?.(editTarget);
-                  })}
-                   title={t("i18n.editFromHereTitle")}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 4,
-                    padding: "3px 8px", height: 22,
-                    background: "none", border: "none",
-                    borderRadius: 5,
-                    color: "var(--text-dim)",
-                    cursor: "pointer",
-                    fontSize: 11, fontWeight: 400,
-                    whiteSpace: "nowrap",
-                    transition: "color 0.12s",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="15 10 20 15 15 20" />
-                    <path d="M4 4v7a4 4 0 0 0 4 4h12" />
-                  </svg>
-                   {t("i18n.editFromHere")}
-                </button>
-              )}
-              {canFork && (
-                <button
-                  onClick={() => { onFork!(entryId!); }}
-                  disabled={forking}
-                   title={forking ? t("i18n.creatingSession") : t("i18n.newSessionTitle")}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 4,
-                    padding: "3px 8px", height: 22,
-                    background: "none", border: "none",
-                    borderRadius: 5,
-                    color: forking ? "var(--accent)" : "var(--text-dim)",
-                    cursor: forking ? "not-allowed" : "pointer",
-                    fontSize: 11, fontWeight: 400,
-                    whiteSpace: "nowrap",
-                    transition: "color 0.12s",
-                  }}
-                  onMouseEnter={(e) => { if (!forking) e.currentTarget.style.color = "var(--accent)"; }}
-                  onMouseLeave={(e) => { if (!forking) e.currentTarget.style.color = "var(--text-dim)"; }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="6" y1="3" x2="6" y2="15" />
-                    <circle cx="18" cy="6" r="3" />
-                    <circle cx="6" cy="18" r="3" />
-                    <path d="M18 9a9 9 0 0 1-9 9" />
-                  </svg>
-                   {forking ? t("i18n.creating") : t("i18n.newSession")}
-                </button>
-              )}
-            </div>
           )}
-          {time && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{time}</span>}
         </div>
-      )}
+        {time && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{time}</span>}
+      </div>
     </div>
   );
 }
@@ -651,6 +609,8 @@ function AssistantMessageView({
   searchBlock,
   blockIndices,
   hideMetadata = false,
+  onFork,
+  forkingEntryId,
   actualCost,
   usageOverride,
   showModel = true,
@@ -672,6 +632,8 @@ function AssistantMessageView({
   searchBlock?: AssistantContentBlock;
   blockIndices?: number[];
   hideMetadata?: boolean;
+  onFork?: (entryId: string) => void;
+  forkingEntryId?: string | null;
   actualCost?: number;
   usageOverride?: AgentUsage;
   showModel?: boolean;
@@ -680,6 +642,8 @@ function AssistantMessageView({
   writtenFiles?: WrittenFile[];
 }) {
   const { t } = useI18n();
+  const canFork = !!onFork && !!entryId && !isStreaming && !hideMetadata;
+  const forking = !!forkingEntryId && forkingEntryId === entryId;
   const time = showTimestamp ? formatTime(message.timestamp) : null;
   const blockItems = useMemo(() => (message.content ?? [])
     .map((block, originalIndex) => ({ block, originalIndex }))
@@ -792,7 +756,7 @@ function AssistantMessageView({
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  if (blocks.length === 0 && !isStreaming && !providerError && !usageOverride && !imageBilling && !writtenFiles?.length && !textContent) return null;
+  if (blocks.length === 0 && !isStreaming && !providerError && !usageOverride && !imageBilling && !writtenFiles?.length && !textContent && !canFork) return null;
 
   return (
     <div
@@ -881,7 +845,7 @@ function AssistantMessageView({
       )}
 
       {!hideMetadata && <div style={{
-        display: "flex", alignItems: "center", gap: 8, marginTop: 4,
+        display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 4,
       }}>
       {!isStreaming && (() => {
           const usage = usageOverride ?? message.usage;
@@ -997,6 +961,22 @@ function AssistantMessageView({
               </svg>
             )}
              {copied ? t("i18n.copied") : t("i18n.copy")}
+          </button>
+        )}
+        {canFork && (
+          <button
+            type="button"
+            onClick={() => onFork(entryId)}
+            disabled={Boolean(forkingEntryId)}
+            aria-busy={forking || undefined}
+            title={t(forking ? "i18n.creatingSession" : "chat.branchFromReplyHint")}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs text-text-muted transition-colors hover:bg-bg-hover hover:text-text disabled:cursor-wait disabled:opacity-60"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 6v12m0-3h6a6 6 0 0 0 6-6" />
+              <circle cx="6" cy="4" r="2" /><circle cx="6" cy="20" r="2" /><circle cx="18" cy="7" r="2" />
+            </svg>
+            {t(forking ? "i18n.creating" : "chat.branchFromReply")}
           </button>
         )}
         {time && !isStreaming && (

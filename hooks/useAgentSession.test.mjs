@@ -161,13 +161,20 @@ test("fresh sessions use the preference while persisted and live sessions restor
   assert.doesNotMatch(loadToolsSource, /setPreferredToolPreset/);
 });
 
-test("first user messages expose both branch actions and edit before their own entry", () => {
+test("forks from a final assistant reply and edits before the original user message", () => {
+  const forkSource = source.slice(
+    source.indexOf("  const handleFork = useCallback"),
+    source.indexOf("  const handleNavigate = useCallback"),
+  );
   const navigateSource = source.slice(
     source.indexOf("  const handleNavigate = useCallback"),
     source.indexOf("  const handleLeafChange = useCallback"),
   );
 
-  assert.match(chatWindowSource, /onFork=\{sessionBusy \|\| isNew \? undefined : handleFork\}/);
+  assert.match(chatWindowSource, /const onFork = options\.canForkReply && !previewOnly && !sessionBusy && !isNew \? handleFork : undefined/);
+  assert.match(chatWindowSource, /renderMessage\(finalAssistantIdx, \{\s*keyPrefix: "turn-summary",\s*canForkReply,/);
+  assert.match(forkSource, /type: "fork_branch",\s*entryId/);
+  assert.match(forkSource, /forkPendingRef\.current \|\| agentRunningRef\.current \|\| bashRunningRef\.current/);
   assert.doesNotMatch(chatWindowSource, /idx === 0 && msg\.role === "user"/);
   assert.doesNotMatch(chatWindowSource, /prevAssistantEntryId/);
   assert.match(navigateSource, /type: "navigate_tree",\s*targetId: entryId/);

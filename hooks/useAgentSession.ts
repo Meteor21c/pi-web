@@ -370,6 +370,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const eventStreamGraceGenerationRef = useRef(0);
   const eventStreamGraceActiveRef = useRef(false);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
+  const forkPendingRef = useRef(false);
   const sessionPropIdRef = useRef<string | null>(session?.id ?? null);
   const agentRunningRef = useRef(false);
   const runClockRef = useRef<RunClock | null>(null);
@@ -1797,25 +1798,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, []);
 
   const handleFork = useCallback(async (entryId: string) => {
-    if (bashRunningRef.current) return;
+    if (forkPendingRef.current || agentRunningRef.current || bashRunningRef.current) return;
     const sid = sessionIdRef.current;
     if (!sid) return;
+    forkPendingRef.current = true;
     setForkingEntryId(entryId);
     try {
       const result = await sendAgentCommand<{ cancelled?: boolean; newSessionId?: string }>(sid, {
-        type: "fork",
+        type: "fork_branch",
         entryId,
       });
-      const { cancelled, newSessionId } = result ?? {};
-      if (!cancelled && newSessionId) {
-        onSessionForked?.(newSessionId);
+      if (result?.cancelled || !result?.newSessionId) throw new Error(t("chat.quoteForkFailed"));
+      if (sessionHookMountedRef.current && sessionIdRef.current === sid) onSessionForked?.(result.newSessionId);
+    } catch {
+      if (sessionHookMountedRef.current && sessionIdRef.current === sid) {
+        addNotice({ type: "error", message: t("chat.quoteForkFailed") });
       }
-    } catch (e) {
-      console.error("Fork failed:", e);
     } finally {
-      setForkingEntryId(null);
+      forkPendingRef.current = false;
+      if (sessionHookMountedRef.current) setForkingEntryId(null);
     }
-  }, [onSessionForked]);
+  }, [addNotice, onSessionForked, t]);
 
   const handleNavigate = useCallback(async (entryId: string): Promise<boolean> => {
     if (bashRunningRef.current) return false;
