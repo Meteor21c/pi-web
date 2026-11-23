@@ -10,6 +10,7 @@ import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, isEmptyThinkingBlock, isTruncatedResponseError } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { isEditToolName } from "@/lib/tool-names";
+import { USER_QUESTION_TOOL, type UserQuestionResult } from "@/lib/user-questions";
 import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
@@ -1188,9 +1189,32 @@ function SubagentRunRow({ run, onOpenSession }: { run: SubagentToolDetails; onOp
   );
 }
 
+function UserQuestionSummary({ result }: { result?: ToolResultMessage }) {
+  const { t } = useI18n();
+  const details = result?.details as UserQuestionResult | undefined;
+  if (details?.status === "answered" && Array.isArray(details.answers)) {
+    return (
+      <details className="my-1 min-w-0 rounded-md border border-border px-3 py-2 text-xs text-text-muted">
+        <summary className="cursor-pointer">{t("chat.userQuestion.answered")}</summary>
+        <dl className="mt-2 space-y-2 [overflow-wrap:anywhere]">
+          {details.answers.map(({ question, answer }, index) => (
+            <div key={index}>
+              <dt className="font-medium text-text">{question}</dt>
+              <dd className="whitespace-pre-wrap">{answer}</dd>
+            </div>
+          ))}
+        </dl>
+      </details>
+    );
+  }
+  const key = !result ? "waiting" : details?.status === "skipped" ? "skipped" : "unavailable";
+  return <div className="my-1 px-1 text-xs text-text-muted">{t(`chat.userQuestion.${key}`)}</div>;
+}
+
 function ToolCallBlock({ block, result, onOpenSession, cwd, sessionId }: { block: ToolCallContent; result?: ToolResultMessage; onOpenSession?: (sessionId: string) => void; cwd?: string; sessionId?: string }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  if (block.toolName === USER_QUESTION_TOOL) return <UserQuestionSummary result={result} />;
   const isStreamingInput = block.rawInput !== undefined;
   const isEditTool = isEditToolName(block.toolName);
   const resultDiff = expanded && result && !result.isError ? getResultDiff(result) : null;

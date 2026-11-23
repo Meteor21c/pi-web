@@ -106,7 +106,7 @@ function normalizeQueuedMessages(q?: { steering?: string[]; followUp?: string[] 
   return { steering: q?.steering ?? [], followUp: q?.followUp ?? [] };
 }
 
-type ExtensionUiDialogRequest = Extract<ExtensionUiRequest, { method: "select" | "confirm" | "input" | "editor" }>;
+type ExtensionUiDialogRequest = Exclude<BlockingExtensionUiRequest, { method: "custom" }>;
 type ExtensionUiCustomRequest = Extract<ExtensionUiRequest, { method: "custom" }>;
 export type NoticeType = "info" | "success" | "warning" | "error";
 
@@ -947,7 +947,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     response: ExtensionUiAnswer,
   ) => {
     const sid = sessionIdRef.current;
-    if (!sid || pendingExtensionAnswers.current.has(request.id)) return;
+    if (!sid || pendingExtensionAnswers.current.has(request.id)) return false;
     pendingExtensionAnswers.current.add(request.id);
     try {
       // Advance the queue only when the server closes this request. A failed
@@ -957,8 +957,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         id: request.id,
         ...response,
       });
+      if (request.method === "question") dispatchExtensionUi({ type: "closed", id: request.id });
+      return true;
     } catch (e) {
       console.error("Failed to send extension UI response:", e);
+      return false;
     } finally {
       pendingExtensionAnswers.current.delete(request.id);
     }

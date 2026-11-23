@@ -14,6 +14,7 @@ Customer downloads: [dl.meteor21c.fun](https://dl.meteor21c.fun/)
 - **Git worktrees**: switch checkouts from the sidebar while keeping sessions from the same repository grouped together.
 - **Friendly account setup**: sign in to Meteor API and sync API-key groups and models without editing provider JSON.
 - **Web-based configuration**: manage accounts, models, model tests, plugin packages, and skills without leaving MeteorAgent.
+- **Clarifying questions** appear above the composer when the assistant needs a decision to continue. With tools enabled, you can pick an option, write an answer, or skip and return to the same task.
 - **English, Simplified Chinese, and Traditional Chinese UI**: MeteorAgent follows the browser language initially and provides a language switcher in the top bar.
 
 ## Quick Start

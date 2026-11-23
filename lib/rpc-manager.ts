@@ -78,6 +78,7 @@ import { readSessionGoal, updateSessionGoal, updateSessionGoalFromRun, type Sess
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE, type GoalOutcomeStatus } from "./session-goal-types";
 import { stoppedWithoutFinalAnswer } from "./message-display";
 import { TURN_TIMING_TYPE, type RunActivity } from "./session-timing";
+import { normalizeUserQuestions, readUserQuestionAnswers, USER_QUESTION_TOOL, type UserQuestion, type UserQuestionAnswer, type UserQuestionResult } from "./user-questions";
 import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
   isWorkMode, promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection, type WorkMode,
@@ -330,6 +331,7 @@ export class AgentSessionWrapper {
   private activeToolEvents = new Map<string, AgentEvent>();
   private pendingUiResponses = new Map<string, PendingUiResponse>();
   private pendingUiRequests = new Map<string, AgentEvent>();
+  private readonly skippedUserQuestions = new Set<string>();
   private activeCustomUis = new Map<string, ActiveCustomUi>();
   private extensionUiAbortController = new AbortController();
   private computerUseApprovalRun?: ComputerUseApprovalRun;
@@ -448,6 +450,72 @@ export class AgentSessionWrapper {
       this.runTiming.lastActivityAt = Math.max(this.runTiming.lastActivityAt, activityAt);
     }
     this.emit({ ...subagentStatusEvent(run), activityAt });
+  }
+
+  static userQuestionTool(getWrapper: () => AgentSessionWrapper | undefined) {
+    return defineTool({
+      name: USER_QUESTION_TOOL,
+      label: "Ask the user",
+      exposure: "model-only",
+      description: "Show a question dialog and wait for the user's reply. Use this for missing information or a consequential choice that context and reasonable assumptions cannot resolve.",
+      promptSnippet: "Ask for essential information or a user decision",
+      promptGuidelines: [
+        "Use available context and safe, reversible assumptions for ordinary details. Ask only when the answer would materially change the task or unblock it.",
+        "Ask in the user's language with plain wording. Group related questions in one call. Include meaningful choices when available. The user can always write their own answer.",
+        "Call this tool by itself before doing work that depends on the answer. Use the existing approval controls for operations that require authorization.",
+      ],
+      parameters: Type.Object({
+        questions: Type.Array(Type.Object({
+          question: Type.String({ minLength: 1, maxLength: 300 }),
+          options: Type.Optional(Type.Array(Type.Object({
+            label: Type.String({ minLength: 1, maxLength: 80 }),
+            description: Type.Optional(Type.String({ maxLength: 200 })),
+          }), { minItems: 2, maxItems: 4 })),
+        }), { minItems: 1, maxItems: 3 }),
+      }),
+      async execute(_toolCallId, { questions }, signal) {
+        const wrapper = getWrapper();
+        if (!wrapper?.isRunning()) throw new Error("Questions require an active chat task.");
+        const answers = await wrapper.askUser(normalizeUserQuestions(questions), signal);
+        const details: UserQuestionResult = answers ? { status: "answered", answers } : { status: "skipped" };
+        return {
+          content: [{
+            type: "text",
+            text: answers
+              ? "The user answered the clarification in this task.\n" + JSON.stringify(answers)
+              : "The user skipped the clarification. Continue wherever a safe assumption works. If an answer is essential, explain what you still need and wait for a new user message. In Goal mode, report the blocker. Do not repeat the skipped question in this run.",
+          }],
+          details,
+        };
+      },
+    });
+  }
+
+  private async askUser(questions: UserQuestion[], signal?: AbortSignal): Promise<UserQuestionAnswer[] | null> {
+    if ([...this.pendingUiRequests.values()].some((request) => request.method === "question")) {
+      throw new Error("A question is already waiting for the user's answer.");
+    }
+    const keys = questions.map(({ question }) => question.replace(/\s+/g, " ").toLowerCase());
+    if (keys.some((key) => this.skippedUserQuestions.has(key))) {
+      throw new Error("The user already skipped this question. Continue safely or explain the outstanding blocker.");
+    }
+    const goal = this.goalRun;
+    if (goal?.report?.status === "complete") goal.report = undefined;
+    const answers = await this.requestExtensionUi<UserQuestionAnswer[] | null>(
+      { method: "question", questions },
+      null,
+      (response) => "cancelled" in response && response.cancelled === true
+        ? null
+        : readUserQuestionAnswers(questions, "answers" in response ? response.answers : undefined),
+      undefined,
+      signal,
+    );
+    if (answers === null) {
+      for (const key of keys) this.skippedUserQuestions.add(key);
+    } else if (goal && this.goalRun === goal && goal.report?.status === "blocked") {
+      goal.report = undefined;
+    }
+    return answers;
   }
 
   static goalExtension(getWrapper: () => AgentSessionWrapper | undefined): InlineExtension {
@@ -753,6 +821,7 @@ export class AgentSessionWrapper {
 
   private beginRunTiming(): void {
     if (this.runTiming) return;
+    this.skippedUserQuestions.clear();
     const startedAt = Date.now();
     this.runTiming = { startedAt, startedMonotonic: performance.now(), lastActivityAt: startedAt, sawUser: false };
   }
@@ -1059,6 +1128,8 @@ export class AgentSessionWrapper {
   private installPromptPresetProjection(): void {
     const previousTransform = this.inner.agent.transformContext;
     this.inner.agent.transformContext = async (messages, signal) => {
+      // Pi can enter the next model step after an interrupted tool batch.
+      signal?.throwIfAborted();
       const current = messages.filter((message) => {
         if (message.role !== "custom") return true;
         if (message.customType === GOAL_OUTCOME_TYPE || message.customType === TURN_TIMING_TYPE) return false;
@@ -1069,6 +1140,7 @@ export class AgentSessionWrapper {
         return true;
       });
       const transformed = previousTransform ? await previousTransform(current, signal) : current;
+      signal?.throwIfAborted();
       const subagentTask = this.subagentTask;
       if (subagentTask?.hasUnreadResults) {
         // A sibling goal-report tool in the same batch has not seen these results.
@@ -1181,8 +1253,15 @@ export class AgentSessionWrapper {
       return projectedMessages;
     };
     const previousBeforeTool = this.inner.agent.beforeToolCall;
-    this.inner.agent.beforeToolCall = async (context, signal) =>
-      this.guardToolCall(context.toolCall.name) ?? await previousBeforeTool?.(context, signal);
+    this.inner.agent.beforeToolCall = async (context, signal) => {
+      const blockingQuestion = context.assistantMessage?.content.find((block) => block.type === "toolCall" && block.name === USER_QUESTION_TOOL);
+      if (blockingQuestion?.type === "toolCall"
+        && (context.toolCall.name !== USER_QUESTION_TOOL || blockingQuestion.id !== context.toolCall.id)
+        && this.inner.getActiveToolNames().includes(USER_QUESTION_TOOL)) {
+        return { block: true, reason: "Wait for the user's answer before making another tool call." };
+      }
+      return this.guardToolCall(context.toolCall.name) ?? await previousBeforeTool?.(context, signal);
+    };
   }
 
   private getBaseSystemPromptForDisplay(): string {
@@ -1195,13 +1274,14 @@ export class AgentSessionWrapper {
 
   private allowedPlanTools(): Set<string> {
     return new Set(this.inner.getAllTools().filter(({ name, sourceInfo }) =>
-      PLAN_TOOL_NAMES.has(name) && sourceInfo?.source === "builtin" && sourceInfo.path === `builtin:${name}`,
+      (PLAN_TOOL_NAMES.has(name) && sourceInfo?.source === "builtin" && sourceInfo.path === `builtin:${name}`)
+      || (name === USER_QUESTION_TOOL && sourceInfo?.source === "sdk" && sourceInfo.path === `<sdk:${name}>`),
     ).map(({ name }) => name));
   }
 
   private guardToolCall(name: string): { block: true; reason: string } | undefined {
     if (this.workModeState.workMode === "plan" && !this.allowedPlanTools().has(name)) {
-      return { block: true, reason: "计划模式仅允许读取和搜索文件。要执行操作，请切换到自动或目标模式后再发送新消息。" };
+      return { block: true, reason: "计划模式只允许读取、搜索和向用户提问。要执行操作，请切换到自动或目标模式后再发送新消息。" };
     }
     if (SUBAGENT_CONTROL_TOOLS.has(name) && this.effectiveSubagentMode() === "off") {
       return { block: true, reason: "Subagents are disabled for this task." };
@@ -1270,7 +1350,7 @@ export class AgentSessionWrapper {
     const toolNames = this.configuredToolNames ??= this.inner.getActiveToolNames();
     const planTools = this.workModeState.workMode === "plan" ? this.allowedPlanTools() : undefined;
     const selected = this.suppressCompletionNotifications ? toolNames
-      : planTools ? (this.useDefaultPlanTools ? [...planTools] : toolNames.filter((name) => planTools.has(name)))
+      : planTools ? (this.useDefaultPlanTools ? [...planTools] : [...new Set([...toolNames, USER_QUESTION_TOOL])].filter((name) => planTools.has(name)))
       : withExtensionTools(this.inner, toolNames);
     this.inner.setActiveToolsByName(this.effectiveSubagentMode(selected) === "off"
       ? selected.filter((name) => !SUBAGENT_CONTROL_TOOLS.has(name))
@@ -1889,7 +1969,7 @@ export class AgentSessionWrapper {
         const all: ToolInfo[] = this.inner.getAllTools();
         const active = new Set<string>(this.inner.getActiveToolNames());
         const configured = new Set(this.configuredToolNames ?? active);
-        return all.filter((t) => t.name !== GOAL_REPORT_TOOL).map((t) => ({
+        return all.filter((t) => t.name !== GOAL_REPORT_TOOL && t.name !== USER_QUESTION_TOOL).map((t) => ({
           ...t,
           active: active.has(t.name),
           ...(this.workModeState.workMode === "plan" ? { configuredActive: configured.has(t.name) } : {}),
@@ -3190,6 +3270,9 @@ export async function startRpcSession(
       ...(sdkThinking !== undefined && sdkThinking !== "auto" ? { thinkingLevel: sdkThinking } : {}),
       ...(scope.scopedModels.length > 0 ? { scopedModels: [...scope.scopedModels] } : {}),
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
+      ...(!chatOnly && !subagentResources ? {
+        customTools: [AgentSessionWrapper.userQuestionTool(() => registry.get(sessionManager.getSessionId()))],
+      } : {}),
       ...(subagentResources ? { excludeTools: [...SUBAGENT_CONTROL_TOOL_NAMES] } : {}),
     });
     const effectiveThinking = startupThinking && inner.model

@@ -19,7 +19,8 @@ queued follow-ups and tool continuations keep the running task's mode.
 Modes are independent of presets:
 
 - Auto keeps the normal tool policy and task behavior.
-- Plan analyzes and produces a plan with available built-in read-only tools.
+- Plan analyzes and produces a plan with built-in read-only tools and can ask
+  the user to resolve decisions that affect the plan.
 - Goal tracks one objective above the composer. The user can start, pause, resume,
   edit, complete, or cancel it. A completed or cancelled objective can be replaced.
 
@@ -131,8 +132,9 @@ an explicit output limit. Ordinary relay prompts retain their configured output
 policy.
 
 Plan mode filters active tools and provider tool definitions to Pi's built-in
-read/grep/find/ls. The tool guards check both the name and its SDK provenance,
-including in nested calls. Web shell commands and slash commands are blocked.
+read/grep/find/ls and Magent's question tool. The tool guards check both the name
+and its SDK provenance, including in nested calls. Web shell commands and slash
+commands are blocked.
 The restriction does not sandbox installed extensions or revoke their OS user
 permissions; their lifecycle code still runs under the existing plugin policy.
 

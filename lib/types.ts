@@ -1,5 +1,6 @@
 // Types mirrored from pi-mono coding-agent session-manager
 import type { WorkMode } from "./prompt-presets";
+import type { UserQuestion, UserQuestionChoice } from "./user-questions";
 
 export interface SessionHeader {
   type: "session";
@@ -123,6 +124,12 @@ export type ExtensionUiRequest =
   | {
       type: "extension_ui_request";
       id: string;
+      method: "question";
+      questions: UserQuestion[];
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
       method: "select";
       title: string;
       options: string[];
@@ -201,11 +208,12 @@ export type ExtensionUiRequest =
 
 export type BlockingExtensionUiRequest = Extract<
   ExtensionUiRequest,
-  { method: "select" | "confirm" | "input" | "editor" | "custom" }
+  { method: "select" | "confirm" | "input" | "editor" | "custom" | "question" }
 >;
 
 export type ExtensionUiAnswer =
   | { value: string }
+  | { answers: UserQuestionChoice[] }
   | { confirmed: boolean; rememberForRun?: true }
   | { cancelled: true };
 

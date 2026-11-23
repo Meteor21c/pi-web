@@ -10,6 +10,7 @@ import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-fi
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
 import type { WorkMode } from "@/lib/prompt-presets";
+import { USER_QUESTION_TOOL } from "@/lib/user-questions";
 import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
 import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, SUBAGENT_RESULTS_TYPE, type SubagentMode } from "@/lib/subagent-mode";
@@ -21,6 +22,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ApprovalPolicySelector } from "./ApprovalPolicySelector";
 import { SessionGoalTracker } from "./SessionGoalTracker";
+import { UserQuestionDialog } from "./UserQuestionDialog";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { AnsiText } from "./AnsiText";
@@ -91,6 +93,7 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
         : /^(bash|powershell)$/.test(name) ? "chat.runningCommand"
         : /^(web_search|get_search_content)$/.test(name) ? "chat.activitySearching"
         : name === "get_subagent_result" ? "chat.waitingSubagents"
+        : name === USER_QUESTION_TOOL ? "chat.userQuestion.waiting"
         : name === "image_generate" ? "chat.activityGeneratingImage"
         : name.startsWith("computer_use_") ? "chat.activityUsingComputer"
         : name.startsWith("document_") ? "chat.activityProcessingDocument"
@@ -1934,9 +1937,10 @@ function NoticeShelf({ notices, floating = false, onPauseChange }: { notices: No
   );
 }
 
-type ExtensionDialogRequest = Extract<ExtensionUiRequest, { method: "select" | "confirm" | "input" | "editor" }>;
+type ExtensionDialogRequest = Exclude<BlockingExtensionUiRequest, { method: "custom" }>;
+type PluginDialogRequest = Exclude<ExtensionDialogRequest, { method: "question" }>;
 
-function getExtensionDialogSummary(request: ExtensionDialogRequest): string | undefined {
+function getExtensionDialogSummary(request: PluginDialogRequest): string | undefined {
   if (request.method === "select" && request.options.length > 0) return request.options[0];
   if (request.method === "confirm") {
     const firstLine = request.message.split("\n").find((line) => line.trim());
@@ -1950,7 +1954,19 @@ function ExtensionDialog({
   onRespond,
 }: {
   request: ExtensionDialogRequest;
-  onRespond: (request: ExtensionDialogRequest, response: ExtensionUiAnswer) => void;
+  onRespond: (request: ExtensionDialogRequest, response: ExtensionUiAnswer) => Promise<boolean>;
+}) {
+  return request.method === "question"
+    ? <UserQuestionDialog request={request} onRespond={(response) => onRespond(request, response)} />
+    : <PluginExtensionDialog request={request} onRespond={onRespond} />;
+}
+
+function PluginExtensionDialog({
+  request,
+  onRespond,
+}: {
+  request: PluginDialogRequest;
+  onRespond: (request: PluginDialogRequest, response: ExtensionUiAnswer) => void;
 }) {
   const { t } = useI18n();
   const [value, setValue] = useState(request.method === "editor" ? request.prefill ?? "" : "");

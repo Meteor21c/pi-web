@@ -1056,9 +1056,8 @@ export function AppShell() {
     deliverSessionNotification({
       targetSession: selectedSession,
       title: translate("i18n.attentionNeeded"),
-      body: request.method === "custom"
-        ? translate("i18n.extensionInputNeeded")
-        : request.title,
+      body: request.method === "question" ? translate("chat.userQuestion.title")
+        : request.method === "custom" ? translate("i18n.extensionInputNeeded") : request.title,
       tag: `pi-extension-ui:${request.id}`,
     });
   }, [deliverSessionNotification, selectedSession, translate]);
