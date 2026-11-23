@@ -20,6 +20,10 @@ type BuiltinModel = Model<Api>;
 const canonicalProviders = new Set(["openai", "openai-codex", "anthropic", "google", "xai", "deepseek"]);
 let exactModels: Map<string, BuiltinModel[]> | undefined;
 
+function canonicalModelId(id: string): string {
+  return id.trim().toLowerCase().replace(/^claude-fable-5\.1$/, "claude-fable-5-1");
+}
+
 function exactBuiltinModels(id: string): BuiltinModel[] {
   if (!exactModels) {
     exactModels = new Map();
@@ -35,10 +39,18 @@ function exactBuiltinModels(id: string): BuiltinModel[] {
   return exactModels.get(id.trim().toLowerCase()) ?? [];
 }
 
+/** Keep the Anthropic thinking format without inheriting direct-provider features. */
+export function canonicalAnthropicThinkingCompat(id: string): { forceAdaptiveThinking: true } | undefined {
+  const native = exactBuiltinModels(canonicalModelId(id)).find((model) =>
+    model.provider === "anthropic" && model.api === "anthropic-messages");
+  return (native as Model<"anthropic-messages"> | undefined)?.compat?.forceAdaptiveThinking === true
+    ? { forceAdaptiveThinking: true } : undefined;
+}
+
 /** A model spec is not a relay entitlement; only use exact canonical entries,
  * never another intermediary's limits or a fuzzy match. */
 export function canonicalModelOutputTokenLimit(id: string, api: string | undefined, catalog: readonly ModelCatalogEntry[] = []): number | undefined {
-  const normalized = id.trim().toLowerCase().replace(/^claude-fable-5\.1$/, "claude-fable-5-1");
+  const normalized = canonicalModelId(id);
   const provider = api === "anthropic-messages" ? "anthropic"
     : api === "openai-responses" ? "openai"
     : api === "openai-completions" && /^(?:gpt-|codex(?:-|$))/.test(normalized) ? "openai"
@@ -76,7 +88,7 @@ function agreement<T>(values: T[], key: (value: T) => string): T | undefined {
 }
 
 export function builtinModelCapabilities({ id, provider, baseUrl, api }: ModelLookup): ModelCapabilities {
-  const normalizedId = id.trim().toLowerCase().replace(/^claude-fable-5\.1$/, "claude-fable-5-1");
+  const normalizedId = canonicalModelId(id);
   const matches = exactBuiltinModels(normalizedId);
   const direct = matches.find((model) => model.provider === provider)
     ?? matches.find((model) => baseUrl && hostname(model.baseUrl) === hostname(baseUrl))

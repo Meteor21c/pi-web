@@ -3,7 +3,7 @@ import type { Api, FetchFunction, Model } from "@earendil-works/pi-ai";
 import { isRelayProviderId, relayModelNeedsResponseRepair } from "./relay-config";
 import { withProviderDefaultThinking } from "./model-auto-reasoning";
 import { capabilityRecord } from "./model-capabilities";
-import { canonicalModelOutputTokenLimit } from "./model-capability-catalog";
+import { canonicalAnthropicThinkingCompat, canonicalModelOutputTokenLimit } from "./model-capability-catalog";
 import { readModelsConfig } from "./models-config-store";
 import { applyRelayOutputPolicy, readRelayOutputPreferences } from "./relay-output-policy";
 
@@ -339,6 +339,15 @@ function withRelayRepairFetch<T extends { fetch?: FetchFunction }>(options: T | 
   } as T;
 }
 
+/** Upgrade the request model for relay groups saved before this flag was synced. */
+function withRelayAnthropicThinking<M extends Model<Api>>(model: M): M {
+  if (model.api !== "anthropic-messages" || !isRelayProviderId(model.provider)) return model;
+  const compat = (model as Model<"anthropic-messages">).compat;
+  if (compat?.forceAdaptiveThinking !== undefined) return model;
+  const defaults = canonicalAnthropicThinkingCompat(model.id);
+  return defaults ? { ...model, compat: { ...compat, ...defaults } } : model;
+}
+
 function relayOutputPreferencesForModel(model: Model<Api>) {
   // Pi projects known schema fields into Model; read app-specific preferences
   // from this exact provider and model instead of relying on preserved fields.
@@ -368,12 +377,12 @@ export function installRelayResponseRepair(modelRuntime: ModelRuntime): void {
   modelRuntime.streamSimple = ((model, context, options) => {
     const isSummary = options?.signal !== undefined && summarySignals.has(options.signal);
     const output = applyRelayOutputPolicy(model, withProviderDefaultThinking(model, options), relayOutputPreferencesForModel, isSummary);
-    return originalStreamSimple(output.model, context, needsRepair(model) ? withRelayRepairFetch(output.options) : output.options);
+    return originalStreamSimple(withRelayAnthropicThinking(output.model), context, needsRepair(model) ? withRelayRepairFetch(output.options) : output.options);
   }) as ModelRuntime["streamSimple"];
 
   const originalStream = modelRuntime.stream.bind(modelRuntime);
   modelRuntime.stream = ((model, context, options) => {
     const output = applyRelayOutputPolicy(model, withProviderDefaultThinking(model, options), relayOutputPreferencesForModel);
-    return originalStream(output.model, context, needsRepair(model) ? withRelayRepairFetch(output.options) : output.options);
+    return originalStream(withRelayAnthropicThinking(output.model), context, needsRepair(model) ? withRelayRepairFetch(output.options) : output.options);
   }) as ModelRuntime["stream"];
 }

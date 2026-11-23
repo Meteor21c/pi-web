@@ -11,7 +11,7 @@
  */
 
 import { getRelayBaseUrl, getRelayResponsesBaseUrl } from "./relay-config";
-import { canonicalModelOutputTokenLimit, resolveModelCapabilities } from "./model-capability-catalog";
+import { canonicalAnthropicThinkingCompat, canonicalModelOutputTokenLimit, resolveModelCapabilities } from "./model-capability-catalog";
 import { relayModelCapabilityCompat, type ModelCapabilities } from "./model-capabilities";
 import type { ModelCatalogEntry } from "./model-catalog";
 import {
@@ -146,12 +146,14 @@ export function resolveRelayModels(family: "gpt" | "claude" | "other", remoteIds
       meteorAgentMaxOutputTokensLimit: limit,
       meteorAgentMaxOutputTokensSource: "catalog",
     };
+    const compat = family === "claude" ? canonicalAnthropicThinkingCompat(id) : undefined;
     return {
       ...model,
       ...output,
       name: id,
       maxTokens: resolveRelayMaxOutputTokens(output, model.contextWindow, model.maxTokens),
       ...resolveModelCapabilities({ id }),
+      ...(compat ? { compat } : {}),
     };
   });
 }
@@ -177,7 +179,7 @@ export function resolveMixedRelayModels(
       meteorAgentMaxOutputTokensSource: relayLimit === undefined ? "catalog" : "relay",
     };
     const contextWindow = clampRelayContextWindow(id, model.contextWindow);
-    const compat = relayModelCapabilityCompat(id);
+    const compat = api === "anthropic-messages" ? canonicalAnthropicThinkingCompat(id) : relayModelCapabilityCompat(id);
     return [{
       ...model,
       ...resolveModelCapabilities({ id, api }, metadata, catalog),
