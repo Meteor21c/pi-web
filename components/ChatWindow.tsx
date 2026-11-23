@@ -1,6 +1,6 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, CustomMessage, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
@@ -238,33 +238,95 @@ function activitySummary(blocks: AssistantContentBlock[], commandCount: number, 
     || t(blocks.some((block) => block.type === "text") ? "chat.activityGoalDetails" : "chat.activityThoughtSummary");
 }
 
-function ProcessDetailsGroup({ summary, activeLabel, failureCount = 0, children, t }: {
+function ProcessDetailsButton({ summary, activeLabel, failureCount = 0, open, onToggle, t }: {
   summary: string;
   activeLabel?: string | null;
   failureCount?: number;
-  children: ReactNode;
+  open: boolean;
+  onToggle: () => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-label={(open ? t("chat.collapseProcess") : t("chat.expandProcess")) + ": " + summary}
+      onClick={onToggle}
+      title={open ? t("chat.collapseProcess") : t("chat.expandProcess")}
+      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0, minHeight: 28, padding: "3px 0", border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: activeLabel ? "var(--accent)" : undefined, animation: activeLabel ? "pulse 1.5s ease-in-out infinite" : undefined }}>
+        <rect x="3" y="4" width="18" height="16" rx="3" /><path d="m7 9 3 3-3 3m6 0h4" />
+      </svg>
+      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeLabel ? activeLabel + " · " + summary : summary}</span>
+      {failureCount > 0 && <span style={{ flexShrink: 0, color: "var(--error, #ef4444)", fontSize: 11 }}>{t("chat.activityFailureSummary", { count: failureCount })}</span>}
+      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
+    </button>
+  );
+}
+
+function ProcessDetailsGroup({ children, ...button }: Omit<React.ComponentProps<typeof ProcessDetailsButton>, "open" | "onToggle"> & { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div data-process-group style={{ minWidth: 0, margin: "4px 0 14px" }}>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-label={(open ? t("chat.collapseProcess") : t("chat.expandProcess")) + ": " + summary}
-        onClick={() => setOpen((value) => !value)}
-        title={open ? t("chat.collapseProcess") : t("chat.expandProcess")}
-        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0, minHeight: 28, padding: "3px 0", border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: activeLabel ? "var(--accent)" : undefined, animation: activeLabel ? "pulse 1.5s ease-in-out infinite" : undefined }}>
-          <rect x="3" y="4" width="18" height="16" rx="3" /><path d="m7 9 3 3-3 3m6 0h4" />
-        </svg>
-        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeLabel ? activeLabel + " · " + summary : summary}</span>
-        {failureCount > 0 && <span style={{ flexShrink: 0, color: "var(--error, #ef4444)", fontSize: 11 }}>{t("chat.activityFailureSummary", { count: failureCount })}</span>}
-        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
-      </button>
+      <ProcessDetailsButton {...button} open={open} onToggle={() => setOpen((value) => !value)} />
       {open && <div style={{ minWidth: 0, margin: "6px 0 0 6px", paddingLeft: 14, borderLeft: "1px solid var(--border)" }}>{children}</div>}
     </div>
+  );
+}
+
+type TurnSection = { key: string; process: boolean; entryId?: string; refIndices: Set<number>; views: ReactNode[] };
+
+function TurnProcessSection({ open, entryId, sectionRef, children }: {
+  open: boolean;
+  entryId?: string;
+  sectionRef?: (element: HTMLDivElement | null) => void;
+  children: ReactNode;
+}) {
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      return;
+    }
+    if (!mounted) return;
+    const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 240;
+    const timer = window.setTimeout(() => setMounted(false), delay);
+    return () => window.clearTimeout(timer);
+  }, [mounted, open]);
+  return (
+    <div ref={sectionRef} className="ui-turn-process" data-open={open} data-entry-id={open ? entryId : undefined} inert={!open} aria-hidden={!open}>
+      <div className="ui-turn-process-content">{(open || mounted) && children}</div>
+    </div>
+  );
+}
+
+function TurnActivity({ sections, live, failureCount, processEntryIds, attachProcessRefs, t }: {
+  sections: TurnSection[];
+  live: boolean;
+  failureCount: number;
+  processEntryIds: string[];
+  attachProcessRefs: (element: HTMLDivElement | null, indices?: Set<number>) => void;
+  t: React.ComponentProps<typeof ProcessDetailsButton>["t"];
+}) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (live) setOpen(false);
+  }, [live]);
+  return (
+    <>
+      {!live && sections.some(({ process }) => process) && (
+        <div className="ui-turn-process-summary" data-entry-id={processEntryIds[0]} data-process-entry-ids={processEntryIds.join(" ")} ref={attachProcessRefs}>
+          <ProcessDetailsButton summary={t("chat.processDetails")} failureCount={failureCount} open={open} onToggle={() => setOpen((value) => !value)} t={t} />
+        </div>
+      )}
+      {sections.map((section) => section.process ? (
+        <TurnProcessSection key={section.key} entryId={section.entryId} open={live || open}
+          sectionRef={live ? (element) => attachProcessRefs(element, section.refIndices) : undefined}>
+          {section.views}
+        </TurnProcessSection>
+      ) : <Fragment key={section.key}>{section.views}</Fragment>)}
+    </>
   );
 }
 
@@ -1258,33 +1320,19 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               for (let i = timelineMessages.length - 1; i >= 0; i--) {
                 if (timelineMessages[i].role === "user") { lastUserIdx = i; break; }
               }
-              // Anchor for live-tail detection: the last user message, or a
-              // compaction summary when compaction has replaced it mid-turn.
-              // Computed independently from lastUserIdx (which is kept for the
-              // scroll-to-user ref) because a compaction summary can sit after
-              // the last user message and anchor the still-streaming segment.
-              let lastAnchorIdx = -1;
-              for (let i = timelineMessages.length - 1; i >= 0; i--) {
-                if (isMessageGroupAnchor(timelineMessages[i])) { lastAnchorIdx = i; break; }
-              }
-
               const visibleRefIndexByMessage = new Map<number, number>();
-              const finalAssistantByUser = new Map<number, number>();
               const goalOutcomeByAssistant = new Map<number, ReturnType<typeof readGoalOutcomeStatus>>();
               let refIdx = 0;
               let lastAssistantIdx = -1;
-              let currentUserIdx = -1;
               timelineMessages.forEach((msg, idx) => {
                 if (isMessageGroupAnchor(msg) || msg.role === "assistant") {
                   visibleRefIndexByMessage.set(idx, refIdx++);
                 }
                 // A compaction can separate the outcome entry from its final reply.
                 if (msg.role === "user") {
-                  currentUserIdx = idx;
                   lastAssistantIdx = -1;
                 } else if (msg.role === "assistant") {
                   lastAssistantIdx = idx;
-                  finalAssistantByUser.set(currentUserIdx, idx);
                 } else if (lastAssistantIdx !== -1 && isGoalOutcomeMessage(msg)) {
                   goalOutcomeByAssistant.set(lastAssistantIdx, readGoalOutcomeStatus(msg.details));
                 }
@@ -1366,22 +1414,16 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               };
 
               const rendered: ReactNode[] = [];
-              // Compaction splits the display, while mode and delivered images belong to the full turn.
-              let turnStartIdx = 0;
-              let turnUserIdx = -1;
               const goalUnavailable = goalsEnabled && (goalLoading || goalLoadError);
-              const firstUserIdx = timelineMessages.findIndex((message) => message.role === "user");
-              const leadingMessages = firstUserIdx === -1 ? timelineMessages : timelineMessages.slice(0, firstUserIdx);
-              let isGoalTurn = leadingMessages.some(isGoalOutcomeMessage)
-                || (lastUserIdx === -1 && data?.workMode === "goal" && (sessionGoal !== null || goalUnavailable));
               for (let idx = 0; idx < timelineMessages.length;) {
                 // A lazily loaded history page may start halfway through a turn.
-                const hasAnchor = isMessageGroupAnchor(timelineMessages[idx]);
-                const userIdx = hasAnchor ? idx : idx - 1;
-                let endIdx = hasAnchor ? idx + 1 : idx;
-                while (endIdx < timelineMessages.length && !isMessageGroupAnchor(timelineMessages[endIdx])) endIdx += 1;
-                const isLiveTail = (sessionBusy || streamState.isStreaming) && endIdx === timelineMessages.length && userIdx === lastAnchorIdx;
-                if (hasAnchor) rendered.push(renderMessage(userIdx));
+                const hasUser = timelineMessages[idx].role === "user";
+                const userIdx = hasUser ? idx : idx - 1;
+                let endIdx = userIdx + 1;
+                while (endIdx < timelineMessages.length && timelineMessages[endIdx].role !== "user") endIdx += 1;
+                const isLiveTurn = (agentRunning || streamState.isStreaming) && userIdx === lastUserIdx;
+                const turnKey = entryIds[userIdx] ?? entryIds[userIdx + 1] ?? userIdx;
+                if (hasUser) rendered.push(renderMessage(userIdx));
 
                 const turnMessages = timelineMessages.slice(userIdx + 1, endIdx);
                 const retryOffset = turnMessages.findIndex((message) =>
@@ -1390,28 +1432,20 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 const turnModel = turnMessages.find((message): message is AssistantMessage => message.role === "assistant" && Boolean(message.provider));
                 const anchor = timelineMessages[userIdx];
                 const turnWorkMode = anchor?.role === "user" ? anchor.turnWorkMode : undefined;
-                if (hasAnchor && anchor?.role === "user") {
-                  turnStartIdx = idx + 1;
-                  turnUserIdx = idx;
-                  isGoalTurn = turnWorkMode === "goal";
-                }
-                let finalAssistantIdx = -1;
-                for (let i = endIdx - 1; i > userIdx; i--) {
-                  if (timelineMessages[i].role === "assistant") { finalAssistantIdx = i; break; }
-                }
+                const lastAssistantOffset = turnMessages.findLastIndex((message) => message.role === "assistant");
+                const finalAssistantIdx = lastAssistantOffset === -1 ? -1 : userIdx + 1 + lastAssistantOffset;
                 const goalOutcome = goalOutcomeByAssistant.get(finalAssistantIdx);
-                const isTurnEnd = finalAssistantIdx === finalAssistantByUser.get(turnUserIdx);
-                if (goalOutcome) isGoalTurn = true;
-                const isLiveTurn = (agentRunning || streamState.isStreaming) && turnUserIdx === lastUserIdx;
-                const canShowFinal = isTurnEnd && !isLiveTurn && (!isGoalTurn || shouldShowSettledGoalFinal({
+                const isGoalTurn = turnWorkMode === "goal" || turnMessages.some(isGoalOutcomeMessage)
+                  || (!hasUser && lastUserIdx === -1 && data?.workMode === "goal" && (sessionGoal !== null || goalUnavailable));
+                const canShowFinal = !isGoalTurn || shouldShowSettledGoalFinal({
                   outcome: goalOutcome,
-                  latest: turnUserIdx === lastUserIdx,
+                  latest: userIdx === lastUserIdx,
                   goalUnavailable,
                   goalStatus: sessionGoal?.status,
-                }));
+                });
                 if (turnModel || turnWorkMode) {
                   rendered.push(<TurnLabels
-                    key={"turn-labels-" + (entryIds[userIdx] ?? userIdx)}
+                    key={"turn-labels-" + turnKey}
                     message={turnModel}
                     modelNames={modelNames}
                     modeLabel={turnWorkMode ? t(`chat.turnMode.${turnWorkMode}`) : undefined}
@@ -1421,31 +1455,55 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 let processBlocks: AssistantContentBlock[] = [];
                 let processCommands = 0;
                 let processFailures = 0;
-                let processKey = "";
-                let processEntryId: string | undefined;
-                let processEntryIds = new Set<string>();
-                let processRefIndices = new Set<number>();
+                let commandIndices = new Set<number>();
+                let commandKey = "";
+                const processEntryIds = new Set<string>();
+                const processRefIndices = new Set<number>();
+                const outputRefIndices = new Set<number>();
+                const sections: TurnSection[] = [];
+                let turnFailureCount = 0;
                 const finalText: AssistantContentBlock[] = [];
                 let turnDurationMs: number | undefined;
+                const addSectionView = (process: boolean, key: string, view: ReactNode, indices: Iterable<number>) => {
+                  const current = sections.at(-1);
+                  const section = current?.process === process ? current
+                    : { key, process, entryId: undefined, refIndices: new Set<number>(), views: [] };
+                  if (section !== current) sections.push(section);
+                  section.views.push(view);
+                  for (const index of indices) {
+                    const entryId = entryIds[index];
+                    const refIndex = visibleRefIndexByMessage.get(index);
+                    if (entryId && process) {
+                      section.entryId ??= entryId;
+                      processEntryIds.add(entryId);
+                    }
+                    if (refIndex === undefined) continue;
+                    if (process) {
+                      section.refIndices.add(refIndex);
+                      processRefIndices.add(refIndex);
+                    } else {
+                      outputRefIndices.add(refIndex);
+                    }
+                  }
+                };
                 const flushProcess = (active = false) => {
                   if (processViews.length === 0) return;
-                  const refIndices = processRefIndices;
-                  rendered.push(
-                    <div key={`process-${isLiveTurn ? "live" : "settled"}-${processKey}`} data-entry-id={processEntryId} data-process-entry-ids={[...processEntryIds].join(" ")} ref={(el) => { for (const refIndex of refIndices) messageRefs.current[refIndex] = el; }}>
-                      <ProcessDetailsGroup
-                        summary={activitySummary(processBlocks, processCommands, t)}
-                        activeLabel={active ? phaseLabel(agentPhase, t) ?? t("chat.thinking") : undefined}
-                        failureCount={processFailures}
-                        t={t}
-                      >{processViews}</ProcessDetailsGroup>
-                    </div>,
+                  addSectionView(true, commandKey,
+                    <ProcessDetailsGroup
+                      key={commandKey}
+                      summary={activitySummary(processBlocks, processCommands, t)}
+                      activeLabel={active ? phaseLabel(agentPhase, t) ?? t("chat.thinking") : undefined}
+                      failureCount={processFailures}
+                      t={t}
+                    >{processViews}</ProcessDetailsGroup>,
+                    commandIndices,
                   );
+                  turnFailureCount += processFailures;
                   processViews = [];
                   processBlocks = [];
                   processCommands = 0;
                   processFailures = 0;
-                  processEntryIds = new Set();
-                  processRefIndices = new Set();
+                  commandIndices = new Set();
                 };
                 for (let messageIdx = userIdx + 1; messageIdx < endIdx; messageIdx++) {
                   const message = timelineMessages[messageIdx];
@@ -1456,12 +1514,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   if (message.role === "toolResult" || isGoalOutcomeMessage(message)
                     || (message.role === "custom" && (message.customType === GOAL_CONTINUATION_TYPE
                       || message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE))) continue;
+                  const messageKey = String(entryIds[messageIdx] ?? messageIdx);
                   if (message.role === "bashExecution") {
-                    if (processViews.length === 0) {
-                      processKey = String(entryIds[messageIdx] ?? messageIdx);
-                      processEntryId = entryIds[messageIdx];
-                    }
-                    if (entryIds[messageIdx]) processEntryIds.add(entryIds[messageIdx]);
+                    if (processViews.length === 0) commandKey = "commands-" + messageKey;
+                    commandIndices.add(messageIdx);
                     processCommands++;
                     if (message.cancelled || (message.exitCode !== undefined && message.exitCode !== 0)) processFailures++;
                     processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix: "process-command" }));
@@ -1469,57 +1525,83 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   }
                   if (message.role === "custom" && pairedSubagentNotifications.has(message)) continue;
                   if (message.role !== "assistant") {
-                    flushProcess();
-                    rendered.push(renderMessage(messageIdx));
+                    if (message.role === "custom") {
+                      flushProcess();
+                      const deliveredImage = message.display !== false && Array.isArray(message.content)
+                        && message.content.some((block) => block.type === "image");
+                      addSectionView(!deliveredImage, "custom-" + messageKey, renderMessage(messageIdx, { attachRef: deliveredImage }), [messageIdx]);
+                    }
                     continue;
                   }
                   const isStreamingMessage = streamState.isStreaming && messageIdx === messages.length;
                   const segments = getAssistantTimelineSegments(message, {
                     isStreaming: isStreamingMessage,
-                    textMode: isLiveTurn && messageIdx >= retryIndex ? "live"
-                      : canShowFinal && messageIdx === finalAssistantIdx ? "final" : "activity",
-                    isVisibleToolResult: (block) => {
-                      const result = toolResultsMap.get(block.toolCallId);
-                      if (block.toolName === "Agent" && isSubagentToolDetails(result?.details)) return true;
-                      return getDeliveredToolImages(result, block.toolName, messageCwd, persistedSessionId ?? undefined).length > 0;
-                    },
+                    textMode: messageIdx === finalAssistantIdx && (isLiveTurn || canShowFinal) ? "final" : "activity",
+                    allowStreamingFinal: isLiveTurn,
+                    showProgress: messageIdx >= retryIndex,
+                    isVisibleToolResult: (block) => getDeliveredToolImages(toolResultsMap.get(block.toolCallId),
+                      block.toolName, messageCwd, persistedSessionId ?? undefined).length > 0,
+                    isProgressToolResult: (block) => block.toolName === "Agent"
+                      && isSubagentToolDetails(toolResultsMap.get(block.toolCallId)?.details),
                   });
                   for (const segment of segments) {
                     const keyPrefix = segment.kind + "-" + segment.blockIndices[0];
-                    if (segment.kind === "output") {
-                      if (canShowFinal && messageIdx === finalAssistantIdx) {
+                    const blocks = segment.blockIndices.map((index) => message.content[index]);
+                    const failures = blocks.filter((block) => block.type === "toolCall" && toolResultsMap.get(block.toolCallId)?.isError).length;
+                    if (segment.kind !== "activity") {
+                      const process = segment.kind === "progress";
+                      if (!process && messageIdx === finalAssistantIdx) {
                         for (const index of segment.blockIndices) {
                           const block = message.content[index];
                           if (block.type === "text") finalText.push(block);
                         }
                       }
                       flushProcess();
-                      rendered.push(renderMessage(messageIdx, { keyPrefix, blockIndices: segment.blockIndices, hideMetadata: true, showModel: false, showTimestamp: false }));
+                      if (process) turnFailureCount += failures;
+                      addSectionView(process, keyPrefix + "-" + messageKey, renderMessage(messageIdx, {
+                        attachRef: !process, keyPrefix, blockIndices: segment.blockIndices,
+                        hideMetadata: true, showModel: false, showTimestamp: false,
+                      }), [messageIdx]);
                       continue;
                     }
-                    if (processViews.length === 0) {
-                      processKey = String(entryIds[messageIdx] ?? messageIdx) + "-" + segment.blockIndices[0];
-                      processEntryId = entryIds[messageIdx];
-                    }
-                    const blocks = segment.blockIndices.map((index) => message.content[index]);
+                    if (processViews.length === 0) commandKey = "commands-" + messageKey + "-" + segment.blockIndices[0];
                     processBlocks.push(...blocks);
-                    processFailures += blocks.filter((block) => block.type === "toolCall" && toolResultsMap.get(block.toolCallId)?.isError).length;
-                    if (entryIds[messageIdx]) processEntryIds.add(entryIds[messageIdx]);
-                    const refIndex = visibleRefIndexByMessage.get(messageIdx);
-                    if (refIndex !== undefined) processRefIndices.add(refIndex);
+                    processFailures += failures;
+                    commandIndices.add(messageIdx);
                     processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix, blockIndices: segment.blockIndices, hideMetadata: true, showModel: false, showTimestamp: false }));
                   }
-                  // Provider failures must be visible even with the process folded.
-                  if (messageIdx !== finalAssistantIdx && getAssistantErrorMessage(message)) {
+                  if (getAssistantErrorMessage(message)) {
+                    const terminal = messageIdx === finalAssistantIdx;
+                    // An active attempt can show its error in place. Keep a final
+                    // failure visible via the summary footer once the run ends.
+                    if (terminal && !isLiveTurn) continue;
                     flushProcess();
-                    rendered.push(renderMessage(messageIdx, { keyPrefix: "error", blockIndices: [], showModel: false, compactUsage: true }));
+                    turnFailureCount++;
+                    addSectionView(true, "error-" + messageKey, renderMessage(messageIdx, {
+                      attachRef: false, keyPrefix: "error", blockIndices: [], showModel: false, compactUsage: true,
+                    }), [messageIdx]);
                   }
                 }
-                flushProcess(isLiveTail);
+                flushProcess(isLiveTurn);
+                if (sections.length) {
+                  rendered.push(<TurnActivity
+                    key={"turn-activity-" + turnKey}
+                    sections={sections}
+                    live={isLiveTurn}
+                    failureCount={turnFailureCount}
+                    processEntryIds={[...processEntryIds]}
+                    attachProcessRefs={(element, indices = processRefIndices) => {
+                      for (const refIndex of indices) {
+                        if (!outputRefIndices.has(refIndex)) messageRefs.current[refIndex] = element;
+                      }
+                    }}
+                    t={t}
+                  />);
+                }
                 const finalAssistant = timelineMessages[finalAssistantIdx];
                 if (!isLiveTurn && finalAssistant?.role === "assistant") {
                   if (canShowFinal && stoppedWithoutFinalAnswer(finalAssistant)) {
-                    const deliveredImage = timelineMessages.slice(turnStartIdx, endIdx).some((message) =>
+                    const deliveredImage = turnMessages.some((message) =>
                       message.role === "assistant" && message.content.some((block) =>
                         block.type === "toolCall" && getDeliveredToolImages(
                           toolResultsMap.get(block.toolCallId), block.toolName, messageCwd, persistedSessionId ?? undefined,
@@ -1555,7 +1637,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     writtenFiles: extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd),
                   }));
                 }
-                if (!isLiveTail && turnDurationMs !== undefined) {
+                if (!isLiveTurn && turnDurationMs !== undefined) {
                   rendered.push(
                     <div key={`turn-duration-${entryIds[userIdx] ?? userIdx}`} className="mb-3 mt-1 text-xs tabular-nums text-text-dim">
                       {t("chat.turnElapsed", { duration: formatRunDuration(turnDurationMs, t) })}

@@ -69,7 +69,7 @@ export function countToolCallBlocks(blocks: AssistantContentBlock[]): number {
 }
 
 export interface AssistantTimelineSegment {
-  kind: "activity" | "output";
+  kind: "activity" | "progress" | "output";
   blockIndices: number[];
 }
 
@@ -102,11 +102,14 @@ export function getAssistantTimelineSegments(
   options: DisplayOptions & {
     textMode?: "live" | "activity" | "final";
     isVisibleToolResult?: (block: ToolCallContent) => boolean;
+    showProgress?: boolean;
+    allowStreamingFinal?: boolean;
+    isProgressToolResult?: (block: ToolCallContent) => boolean;
   } = {},
 ): AssistantTimelineSegment[] {
   const hasFinalStop = message.stopReason === "stop"
     || (message.stopReason === undefined && !message.content.some((block) => block.type === "toolCall"));
-  const finalTextFrom = options.textMode === "final" && !options.isStreaming && hasFinalStop
+  const finalTextFrom = options.textMode === "final" && (!options.isStreaming || options.allowStreamingFinal) && hasFinalStop
     ? message.content.findLastIndex((block) =>
         !isFinalAnswerBlock(block) && !isEmptyThinkingBlock(block, options),
       ) + 1
@@ -114,13 +117,16 @@ export function getAssistantTimelineSegments(
   const segments: AssistantTimelineSegment[] = [];
   message.content.forEach((block, index) => {
     if (isEmptyThinkingBlock(block, options) || (block.type === "text" && !block.text.trim())) return;
+    const isProgressText = block.type === "text" && !DSML_TOOL_MARKUP.test(block.text);
     const isVisibleText = block.type === "text" && (
       options.textMode === undefined
-      || ((options.textMode === "live" || index >= finalTextFrom) && !DSML_TOOL_MARKUP.test(block.text))
+      || ((options.textMode === "live" || index >= finalTextFrom) && isProgressText)
     );
-    const kind = isVisibleText || block.type === "image"
-      || (block.type === "toolCall" && options.isVisibleToolResult?.(block))
-      ? "output" : "activity";
+    const output = isVisibleText || block.type === "image"
+      || (block.type === "toolCall" && options.isVisibleToolResult?.(block));
+    const progress = (options.showProgress && isProgressText)
+      || (block.type === "toolCall" && options.isProgressToolResult?.(block));
+    const kind = output ? "output" : progress ? "progress" : "activity";
     const previous = segments.at(-1);
     if (previous?.kind === kind) previous.blockIndices.push(index);
     else segments.push({ kind, blockIndices: [index] });

@@ -12,12 +12,11 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
 - A localized one-line summary describes actual operations and counts, such as
   reading files or running commands. No additional model call is made to
   summarize reasoning, and raw reasoning is not copied into the summary.
-- While a turn runs, assistant progress text stays visible in order, including
-  across context compaction. Once it settles, earlier text goes into the
-  collapsed activity record and only the last valid assistant report remains
-  in the main chat. Direct images and successful generated images remain
-  visible. Screenshots and images read by tools remain available in their
-  tool rows.
+- While a turn runs, progress text and activity remain visible in order
+  across context compaction. On settlement, the full turn's progress and any
+  open command details slide into one closed Process details disclosure.
+  The final answer and delivered images stay visible. Opening the disclosure
+  brings back the ordered activity with individual command details closed.
 - A context compaction displays a single collapsed row. Opening it shows the
   full summary and its file details.
 - A compact row above the composer shows the current phase and elapsed time
@@ -31,8 +30,8 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
   A background notification updates an existing launch row for the same
   child when its anchor is loaded. The main model still receives the result.
   Selecting the row opens the child's transcript in the right panel.
-- Failed tools are counted visibly on the summary. Provider errors remain
-  outside collapsed groups.
+- The disclosure counts failed tools and intermediate provider errors.
+  The final provider error stays visible when the turn fails.
 - Completed turns retain one aggregate usage/cost footer, image charges,
   written-file links, and copying of the final assistant message. New runs save
   their measured elapsed time once at settlement, including tool waits and
