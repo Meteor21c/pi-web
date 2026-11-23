@@ -100,11 +100,13 @@ const DSML_TOOL_MARKUP = /<\/?\s*[|｜]\s*DSML\s*[|｜]\s*(?:function_calls?|cal
 export function getAssistantTimelineSegments(
   message: AssistantMessage,
   options: DisplayOptions & {
-    goalText?: "activity" | "final";
+    textMode?: "live" | "activity" | "final";
     isVisibleToolResult?: (block: ToolCallContent) => boolean;
   } = {},
 ): AssistantTimelineSegment[] {
-  const finalTextFrom = options.goalText === "final" && !options.isStreaming && message.stopReason === "stop"
+  const hasFinalStop = message.stopReason === "stop"
+    || (message.stopReason === undefined && !message.content.some((block) => block.type === "toolCall"));
+  const finalTextFrom = options.textMode === "final" && !options.isStreaming && hasFinalStop
     ? message.content.findLastIndex((block) =>
         !isFinalAnswerBlock(block) && !isEmptyThinkingBlock(block, options),
       ) + 1
@@ -113,7 +115,8 @@ export function getAssistantTimelineSegments(
   message.content.forEach((block, index) => {
     if (isEmptyThinkingBlock(block, options) || (block.type === "text" && !block.text.trim())) return;
     const isVisibleText = block.type === "text" && (
-      options.goalText === undefined || (index >= finalTextFrom && !DSML_TOOL_MARKUP.test(block.text))
+      options.textMode === undefined
+      || ((options.textMode === "live" || index >= finalTextFrom) && !DSML_TOOL_MARKUP.test(block.text))
     );
     const kind = isVisibleText || block.type === "image"
       || (block.type === "toolCall" && options.isVisibleToolResult?.(block))

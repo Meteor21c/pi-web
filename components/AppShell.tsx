@@ -63,6 +63,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { FileViewerState } from "@/lib/file-viewer-state";
 import type { ToolEntry } from "@/lib/tool-presets";
 import { getSessionFamily } from "@/lib/session-family";
+import { getSubagentDisplayName } from "@/lib/subagent-display";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { AppUpdatePrompt } from "./AppUpdatePrompt";
@@ -581,6 +582,7 @@ export function AppShell() {
   const subagentPreviewOpen = rightPanelOpen && subagentPreviewId !== null && activeFileTabId === subagentPreviewId;
   const previewSession = subagentPreview?.session;
   const previewRelation = previewSession?.relation?.kind === "subagent" ? previewSession.relation : null;
+  const previewTitle = getSubagentDisplayName({ ...previewRelation, name: previewSession?.name }, translate);
   const catalogPreview = subagentPreview ? sessionCatalog.find((item) => item.id === subagentPreview.id) : undefined;
   const previewStatus = subagentPreview && runningSessionIds.has(subagentPreview.id)
     ? "running"
@@ -595,7 +597,7 @@ export function AppShell() {
     closing: Boolean(tab.closing),
   })), ...(subagentPreviewId ? [{
     id: subagentPreviewId,
-    label: previewRelation?.description || previewSession?.name || translate("agentSwitcher.subagent"),
+    label: previewTitle,
     filePath: "",
     kind: "subagent" as const,
   }] : [])];
@@ -2536,7 +2538,7 @@ export function AppShell() {
                 {previewSession && previewRelation ? (
                   <>
                     <div className="subagent-preview-heading">
-                      <strong>{previewRelation.description}</strong>
+                      <strong>{previewTitle}</strong>
                       {previewStatus && <span role="status">{translate(`agentSwitcher.status.${previewStatus}`)}</span>}
                     </div>
                     <div className="subagent-preview-content">

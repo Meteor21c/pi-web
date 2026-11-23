@@ -11,7 +11,7 @@ test("keeps activity details closed until the user opens them", () => {
 });
 
 test("a hidden Goal outcome belongs to the previous assistant reply within the same user turn", () => {
-  assert.match(source, /if \(msg\.role === "user"\) lastAssistantIdx = -1;\s*else if \(msg\.role === "assistant"\) lastAssistantIdx = idx;\s*else if \(lastAssistantIdx !== -1 && isGoalOutcomeMessage\(msg\)\)/);
+  assert.match(source, /if \(msg\.role === "user"\) \{\s*currentUserIdx = idx;\s*lastAssistantIdx = -1;[\s\S]*?else if \(lastAssistantIdx !== -1 && isGoalOutcomeMessage\(msg\)\)/);
   assert.match(source, /const goalOutcome = goalOutcomeByAssistant\.get\(finalAssistantIdx\)/);
   assert.match(source, /if \(message\.role === "toolResult" \|\| isGoalOutcomeMessage\(message\)/);
 });
@@ -21,4 +21,17 @@ test("keeps live run timing above the composer and shows recorded duration after
   assert.match(composer, /<AgentActivityCard[\s\S]*?startedAt=\{activeRunStartedAt\}[\s\S]*?lastActivityAt=\{runLastActivityAt\}[\s\S]*?\{chatInputElement\}/);
   assert.match(source, /message\.customType === TURN_TIMING_TYPE\) \{\s*turnDurationMs = readTurnDurationMs\(message\.details\)/);
   assert.match(source, /if \(!isLiveTail && turnDurationMs !== undefined\) \{[\s\S]*?t\("chat\.turnElapsed"/);
+});
+
+test("shows stage text across compaction while active and keeps only the last report after settlement", () => {
+  assert.match(source, /const isLiveTurn = \(agentRunning \|\| streamState\.isStreaming\) && turnUserIdx === lastUserIdx/);
+  assert.match(source, /finalAssistantIdx === finalAssistantByUser\.get\(turnUserIdx\)/);
+  assert.match(source, /textMode: isLiveTurn[\s\S]*?\? "live"[\s\S]*?messageIdx === finalAssistantIdx \? "final" : "activity"/);
+  assert.match(source, /process-\$\{isLiveTurn \? "live" : "settled"\}/);
+});
+
+test("uses a completion notification to update the existing child row when the launch is visible", () => {
+  assert.match(source, /latestLaunchBySession\.get\(message\.details\.sessionId\)/);
+  assert.match(source, /map\.set\(toolCallId, \{ \.\.\.launch, details: message\.details \}\)/);
+  assert.match(source, /pairedSubagentNotifications\.has\(message\)\) continue/);
 });

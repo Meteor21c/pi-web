@@ -145,7 +145,7 @@ export function createSubagentExtension(
             description: "UTF-8 text files under the session cwd to include with the task.",
             maxItems: MAX_SUBAGENT_INPUT_FILES,
           })),
-          description: Type.String({ description: "Short activity label shown in the UI." }),
+          description: Type.String({ description: "Short task name shown in the UI, in the same language as the user’s request." }),
           run_in_background: Type.Optional(Type.Boolean({ description: "Return immediately and notify this session when complete." })),
           model: Type.Optional(Type.String({ description: "Optional provider/modelId override." })),
           thinking: Type.Optional(Type.String({ description: "Optional thinking level override." })),

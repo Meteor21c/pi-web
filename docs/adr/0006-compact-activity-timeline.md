@@ -12,9 +12,12 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
 - A localized one-line summary describes actual operations and counts, such as
   reading files or running commands. No additional model call is made to
   summarize reasoning, and raw reasoning is not copied into the summary.
-- Assistant text, direct assistant images, and successful image-generation
-  results remain visible in their original positions. Screenshots and images
-  read by tools stay in the activity group until their tool row is opened.
+- While a turn runs, assistant progress text stays visible in order, including
+  across context compaction. Once it settles, earlier text goes into the
+  collapsed activity record and only the last valid assistant report remains
+  in the main chat. Direct images and successful generated images remain
+  visible. Screenshots and images read by tools remain available in their
+  tool rows.
 - A context compaction displays a single collapsed row. Opening it shows the
   full summary and its file details.
 - A compact row above the composer shows the current phase and elapsed time
@@ -24,8 +27,10 @@ Introduced in MeteorAgent v0.1.19 on 2026-11-20. Updated on 2026-11-22.
 - Users open activity details with a click. Search scrolls to visible stage text
   or the corresponding activity summary. Stored block indices keep deferred
   thinking linked to its original message.
-- Subagent launches are visible as task rows with status. Selecting a row opens
-  its conversation in the right panel while the main conversation stays open.
+- Subagent launches and completion notifications use localized task rows.
+  A background notification updates an existing launch row for the same
+  child when its anchor is loaded. The main model still receives the result.
+  Selecting the row opens the child's transcript in the right panel.
 - Failed tools are counted visibly on the summary. Provider errors remain
   outside collapsed groups.
 - Completed turns retain one aggregate usage/cost footer, image charges,

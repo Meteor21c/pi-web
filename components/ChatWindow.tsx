@@ -14,6 +14,7 @@ import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-poli
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
 import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, type SubagentMode } from "@/lib/subagent-mode";
 import { readTurnDurationMs, TURN_TIMING_TYPE } from "@/lib/session-timing";
+import { SUBAGENT_NOTIFICATION_TYPE } from "@/lib/subagent-display";
 import { NewSessionWelcome } from "./NewSessionWelcome";
 import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
@@ -219,7 +220,7 @@ function aggregateTurnActualCost(
   return usageEntries.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 }
 
-function activitySummary(blocks: AssistantContentBlock[], commandCount: number, t: (key: string, params?: Record<string, string | number>) => string, goalTurn = false): string {
+function activitySummary(blocks: AssistantContentBlock[], commandCount: number, t: (key: string, params?: Record<string, string | number>) => string): string {
   const counts = new Map<string, number>();
   for (const block of blocks) {
     if (block.type !== "toolCall") continue;
@@ -234,7 +235,7 @@ function activitySummary(blocks: AssistantContentBlock[], commandCount: number, 
   }
   if (commandCount > 0) counts.set("chat.activityCommandSummary", (counts.get("chat.activityCommandSummary") ?? 0) + commandCount);
   return [...counts].map(([key, count]) => t(key, { count })).join(" · ")
-    || t(goalTurn && blocks.some((block) => block.type === "text") ? "chat.activityGoalDetails" : "chat.activityThoughtSummary");
+    || t(blocks.some((block) => block.type === "text") ? "chat.activityGoalDetails" : "chat.activityThoughtSummary");
 }
 
 function ProcessDetailsGroup({ summary, activeLabel, failureCount = 0, children, t }: {
@@ -883,7 +884,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   // (the streaming message lives in streamState), so memoized MessageViews
   // skip re-rendering on every message_update event. An inline `new Map()`
   // here used to defeat MessageView's memo() on each streamed chunk.
-  const toolResultsMap = useMemo(() => {
+  const { toolResultsMap, pairedSubagentNotifications } = useMemo(() => {
     const map = new Map(activeToolResults);
     for (const msg of messages) {
       if (msg.role === "toolResult") {
@@ -901,6 +902,25 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         details,
       });
     }
+    const pairedNotifications = new Set<CustomMessage>();
+    const latestLaunchBySession = new Map<string, string>();
+    for (const message of messages) {
+      if (message.role === "assistant") {
+        for (const block of message.content) {
+          if (block.type !== "toolCall" || block.toolName !== "Agent") continue;
+          const details = map.get(block.toolCallId)?.details;
+          if (isSubagentToolDetails(details)) latestLaunchBySession.set(details.sessionId, block.toolCallId);
+        }
+      } else if (message.role === "custom" && message.customType === SUBAGENT_NOTIFICATION_TYPE
+        && isSubagentToolDetails(message.details)) {
+        const toolCallId = latestLaunchBySession.get(message.details.sessionId);
+        const launch = toolCallId ? map.get(toolCallId) : undefined;
+        if (launch && toolCallId) {
+          map.set(toolCallId, { ...launch, details: message.details });
+          pairedNotifications.add(message);
+        }
+      }
+    }
     for (const [id, result] of map) {
       if (result.toolName !== "Agent" || !isSubagentToolDetails(result.details)) continue;
       const { sessionId, status } = result.details;
@@ -909,7 +929,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       if (catalogStatus === "starting" || (catalogStatus === "queued" && status === "running")) continue;
       map.set(id, { ...result, details: { ...result.details, status: catalogStatus } });
     }
-    return map;
+    return { toolResultsMap: map, pairedSubagentNotifications: pairedNotifications };
   }, [activeToolResults, liveSubagents, messages, subagentStatuses]);
   const inputHistory = useMemo(() => {
     const seen = new Set<string>();
@@ -1218,17 +1238,23 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               }
 
               const visibleRefIndexByMessage = new Map<number, number>();
+              const finalAssistantByUser = new Map<number, number>();
               const goalOutcomeByAssistant = new Map<number, ReturnType<typeof readGoalOutcomeStatus>>();
               let refIdx = 0;
               let lastAssistantIdx = -1;
+              let currentUserIdx = -1;
               timelineMessages.forEach((msg, idx) => {
                 if (isMessageGroupAnchor(msg) || msg.role === "assistant") {
                   visibleRefIndexByMessage.set(idx, refIdx++);
                 }
                 // A compaction can separate the outcome entry from its final reply.
-                if (msg.role === "user") lastAssistantIdx = -1;
-                else if (msg.role === "assistant") lastAssistantIdx = idx;
-                else if (lastAssistantIdx !== -1 && isGoalOutcomeMessage(msg)) {
+                if (msg.role === "user") {
+                  currentUserIdx = idx;
+                  lastAssistantIdx = -1;
+                } else if (msg.role === "assistant") {
+                  lastAssistantIdx = idx;
+                  finalAssistantByUser.set(currentUserIdx, idx);
+                } else if (lastAssistantIdx !== -1 && isGoalOutcomeMessage(msg)) {
                   goalOutcomeByAssistant.set(lastAssistantIdx, readGoalOutcomeStatus(msg.details));
                 }
               });
@@ -1311,6 +1337,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               const rendered: ReactNode[] = [];
               // Compaction splits the display, while mode and delivered images belong to the full turn.
               let turnStartIdx = 0;
+              let turnUserIdx = -1;
               const goalUnavailable = goalsEnabled && (goalLoading || goalLoadError);
               const firstUserIdx = timelineMessages.findIndex((message) => message.role === "user");
               const leadingMessages = firstUserIdx === -1 ? timelineMessages : timelineMessages.slice(0, firstUserIdx);
@@ -1334,22 +1361,23 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 const turnWorkMode = anchor?.role === "user" ? anchor.turnWorkMode : undefined;
                 if (hasAnchor && anchor?.role === "user") {
                   turnStartIdx = idx + 1;
+                  turnUserIdx = idx;
                   isGoalTurn = turnWorkMode === "goal";
                 }
                 let finalAssistantIdx = -1;
                 for (let i = endIdx - 1; i > userIdx; i--) {
                   if (timelineMessages[i].role === "assistant") { finalAssistantIdx = i; break; }
                 }
-                const nextAnchor = timelineMessages[endIdx];
                 const goalOutcome = goalOutcomeByAssistant.get(finalAssistantIdx);
-                const isTurnEnd = Boolean(goalOutcome) || !nextAnchor || nextAnchor.role === "user";
+                const isTurnEnd = finalAssistantIdx === finalAssistantByUser.get(turnUserIdx);
                 if (goalOutcome) isGoalTurn = true;
-                const canShowGoalFinal = isTurnEnd && !isLiveTail && shouldShowSettledGoalFinal({
+                const isLiveTurn = (agentRunning || streamState.isStreaming) && turnUserIdx === lastUserIdx;
+                const canShowFinal = isTurnEnd && !isLiveTurn && (!isGoalTurn || shouldShowSettledGoalFinal({
                   outcome: goalOutcome,
-                  latest: endIdx === timelineMessages.length,
+                  latest: turnUserIdx === lastUserIdx,
                   goalUnavailable,
                   goalStatus: sessionGoal?.status,
-                });
+                }));
                 if (turnModel || turnWorkMode) {
                   rendered.push(<TurnLabels
                     key={"turn-labels-" + (entryIds[userIdx] ?? userIdx)}
@@ -1366,15 +1394,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 let processEntryId: string | undefined;
                 let processEntryIds = new Set<string>();
                 let processRefIndices = new Set<number>();
-                const goalFinalText: AssistantContentBlock[] = [];
+                const finalText: AssistantContentBlock[] = [];
                 let turnDurationMs: number | undefined;
                 const flushProcess = (active = false) => {
                   if (processViews.length === 0) return;
                   const refIndices = processRefIndices;
                   rendered.push(
-                    <div key={"process-" + processKey} data-entry-id={processEntryId} data-process-entry-ids={[...processEntryIds].join(" ")} ref={(el) => { for (const refIndex of refIndices) messageRefs.current[refIndex] = el; }}>
+                    <div key={`process-${isLiveTurn ? "live" : "settled"}-${processKey}`} data-entry-id={processEntryId} data-process-entry-ids={[...processEntryIds].join(" ")} ref={(el) => { for (const refIndex of refIndices) messageRefs.current[refIndex] = el; }}>
                       <ProcessDetailsGroup
-                        summary={activitySummary(processBlocks, processCommands, t, isGoalTurn || retryIndex >= 0)}
+                        summary={activitySummary(processBlocks, processCommands, t)}
                         activeLabel={active ? phaseLabel(agentPhase, t) ?? t("chat.thinking") : undefined}
                         failureCount={processFailures}
                         t={t}
@@ -1408,6 +1436,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix: "process-command" }));
                     continue;
                   }
+                  if (message.role === "custom" && pairedSubagentNotifications.has(message)) continue;
                   if (message.role !== "assistant") {
                     flushProcess();
                     rendered.push(renderMessage(messageIdx));
@@ -1416,22 +1445,21 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   const isStreamingMessage = streamState.isStreaming && messageIdx === messages.length;
                   const segments = getAssistantTimelineSegments(message, {
                     isStreaming: isStreamingMessage,
-                    goalText: isGoalTurn
-                      ? canShowGoalFinal && messageIdx === finalAssistantIdx ? "final" : "activity"
-                      : messageIdx < retryIndex ? "activity" : undefined,
+                    textMode: isLiveTurn && messageIdx >= retryIndex ? "live"
+                      : canShowFinal && messageIdx === finalAssistantIdx ? "final" : "activity",
                     isVisibleToolResult: (block) => {
                       const result = toolResultsMap.get(block.toolCallId);
-                      if (onOpenSession && block.toolName === "Agent" && isSubagentToolDetails(result?.details)) return true;
+                      if (block.toolName === "Agent" && isSubagentToolDetails(result?.details)) return true;
                       return getDeliveredToolImages(result, block.toolName, messageCwd, persistedSessionId ?? undefined).length > 0;
                     },
                   });
                   for (const segment of segments) {
                     const keyPrefix = segment.kind + "-" + segment.blockIndices[0];
                     if (segment.kind === "output") {
-                      if (isGoalTurn && messageIdx === finalAssistantIdx) {
+                      if (canShowFinal && messageIdx === finalAssistantIdx) {
                         for (const index of segment.blockIndices) {
                           const block = message.content[index];
-                          if (block.type === "text") goalFinalText.push(block);
+                          if (block.type === "text") finalText.push(block);
                         }
                       }
                       flushProcess();
@@ -1458,8 +1486,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 }
                 flushProcess(isLiveTail);
                 const finalAssistant = timelineMessages[finalAssistantIdx];
-                if (!isLiveTail && finalAssistant?.role === "assistant") {
-                  if (isTurnEnd && (!isGoalTurn || canShowGoalFinal) && stoppedWithoutFinalAnswer(finalAssistant)) {
+                if (!isLiveTurn && finalAssistant?.role === "assistant") {
+                  if (canShowFinal && stoppedWithoutFinalAnswer(finalAssistant)) {
                     const deliveredImage = timelineMessages.slice(turnStartIdx, endIdx).some((message) =>
                       message.role === "assistant" && message.content.some((block) =>
                         block.type === "toolCall" && getDeliveredToolImages(
@@ -1487,8 +1515,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     keyPrefix: "turn-summary",
                     attachRef: false,
                     blockIndices: [],
-                    // The footer copy action uses this message; copy only text shown as a Goal answer.
-                    messageOverride: isGoalTurn ? { ...finalAssistant, content: goalFinalText } : undefined,
+                    // Copy only the report visible outside the operation record.
+                    messageOverride: { ...finalAssistant, content: finalText },
                     showModel: false,
                     usageOverride: aggregateTurnUsage(timelineMessages, userIdx + 1, finalAssistantIdx),
                     actualCost: aggregateTurnActualCost(timelineMessages, entryIds, userIdx + 1, finalAssistantIdx, relayActualCosts.costs),

@@ -14,6 +14,7 @@ import { TurnWrittenFiles } from "./TurnWrittenFiles";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import type { SubagentToolDetails } from "@/lib/subagent-extension";
+import { getSubagentDisplayName, SUBAGENT_NOTIFICATION_TYPE } from "@/lib/subagent-display";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { isRelayProviderId } from "@/lib/relay-config";
 import { resolveLocalFileHref, resolveLocalFilePath } from "@/lib/file-links";
@@ -312,6 +313,12 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
   if (message.role === "custom") {
     if ((message as CustomMessage).customType === "compaction") {
       return <CompactionMessageView message={message as CustomMessage} />;
+    }
+    if (message.customType === SUBAGENT_NOTIFICATION_TYPE) {
+      if (isSubagentToolDetails(message.details)) {
+        return <SubagentRunRow run={message.details} onOpenSession={onOpenSession} />;
+      }
+      return null;
     }
     return <CustomMessageView message={message as CustomMessage} cwd={cwd} onOpenFile={onOpenFile} />;
   }
@@ -1173,30 +1180,30 @@ export function isSubagentToolDetails(value: unknown): value is SubagentToolDeta
     && typeof details.status === "string" && SUBAGENT_RUN_STATUSES.has(details.status);
 }
 
-function SubagentRunRow({ run, onOpenSession }: { run: SubagentToolDetails; onOpenSession: (sessionId: string) => void }) {
+function SubagentRunRow({ run, onOpenSession }: { run: SubagentToolDetails; onOpenSession?: (sessionId: string) => void }) {
   const { t } = useI18n();
-  const name = run.description.trim() || run.profile || t("agentSwitcher.subagent");
-  const status = t(`agentSwitcher.status.${run.status}`);
+  const name = getSubagentDisplayName(run, t);
+  const label = t(`subagent.row.${run.status}`, { name });
   const active = run.status === "starting" || run.status === "running";
+  const icon = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`shrink-0 ${active ? "text-accent" : ""}`}>
+      <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
+    </svg>
+  );
+  const rowClass = `my-1 inline-flex min-h-7 max-w-full items-center gap-2 px-1 text-xs ${run.status === "failed" ? "text-[var(--error,#ef4444)]" : "text-text-muted"}`;
+  if (!onOpenSession) return <div className={rowClass}>{icon}<span className="truncate">{label}</span></div>;
+
   return (
     <button
       type="button"
-      className="ui-menu-item"
+      className={`ui-menu-item ${rowClass} cursor-pointer rounded-md hover:bg-bg-hover`}
       data-subagent-session={run.sessionId}
       onClick={() => onOpenSession(run.sessionId)}
       title={t("subagent.open")}
-      style={{
-        display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 8, minHeight: 28, maxWidth: "100%",
-        padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 7,
-        background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 12, cursor: "pointer",
-      }}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: active ? "var(--accent)" : undefined }}>
-        <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
-      </svg>
-      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>{name}</span>
-      <span style={{ flexShrink: 0, whiteSpace: "nowrap", fontSize: 11, color: run.status === "failed" ? "var(--error, #ef4444)" : undefined }}>{status}</span>
-      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" style={{ flexShrink: 0 }}><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
+      {icon}
+      <span className="min-w-0 truncate">{label}</span>
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" className="shrink-0"><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
     </button>
   );
 }
@@ -1223,7 +1230,7 @@ function ToolCallBlock({ block, result, onOpenSession, cwd, sessionId }: { block
     ? Math.round(durationMs / 1000)
     : 0;
 
-  if (block.toolName === "Agent" && subagent && onOpenSession) {
+  if (subagent && (block.toolName === "Agent" || block.toolName === "get_subagent_result")) {
     return <SubagentRunRow run={subagent} onOpenSession={onOpenSession} />;
   }
 
@@ -1272,17 +1279,6 @@ function ToolCallBlock({ block, result, onOpenSession, cwd, sessionId }: { block
             <polyline points="2 3.5 5 6.5 8 3.5" />
           </svg>
         </button>
-        {subagent && onOpenSession && (
-          <button
-            type="button"
-            onClick={() => onOpenSession(subagent.sessionId)}
-            title={t("subagent.open")}
-            aria-label={t("subagent.open")}
-            style={{ width: 32, display: "grid", placeItems: "center", border: "none", borderLeft: "1px solid var(--border)", background: "none", color: "var(--text-muted)", cursor: "pointer", flexShrink: 0 }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>
-          </button>
-        )}
       </div>
 
       {/* ── Expanded: input args ── */}

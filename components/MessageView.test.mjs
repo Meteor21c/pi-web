@@ -253,7 +253,7 @@ test("keeps streamed tool input out of collapsed markup while counting it", () =
   assert.equal(getTokenEstimateText(block), block.rawInput);
 });
 
-test("renders subagents as standard tool calls with only an extra session button", () => {
+test("shows subagent activity as a link without rendering the report in the parent chat", () => {
   const block = {
     type: "toolCall",
     toolCallId: "call-agent-1",
@@ -288,12 +288,26 @@ test("renders subagents as standard tool calls with only an extra session button
     onOpenSession() {},
   });
 
-  assert.match(html, /border:1px solid rgba\(34,197,94,0\.25\)/);
-  assert.match(html, />Agent</);
-  assert.match(html, />Explore</);
-  assert.match(html, /aria-label="Open sub-agent session"/);
-  assert.doesNotMatch(html, />completed</);
-  assert.doesNotMatch(html, />Find parser</);
+  assert.match(html, /<button[^>]*data-subagent-session="child-session"/);
+  assert.match(html, /Find parser · Subagent completed/);
+  assert.doesNotMatch(html, /Parser is in lib\/parser\.ts|Find the parser|pi-web:/);
+
+  const plain = renderMessage({ role: "assistant", content: [{ ...block, toolName: "get_subagent_result" }] }, {
+    toolResults: new Map([[block.toolCallId, result]]),
+  });
+  assert.match(plain, /Find parser · Subagent completed/);
+  assert.doesNotMatch(plain, /Parser is in lib\/parser\.ts|<button/);
+
+  const notification = renderMessage({
+    role: "custom",
+    customType: "pi-web:subagent-notification",
+    display: true,
+    content: "Parser is in lib/parser.ts",
+    details: result.details,
+  }, { onOpenSession() {} });
+  assert.match(notification, /<button[^>]*data-subagent-session="child-session"/);
+  assert.match(notification, /Find parser · Subagent completed/);
+  assert.doesNotMatch(notification, /Parser is in lib\/parser\.ts|pi-web:/);
 
   const ordinaryHtml = renderMessage({
     role: "assistant",

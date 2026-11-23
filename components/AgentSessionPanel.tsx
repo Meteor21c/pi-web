@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { getSubagentDisplayName } from "@/lib/subagent-display";
 import type { SessionInfo, SubagentSessionStatus } from "@/lib/types";
 
 interface Props {
@@ -90,10 +91,8 @@ function AgentRow({
   const { locale, t } = useI18n();
   const relation = session.relation?.kind === "subagent" ? session.relation : null;
   const status: SubagentSessionStatus = running ? "running" : relation?.status ?? "completed";
-  const primary = main ? t("agentSwitcher.main") : relation?.description || sessionTitle(session);
-  const secondary = main
-    ? sessionTitle(session)
-    : `${relation?.profile ?? t("agentSwitcher.subagent")} · ${formatRelativeTime(session.modified, locale)}`;
+  const primary = main ? t("agentSwitcher.main") : getSubagentDisplayName({ ...relation, name: session.name }, t);
+  const secondary = main ? sessionTitle(session) : formatRelativeTime(session.modified, locale);
 
   return (
     <button
@@ -170,7 +169,8 @@ export function AgentSessionPanel({ rootSession, subagents, selectedSessionId, r
   const visibleSubagents = normalizedQuery
     ? sortedSubagents.filter((session) => {
         const relation = session.relation?.kind === "subagent" ? session.relation : null;
-        return [relation?.description, relation?.profile, session.name, session.firstMessage]
+        const name = getSubagentDisplayName({ ...relation, name: session.name }, t);
+        return [name, relation?.description, relation?.profile, session.name, session.firstMessage]
           .some((value) => value?.toLowerCase().includes(normalizedQuery));
       })
     : sortedSubagents;
