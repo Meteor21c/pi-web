@@ -24,11 +24,13 @@ Modes are independent of presets:
   edit, complete, or cancel it. A completed or cancelled objective can be replaced.
 
 Plan and Goal turns show their actual mode beside the answer. Earlier turns
-keep their own labels when the conversation changes modes. The goal stays
-visible across mode changes, and the assistant uses it while running in Goal
-mode. If a goal changes while a run is active, the old run cannot change its
-status or launch an automatic continuation. Reopening a session restores its
-goal and report. Selecting Continue starts a new run in that session.
+keep their own labels when the conversation changes modes. The goal is available
+across mode changes, and the assistant uses it while running in Goal mode.
+After completion or cancellation, users can hide the card and reopen it from
+the composer toolbar to view the report. The browser remembers this choice for
+that goal revision. If a goal changes while a run is active, the old run cannot
+change its status or launch an automatic continuation. Selecting Continue starts
+a new run in that session.
 
 ## Persistence and compatibility
 
@@ -88,6 +90,9 @@ the same model call.
 In Goal mode, the runtime reads the active objective at the start of a run and
 adds it and any previous evidence to the latest user message for the provider.
 Tool continuations and queued messages keep the same goal snapshot for that run.
+Chat messages supply instructions for the current run. Use Edit goal or Set new
+goal to change the saved objective. If there is no active objective, a message in
+Goal mode gets a reply without creating a tracked goal.
 The system section contains the runtime's instructions for using that context.
 Pi uses a separate prompt for compaction.
 

@@ -356,6 +356,35 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     computerUseApprovalPolicy: completionNotificationsEnabled ? computerUseApprovalPolicy : "ask",
   });
   const persistedSessionId = session?.id ?? sessionIdRef.current ?? undefined;
+  const goalCardStorageKey = persistedSessionId && `meteoragent:closed-goal:${persistedSessionId}`;
+  const [closedGoalCard, setClosedGoalCard] = useState<{ key: string; revision: string | null } | null>(null);
+  const endedGoal = sessionGoal?.status === "completed" || sessionGoal?.status === "cancelled" ? sessionGoal : null;
+  const goalCardClosed = endedGoal && closedGoalCard?.key === goalCardStorageKey
+    && closedGoalCard?.revision === String(endedGoal.revision);
+  const goalFollowUp = composerWorkMode === "goal" && (sessionGoal?.status === "active"
+    || (sessionGoal?.status === "blocked" && sessionGoal.reason === "blocked" && Boolean(sessionGoal.userAction)));
+
+  useEffect(() => {
+    if (!goalCardStorageKey) return;
+    try {
+      setClosedGoalCard({ key: goalCardStorageKey, revision: localStorage.getItem(goalCardStorageKey) });
+    } catch {
+      // The card still works when browser storage is unavailable.
+    }
+  }, [goalCardStorageKey]);
+
+  const setGoalCardClosed = (closed: boolean) => {
+    if (!goalCardStorageKey || !endedGoal) return;
+    const revision = closed ? String(endedGoal.revision) : null;
+    setClosedGoalCard({ key: goalCardStorageKey, revision });
+    try {
+      if (revision === null) localStorage.removeItem(goalCardStorageKey);
+      else localStorage.setItem(goalCardStorageKey, revision);
+    } catch {
+      // Keep the current browser state even if persistence fails.
+    }
+  };
+
   const [imageGeneration, setImageGeneration] = useState<{
     models: Array<{ providerId: string; groupName: string; modelId: string; alias: string; isDefault: boolean }>;
   }>({ models: [] });
@@ -1094,6 +1123,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       onResolvedWorkMode={setComposerWorkMode}
       showWorkMode={isNew || Boolean(data)}
       workModeDisabled={previewOnly || session?.relation?.kind === "subagent"}
+      messagePlaceholder={goalFollowUp ? t("chat.goal.followUpPlaceholder") : undefined}
+      onShowPreviousGoal={goalsEnabled && goalCardClosed ? () => setGoalCardClosed(false) : undefined}
       approvalPolicyControl={completionNotificationsEnabled && <ApprovalPolicySelector
         policy={subagentModeUnavailable ? "ask" : computerUseApprovalPolicy}
         currentRunPolicy={sessionBusy ? activeComputerUseApprovalPolicy ?? "ask" : undefined}
@@ -1692,13 +1723,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   {t("chat.goal.loadFailed")}
                   <button type="button" className="underline" onClick={() => void loadGoal()}>{t("chat.goal.retry")}</button>
                 </div>
-              ) : (
+              ) : !goalCardClosed && (
                 <SessionGoalTracker
                   goal={sessionGoal}
                   showCreate={composerWorkMode === "goal"}
                   disabled={goalLoading}
                   running={sessionBusy}
                   runningInGoalMode={agentRunning && data?.workMode === "goal"}
+                  onDismiss={endedGoal ? () => setGoalCardClosed(true) : undefined}
                   onChange={handleGoalChange}
                 />
               ))}

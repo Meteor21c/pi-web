@@ -84,6 +84,8 @@ interface Props {
   subagentModeDisabled?: boolean;
   showWorkMode?: boolean;
   workModeDisabled?: boolean;
+  messagePlaceholder?: string;
+  onShowPreviousGoal?: () => void;
   approvalPolicyControl?: React.ReactNode;
   onNewWorkModeChanged?: () => Promise<void>;
   onSessionWorkModeChange?: (mode: WorkMode) => Promise<void>;
@@ -719,7 +721,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   workMode, pendingWorkMode, showWorkMode, workModeDisabled, onNewWorkModeChanged, onSessionWorkModeChange, onResolvedWorkMode,
-  approvalPolicyControl,
+  messagePlaceholder, onShowPreviousGoal, approvalPolicyControl,
   subagentMode, onSubagentModeChange, subagentModeDisabled,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
@@ -2633,7 +2635,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               isStreaming && (onSteer || onFollowUp)
                 ? t("chat.steerPlaceholder")
                 : isStreaming ? t("chat.agentPlaceholder")
-                : t("chat.messagePlaceholder")
+                : messagePlaceholder ?? t("chat.messagePlaceholder")
             }
             rows={1}
             style={{
@@ -2810,6 +2812,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               onSessionModeChange={onSessionWorkModeChange}
               onResolvedMode={onResolvedWorkMode}
             />}
+            {onShowPreviousGoal && (
+              <button type="button" className="chat-goal-reopen" onClick={onShowPreviousGoal}>
+                {t("chat.goal.reopen")}
+              </button>
+            )}
             {approvalPolicyControl}
             {onSubagentModeChange && (
               <label className="chat-subagent-mode" title={t(subagentModeDisabled

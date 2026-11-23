@@ -11,10 +11,11 @@ interface Props {
   disabled?: boolean;
   running?: boolean;
   runningInGoalMode?: boolean;
+  onDismiss?: () => void;
   onChange: (action: SessionGoalAction) => Promise<void>;
 }
 
-export function SessionGoalTracker({ goal, showCreate, disabled, running, runningInGoalMode, onChange }: Props) {
+export function SessionGoalTracker({ goal, showCreate, disabled, running, runningInGoalMode, onDismiss, onChange }: Props) {
   const { t } = useI18n();
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -105,6 +106,13 @@ export function SessionGoalTracker({ goal, showCreate, disabled, running, runnin
             ) : showCreate && (
               <button type="button" className={styles.primary} disabled={controlsDisabled} onClick={() => beginEditing("")}>
                 {t(goal ? "chat.goal.startAnother" : "chat.goal.start")}
+              </button>
+            )}
+            {onDismiss && (
+              <button type="button" className={styles.optionsToggle} aria-label={t("chat.goal.dismiss")} title={t("chat.goal.dismiss")} onClick={onDismiss}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                  <path d="m6 6 12 12M18 6 6 18" />
+                </svg>
               </button>
             )}
           </div>
