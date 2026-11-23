@@ -2,6 +2,7 @@
 
 import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { getFileIcon, FolderIcon } from "./FileIcons";
+import { FileActionsMenu } from "./FileActions";
 import {
   encodeFilePathForApi,
   getFileDirectory,
@@ -252,7 +253,6 @@ function TreeNode({
   const [children, setChildren] = useState<FileNode[]>(node.children ?? []);
   const [loaded, setLoaded] = useState(node.loaded ?? false);
   const [loading, setLoading] = useState(false);
-  const [hovered, setHovered] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const loadChildren = useCallback(async (force = false) => {
@@ -287,8 +287,7 @@ function TreeNode({
     }
   }, [node.isDir, node.fullPath, node.name, loaded, open, loadChildren, onOpenFile, onToggleExpanded]);
 
-  const handleDelete = useCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
+  const handleDelete = useCallback(async () => {
     if (node.isDir || !onDeleteFile || deleting) return;
     if (!window.confirm(t("files.confirmDelete", { name: node.name }))) return;
     setDeleting(true);
@@ -301,187 +300,48 @@ function TreeNode({
 
   return (
     <div>
-      <div
-        onClick={handleClick}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        style={{
-          position: "relative",
-          display: "flex",
-          alignItems: "center",
-          gap: 4,
-          paddingLeft: 8 + depth * 14,
-          paddingRight: 8,
-          height: 24,
-          cursor: "pointer",
-          background: hovered ? "var(--bg-hover)" : "transparent",
-          borderRadius: 4,
-          userSelect: "none",
-        }}
-      >
-        {node.isDir && (
-          <svg
-            width="10" height="10" viewBox="0 0 10 10" fill="none"
-            stroke="var(--text-dim)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-            style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.1s" }}
-          >
-            <polyline points="3 2 7 5 3 8" />
-          </svg>
-        )}
-        {!node.isDir && <span style={{ width: 10, flexShrink: 0 }} />}
-        <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
-          {node.isDir ? <FolderIcon size={14} open={open} /> : getFileIcon(node.name, 14)}
-        </span>
-        <span
-          style={{
-            fontSize: 12,
-            color: "var(--text)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            flex: 1,
-          }}
+      <div className="file-tree-row" style={{ paddingLeft: 8 + depth * 14 }}>
+        <button
+          type="button"
+          className="file-tree-entry"
+          onClick={handleClick}
           title={node.fullPath}
+          aria-expanded={node.isDir ? open : undefined}
         >
-          {node.name}
-        </span>
-        {highlighted && (
-          <span
-            title={t("files.newlyUploaded")}
-            aria-label={t("files.newlyUploaded")}
-            style={{ width: 14, height: 14, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#3b82f6" }} />
-          </span>
-        )}
-        {!hovered && !node.isDir && gitStatus && (
-          <GitStatusBadge status={gitStatus} t={t} />
-        )}
-        {!hovered && containsGitChanges && (
-          <span
-            title={t("files.containsChangedFiles")}
-            aria-label={t("files.containsChangedFiles")}
-            style={{
-              width: 14,
-              height: 14,
-              flexShrink: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#d6a84b" }} />
-          </span>
-        )}
-        {loading && (
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round">
-            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
-          </svg>
-        )}
-        {onAtMention && hovered && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onAtMention(getRelativeFilePath(node.fullPath, cwd), node.isDir);
-            }}
-            title={t("files.insertPath")}
-            style={{
-              position: "absolute",
-              right: !node.isDir ? (onDeleteFile ? 80 : 52) : 4,
-              top: "50%",
-              transform: "translateY(-50%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              padding: "0 8px",
-              height: 20,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              color: "var(--accent)",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: 600,
-              whiteSpace: "nowrap",
-            }}
-          >
-            <MentionIcon />
-            {t("files.mention")}
-          </button>
-        )}
-        {hovered && !node.isDir && (
-          <a
-            href={`/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
-            download
-            onClick={(e) => e.stopPropagation()}
-            title={t("files.download")}
-            style={{
-              position: "absolute",
-              right: onDeleteFile ? 29 : 4,
-              top: "50%",
-              transform: "translateY(-50%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 4,
-              padding: "0 5px",
-              height: 20,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 11,
-              fontWeight: 600,
-              whiteSpace: "nowrap",
-              textDecoration: "none",
-            }}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
+          {node.isDir ? (
+            <svg
+              width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"
+              stroke="var(--text-dim)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+              style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.1s" }}
+            >
+              <polyline points="3 2 7 5 3 8" />
             </svg>
-          </a>
-        )}
-        {hovered && !node.isDir && onDeleteFile && (
-          <button
-            type="button"
-            disabled={deleting}
-            onClick={(event) => void handleDelete(event)}
-            title={t("files.delete")}
-            aria-label={t("files.delete")}
-            style={{
-              position: "absolute",
-              right: 4,
-              top: "50%",
-              transform: "translateY(-50%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 22,
-              height: 20,
-              padding: 0,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: 4,
-              color: "#ef4444",
-              cursor: deleting ? "wait" : "pointer",
-              opacity: deleting ? 0.6 : 1,
-            }}
-          >
-            {deleting ? (
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: "spin 0.8s linear infinite" }} aria-hidden="true">
-                <path d="M21 12a9 9 0 1 1-5.7-8.4" />
-              </svg>
-            ) : (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m19 6-1 14H6L5 6" /><path d="M10 11v5M14 11v5" />
-              </svg>
-            )}
-          </button>
-        )}
+          ) : <span style={{ width: 10, flexShrink: 0 }} />}
+          <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+            {node.isDir ? <FolderIcon size={14} open={open} /> : getFileIcon(node.name, 14)}
+          </span>
+          <span className="file-tree-name">{node.name}</span>
+          {highlighted && (
+            <span className="file-tree-marker" style={{ background: "#3b82f6" }} title={t("files.newlyUploaded")} />
+          )}
+          {!node.isDir && gitStatus && <GitStatusBadge status={gitStatus} t={t} />}
+          {containsGitChanges && (
+            <span className="file-tree-marker" style={{ background: "#d6a84b" }} title={t("files.containsChangedFiles")} />
+          )}
+          {loading && (
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
+            </svg>
+          )}
+        </button>
+        <FileActionsMenu
+          filePath={node.fullPath}
+          isDirectory={node.isDir}
+          inTree
+          onMention={onAtMention ? () => onAtMention(getRelativeFilePath(node.fullPath, cwd), node.isDir) : undefined}
+          downloadHref={node.isDir ? undefined : `/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
+          onDelete={!node.isDir && onDeleteFile && !deleting ? () => void handleDelete() : undefined}
+        />
       </div>
       {node.isDir && open && (
         <div>
@@ -505,7 +365,7 @@ function TreeNode({
           ))}
           {children.length === 0 && loaded && (
             <div style={{ paddingLeft: 8 + (depth + 1) * 14, fontSize: 11, color: "var(--text-dim)", height: 22, display: "flex", alignItems: "center" }}>
-              empty
+              {t("files.noFiles")}
             </div>
           )}
         </div>

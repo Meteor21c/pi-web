@@ -1,0 +1,110 @@
+.treeTrigger {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 24px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.treeTrigger:hover {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+.menu {
+  position: fixed;
+  inset: auto;
+  width: min(208px, calc(100vw - 16px));
+  box-sizing: border-box;
+  margin: 0;
+  padding: 4px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+
+.menu > button,
+.menu > a {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.menu > button:hover,
+.menu > a:hover {
+  background: var(--bg-hover);
+}
+
+.menu > .delete {
+  color: #d84c4c;
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  gap: 14px;
+  padding: 20px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.detailsActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.detailsActions > button,
+.detailsActions > a {
+  padding: 6px 11px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.detailsActions > button:first-child {
+  background: var(--bg-selected);
+  color: var(--accent);
+}
+
+.error {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 9px;
+  color: #d84c4c;
+  font-size: 11px;
+}
+
+.detailsActions > button:disabled,
+.menu > button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}

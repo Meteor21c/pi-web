@@ -15,6 +15,7 @@ import {
   getFileExt,
   getImageMime,
   getVideoMime,
+  isBinaryFilePath,
 } from "@/lib/file-types";
 import { resolveDirentIsDirectory } from "@/lib/file-dirent";
 import { isFilePathReferencedBySession } from "@/lib/session-file-references";
@@ -517,7 +518,13 @@ export async function GET(
       if (!Number.isSafeInteger(offset) || offset > stat.size) {
         return NextResponse.json({ error: "Invalid text preview offset" }, { status: 400 });
       }
-      const chunk = readTextPreviewChunk(filePath, stat.size, offset);
+      const chunk = isBinaryFilePath(filePath) ? null : readTextPreviewChunk(filePath, stat.size, offset);
+      if (!chunk) {
+        return NextResponse.json({
+          previewKind: "binary", size: stat.size, content: "", language: "text",
+          nextOffset: stat.size, truncated: false,
+        });
+      }
       const language = getLanguage(filePath);
       return NextResponse.json({ ...chunk, language, size: stat.size });
     }

@@ -18,7 +18,7 @@ export function readTextPreviewChunk(
   filePath: string,
   fileSize: number,
   offset: number,
-): TextPreviewChunk {
+): TextPreviewChunk | null {
   const length = Math.min(TEXT_PREVIEW_MAX_BYTES + 1, fileSize - offset);
   const buffer = Buffer.alloc(length);
   const descriptor = fs.openSync(filePath, "r");
@@ -27,6 +27,15 @@ export function readTextPreviewChunk(
     bytesRead = fs.readSync(descriptor, buffer, 0, length, offset);
   } finally {
     fs.closeSync(descriptor);
+  }
+
+  const sample = buffer.subarray(0, Math.min(bytesRead, 4096));
+  if (sample.includes(0)) return null;
+  try {
+    // The sample may end midway through a UTF-8 code point.
+    new TextDecoder("utf-8", { fatal: true }).decode(sample, { stream: sample.length + offset < fileSize });
+  } catch {
+    return null;
   }
 
   let end = Math.min(bytesRead, TEXT_PREVIEW_MAX_BYTES);

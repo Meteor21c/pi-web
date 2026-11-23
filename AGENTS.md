@@ -63,6 +63,7 @@ app/api/
   default-cwd/route.ts            POST create ~/pi-cwd-YYYYMMDD
   files/[...path]/route.ts        GET/list/upload/delete files inside allowed roots
   open-directory/route.ts         POST open an allowed project folder in the OS file manager
+  open-file/route.ts             POST open or reveal an allowed item from the local Magent window
   home/route.ts                   GET user home directory
   models/route.ts                 GET { models, modelList, defaultModel }
   models-config/route.ts          GET/PUT — read/write ~/.pi/agent/models.json

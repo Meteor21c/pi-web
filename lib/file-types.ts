@@ -4,6 +4,13 @@ export const DOCX_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
 
 export type DocumentPreviewKind = "pdf" | "docx";
 
+const BINARY_EXTENSIONS = new Set([
+  "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "jar",
+  "dmg", "iso", "pkg", "msi", "exe", "appimage", "deb", "rpm",
+  "doc", "xls", "xlsx", "xlsm", "ppt", "pptx", "heic", "tiff",
+  "bin", "wasm", "db", "sqlite", "sqlite3", "so", "dylib", "dll",
+]);
+
 export const IMAGE_EXT_TO_MIME: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -47,6 +54,11 @@ function getBaseName(filePath: string): string {
 
 export function getFileExt(filePath: string): string {
   return getBaseName(filePath).toLowerCase().split(".").pop() ?? "";
+}
+
+export function isBinaryFilePath(filePath: string): boolean {
+  const name = getBaseName(filePath);
+  return name.lastIndexOf(".") > 0 && BINARY_EXTENSIONS.has(getFileExt(name));
 }
 
 export function getImageMime(filePath: string): string | null {

@@ -1,23 +1,14 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
-import { nativeDirectoryCommand } from "@/lib/native-directory";
+import { launchNativeCommand, nativeDirectoryCommand } from "@/lib/native-directory";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
 
 function launchFileManager(directory: string): Promise<void> {
-  const { command, args } = nativeDirectoryCommand(directory);
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
-    child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
+  return launchNativeCommand(nativeDirectoryCommand(directory));
 }
 
 export async function POST(request: Request) {

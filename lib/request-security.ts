@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { isLocalDesktopHost } from "./local-desktop";
 
 function normalizeHostname(value: string): string {
   const unbracketed = value.startsWith("[") && value.endsWith("]")
@@ -152,6 +153,22 @@ export function isApiRequestAllowed(
   if (!isApiRequestHostAllowed(request, configuredHostnames)) return false;
   if (isUserInitiatedSessionExportNavigation(request)) return true;
   return !shouldCheckApiRequestOrigin(request) || isApiRequestOriginAllowed(request);
+}
+
+/** A browser opening a native app must be on the local Magent origin. */
+export function isLocalDesktopRequest(
+  request: Request,
+  listenHost = process.env.METEORAGENT_LAUNCH_HOSTNAME ?? process.env.PI_WEB_HOSTNAME,
+): boolean {
+  if (listenHost && !isLocalDesktopHost(listenHost)) return false;
+  const authority = request.headers.get("host");
+  const hostname = authority && hostnameFromAuthority(authority);
+  if (!hostname || !isLocalDesktopHost(hostname) || !isApiRequestAllowed(request)) return false;
+
+  const peer = request.headers.get("x-forwarded-for");
+  if (peer && !isLocalDesktopHost(peer)) return false;
+  const origin = request.headers.get("origin");
+  return !!origin && canonicalOrigin(origin) === getRequestOrigin(request);
 }
 
 export function hasJsonContentType(request: Request): boolean {

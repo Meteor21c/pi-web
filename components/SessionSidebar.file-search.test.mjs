@@ -21,9 +21,9 @@ test("renders search results with the existing expandable file tree", () => {
   assert.match(source, /expandedPaths=\{searchExpanded\}/);
 });
 
-test("search result rows offer mention and download actions like the file tree", () => {
+test("search result rows use the same file actions as the file tree", () => {
   assert.match(source, /onAtMention\(getRelativeFilePath\(node\.fullPath, cwd\), node\.isDir\)/);
-  assert.match(source, /<MentionIcon \/>/);
+  assert.match(source, /<FileActionsMenu\s+filePath=\{node\.fullPath\}/);
   assert.match(source, /encodeFilePathForApi\(node\.fullPath\)\}\?type=download/);
   assert.match(source, /window\.confirm\(t\("files\.confirmDelete"/);
   assert.match(source, /onDeleteFile=\{handleDeleteFile\}/);

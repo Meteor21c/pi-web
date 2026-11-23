@@ -24,6 +24,7 @@ import { parseFrontmatter } from "@/lib/frontmatter";
 import { markdownPreviewRehypePlugins, markdownPreviewRemarkPlugins, markdownUrlTransform, normalizeDisplayMath } from "@/lib/markdown";
 import { CodeBlock, MermaidBlock } from "./MermaidBlock";
 import { FrontmatterCard } from "./FrontmatterCard";
+import { FileActionsMenu, UnpreviewableFileActions } from "./FileActions";
 import { parseUnifiedPatch } from "@/lib/patch";
 import type { GitFileDiffResponse } from "@/lib/git-types";
 import { useI18n } from "@/hooks/useI18n";
@@ -51,6 +52,7 @@ interface Props {
 }
 
 interface FileData {
+  previewKind?: "binary";
   content: string;
   language: string;
   size: number;
@@ -223,22 +225,21 @@ function getFileApiUrl(
   return `/api/files/${encoded}?${searchParams.toString()}`;
 }
 
-function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceSessionId?: string | null }) {
-  const { t } = useI18n();
+function ViewerFileActions({
+  filePath,
+  sourceSessionId,
+  onMention,
+}: {
+  filePath: string;
+  sourceSessionId?: string | null;
+  onMention?: () => void;
+}) {
   return (
-    <a
-      href={getFileApiUrl(filePath, "download", sourceSessionId)}
-      download={getFileName(filePath)}
-      title={t("i18n.downloadFile")}
-      aria-label={t("i18n.downloadFile")}
-      className="file-viewer-icon-button"
-    >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-    </a>
+    <FileActionsMenu
+      filePath={filePath}
+      downloadHref={getFileApiUrl(filePath, "download", sourceSessionId)}
+      onMention={onMention}
+    />
   );
 }
 
@@ -548,7 +549,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           />
           {watching ? "live" : "static"}
         </span>
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <ViewerFileActions filePath={filePath} sourceSessionId={sourceSessionId} />
       </div>
       <div
         style={{
@@ -718,7 +719,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           />
           {watching ? "live" : "static"}
         </span>
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <ViewerFileActions filePath={filePath} sourceSessionId={sourceSessionId} />
       </div>
       <div
         style={{
@@ -871,7 +872,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           />
           {watching ? "live" : "static"}
         </span>
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <ViewerFileActions filePath={filePath} sourceSessionId={sourceSessionId} />
       </div>
       <div
         style={{
@@ -1041,7 +1042,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }:
         </span>
         <span style={{ marginLeft: "auto" }}>{ext === "docx" ? "docx preview" : "pdf"}</span>
         {size != null && <span>{formatSize(size)}</span>}
-        <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+        <ViewerFileActions filePath={filePath} sourceSessionId={sourceSessionId} />
         <span
           title={watching ? t("i18n.liveSync") : t("i18n.notWatching")}
           style={{ display: "flex", alignItems: "center", gap: 4, color: watching ? "#4ade80" : "var(--text-dim)", flexShrink: 0 }}
@@ -1219,7 +1220,7 @@ function TextFileViewer({
           return null;
         }
         setError(null);
-        setData((current) => offset && current
+        setData((current) => offset && current && d.previewKind !== "binary"
           ? { ...d, content: current.content + d.content }
           : d);
         return d;
@@ -1531,6 +1532,24 @@ function TextFileViewer({
 
   if (!data && !isDeletedDiff) return null;
 
+  if (data?.previewKind === "binary" && !(effectiveDisplayMode === "diff" && hasGitDiff)) {
+    const info = [getFileExt(filePath).toUpperCase(), formatSize(data.size)].filter(Boolean).join(" · ");
+    return (
+      <div className="file-viewer-unpreviewable">
+        <div className="file-viewer-toolbar">
+          <span className="file-viewer-path" title={filePath}>{getRelativeFilePath(filePath, cwd)}</span>
+          <span className="file-viewer-meta" title={info}>{info}</span>
+          <ViewerFileActions
+            filePath={filePath}
+            sourceSessionId={sourceSessionId}
+            onMention={onAtMention ? () => onAtMention(getRelativeFilePath(filePath, cwd), false) : undefined}
+          />
+        </div>
+        <UnpreviewableFileActions filePath={filePath} downloadHref={getFileApiUrl(filePath, "download", sourceSessionId)} />
+      </div>
+    );
+  }
+
   const content = viewerContent;
   const markdownDirectory = getFileDirectory(filePath);
   const lines = sourceLines;
@@ -1655,7 +1674,7 @@ function TextFileViewer({
             )}
           </div>
 
-          {!isDeletedDiff && <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />}
+          {!isDeletedDiff && <ViewerFileActions filePath={filePath} sourceSessionId={sourceSessionId} />}
         </div>
       </div>
 
