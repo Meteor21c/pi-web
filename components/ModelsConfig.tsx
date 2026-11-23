@@ -103,6 +103,7 @@ interface ModelEntry {
   input?: string[];
   contextWindow?: number;
   meteorAgentContextWindowOverride?: number;
+  meteorAgentAutoContextWindow?: number;
   maxTokens?: number;
   meteorAgentMaxOutputTokensOverride?: number;
   cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; tiers?: unknown };
@@ -142,6 +143,7 @@ function mergeSavedModelDefaults(draft: ModelsJson, submitted: ModelsJson, saved
         input: model.input ?? (prior.input === undefined ? persisted.input : undefined),
         thinkingLevelMap: model.thinkingLevelMap ?? (prior.thinkingLevelMap === undefined ? persisted.thinkingLevelMap : undefined),
         contextWindow: model.contextWindow === prior.contextWindow ? persisted.contextWindow : model.contextWindow,
+        meteorAgentAutoContextWindow: persisted.meteorAgentAutoContextWindow,
         maxTokens: model.maxTokens === prior.maxTokens ? persisted.maxTokens : model.maxTokens,
       };
     }) }];
@@ -1193,7 +1195,7 @@ function ModelDetail({
     relayContextPolicy ? model.meteorAgentContextWindowOverride : model.contextWindow,
   );
   const firstTier = relayContextPolicy ? readContextWindowTokens(relayFirstTierContextWindow) : undefined;
-  const defaultContextWindow = relayContextPolicy ? relayDefaultContextWindow(model.id, firstTier) : 128_000;
+  const defaultContextWindow = relayContextPolicy ? relayDefaultContextWindow(model.id, firstTier, model.meteorAgentAutoContextWindow) : 128_000;
   const matchingContextPreset = CONTEXT_WINDOW_PRESETS.find(({ tokens }) => tokens === customContextWindow);
   const showCustomContextWindow = editingCustomContextWindow || (customContextWindow !== undefined && !matchingContextPreset);
   const autoContextWindowLabel = t("models.contextWindowAuto", { count: defaultContextWindow.toLocaleString(locale) });
@@ -1202,7 +1204,7 @@ function ModelDetail({
       onChange({
         ...model,
         meteorAgentContextWindowOverride: next,
-        contextWindow: resolveRelayContextWindow(model.id, next, firstTier),
+        contextWindow: resolveRelayContextWindow(model.id, next, firstTier, model.meteorAgentAutoContextWindow),
       });
     } else {
       set("contextWindow", next);

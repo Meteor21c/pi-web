@@ -4,12 +4,12 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import { invalidateModelsCache } from "./models-cache";
-import { readRelayGroups, relayAuthorizedModelIdsByProvider } from "./relay-group-store";
+import { readRelayGroups, relayAuthorizedModelIdsByProvider, type RelayGroupMetadata } from "./relay-group-store";
 import { isRelayProviderId } from "./relay-config";
-import { readContextWindowTokens, resolveRelayContextWindow } from "./relay-model-policy";
+import { readContextWindowTokens, relayDefaultContextWindow } from "./relay-model-policy";
 import { relayOutputTokenFallback } from "./relay-models";
 import { readRelayOutputPreferences, resolveRelayMaxOutputTokens } from "./relay-output-policy";
-import { canonicalModelOutputTokenLimit } from "./model-capability-catalog";
+import { canonicalModelContextWindow, canonicalModelOutputTokenLimit } from "./model-capability-catalog";
 
 const MODEL_COST_KEYS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
@@ -64,23 +64,39 @@ function sanitizeModelsConfig(data: Record<string, unknown>): Record<string, unk
   return { ...data, providers };
 }
 
+function relayModelAutoWindow(id: string, model: Record<string, unknown>, api?: string, group?: RelayGroupMetadata): number {
+  const modelDefault = readContextWindowTokens(model.meteorAgentUpstreamContextWindow)
+    ?? readContextWindowTokens(model.meteorAgentCatalogContextWindow)
+    ?? canonicalModelContextWindow(id, api, group?.groupName);
+  return relayDefaultContextWindow(id, group?.contextWindows?.[id], modelDefault);
+}
+
 /** Keep the effective SDK model budgets separate from the user's preferences. */
-function normalizeRelayModelLimits(data: Record<string, unknown>, modelsPath: string, onlyProviderId?: string): void {
+function normalizeRelayModelLimits(data: Record<string, unknown>, modelsPath: string, options: {
+  onlyProviderId?: string;
+  editor?: boolean;
+} = {}): void {
   if (!isRecord(data.providers)) return;
   const groups = modelsPath === getModelsConfigPath() ? readRelayGroups() : [];
   const groupsByProvider = new Map(groups.map((group) => [group.providerId, group]));
   for (const [providerId, provider] of Object.entries(data.providers)) {
-    if (onlyProviderId !== undefined && providerId !== onlyProviderId) continue;
+    if (options.onlyProviderId !== undefined && providerId !== options.onlyProviderId) continue;
     const group = groupsByProvider.get(providerId);
     if ((!group && !isRelayProviderId(providerId)) || !isRecord(provider) || !Array.isArray(provider.models)) continue;
     for (const model of provider.models) {
       if (!isRecord(model) || typeof model.id !== "string") continue;
+      const api = typeof model.api === "string" ? model.api : typeof provider.api === "string" ? provider.api : undefined;
       const override = readContextWindowTokens(model.meteorAgentContextWindowOverride);
-      model.contextWindow = resolveRelayContextWindow(model.id, override, group?.contextWindows?.[model.id]);
+      const automatic = relayModelAutoWindow(model.id, model, api, group);
+      model.contextWindow = override ?? automatic;
+      if (options.editor) {
+        model.meteorAgentAutoContextWindow = automatic;
+        continue;
+      }
+      delete model.meteorAgentAutoContextWindow;
       if (override === undefined) delete model.meteorAgentContextWindowOverride;
 
       const next = readRelayOutputPreferences(model);
-      const api = typeof model.api === "string" ? model.api : typeof provider.api === "string" ? provider.api : undefined;
       if (next.meteorAgentMaxOutputTokensLimit === undefined) {
         const canonical = canonicalModelOutputTokenLimit(model.id, api);
         if (canonical !== undefined) {
@@ -164,13 +180,21 @@ export function readConfiguredModel(providerId: string, modelId: string): Record
   return provider.models.find((model) => isRecord(model) && model.id === modelId);
 }
 
-/** Restore manual values that older versions stored alongside a capped runtime window. */
-export function withSavedRelayContextWindow<M extends { provider: string; id: string; contextWindow?: number }>(model: M): M {
+export function modelsConfigForEditor(config: Record<string, unknown>): Record<string, unknown> {
+  const projected = structuredClone(config);
+  normalizeRelayModelLimits(projected, getModelsConfigPath(), { editor: true });
+  return projected;
+}
+
+/** Apply the current window to SDK models loaded from older or changed settings. */
+export function withSavedRelayContextWindow<M extends { provider: string; id: string; api?: string; contextWindow?: number }>(model: M): M {
   if (!isRelayProviderId(model.provider)) return model;
   const stored = readConfiguredModel(model.provider, model.id);
-  const contextWindow = readContextWindowTokens(stored?.meteorAgentContextWindowOverride)
-    ?? readContextWindowTokens(stored?.contextWindow);
-  return contextWindow !== undefined && contextWindow !== model.contextWindow ? { ...model, contextWindow } : model;
+  if (!stored) return model;
+  const contextWindow = readContextWindowTokens(stored.meteorAgentContextWindowOverride)
+    ?? relayModelAutoWindow(model.id, stored, typeof stored.api === "string" ? stored.api : model.api,
+      readRelayGroups().find((group) => group.providerId === model.provider));
+  return contextWindow !== model.contextWindow ? { ...model, contextWindow } : model;
 }
 
 export function writeModelsConfig(
@@ -184,7 +208,7 @@ export function writeModelsConfig(
     normalizeModelsConfigCosts(sanitizeModelsConfig(data)),
     modelsPath,
   );
-  normalizeRelayModelLimits(normalized, modelsPath, options?.normalizeRelayLimitsForProvider);
+  normalizeRelayModelLimits(normalized, modelsPath, { onlyProviderId: options?.normalizeRelayLimitsForProvider });
   // Keep a user's dotfiles link intact when performing the atomic rename.
   let writePath = modelsPath;
   if (lstatSync(modelsPath, { throwIfNoEntry: false })?.isSymbolicLink()) {

@@ -47,7 +47,8 @@ export async function POST(request: Request) {
     const modelIds = partitionRelayModelIds(test.modelIds ?? []).chatModelIds;
     const catalog = modelIds.some((id) => {
       const metadata = test.capabilitiesByModelId?.get(id);
-      return modelCapabilitiesNeedCatalog({ id }, metadata ?? {}) || relayOutputNeedsCatalog(id, metadata);
+      return metadata?.contextWindow === undefined
+        || modelCapabilitiesNeedCatalog({ id }, metadata ?? {}) || relayOutputNeedsCatalog(id, metadata);
     })
       ? await loadOptionalModelCapabilityCatalog() : [];
     const models = resolveMixedRelayModels(modelIds, base ?? undefined, test.capabilitiesByModelId, catalog);

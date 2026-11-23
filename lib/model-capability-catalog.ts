@@ -7,6 +7,7 @@ import {
 } from "./model-capabilities";
 import { recommendModelCatalogPreset, type ModelCatalogEntry } from "./model-catalog";
 import { loadCatalog } from "./model-catalog-fetch";
+import { readContextWindowTokens } from "./relay-model-policy";
 import { readOutputTokenLimit } from "./relay-output-policy";
 
 interface ModelLookup {
@@ -47,16 +48,41 @@ export function canonicalAnthropicThinkingCompat(id: string): { forceAdaptiveThi
     ? { forceAdaptiveThinking: true } : undefined;
 }
 
-/** A model spec is not a relay entitlement; only use exact canonical entries,
- * never another intermediary's limits or a fuzzy match. */
-export function canonicalModelOutputTokenLimit(id: string, api: string | undefined, catalog: readonly ModelCatalogEntry[] = []): number | undefined {
-  const normalized = canonicalModelId(id);
-  const provider = api === "anthropic-messages" ? "anthropic"
+function canonicalProviderForApi(normalized: string, api: string | undefined): string | undefined {
+  return api === "anthropic-messages" ? "anthropic"
     : api === "openai-responses" ? "openai"
     : api === "openai-completions" && /^(?:gpt-|codex(?:-|$))/.test(normalized) ? "openai"
     : api === "openai-completions" && /^deepseek-/.test(normalized) ? "deepseek"
     : api === "openai-completions" && /^(?:gemini-|gemma-)/.test(normalized) ? "google"
     : api === "openai-completions" && /^grok-/.test(normalized) ? "xai" : undefined;
+}
+
+/** Use the exact bundled preset for the selected route's Auto window. */
+export function canonicalModelContextWindow(
+  id: string,
+  api: string | undefined,
+  groupName?: string,
+  catalog: readonly ModelCatalogEntry[] = [],
+): number | undefined {
+  const normalized = canonicalModelId(id);
+  const provider = canonicalProviderForApi(normalized, api);
+  const models = exactBuiltinModels(normalized);
+  if (provider === "openai" && /^codex(?:$|[^a-z0-9])/i.test(groupName?.trim() ?? "")) {
+    const codex = readContextWindowTokens(catalog.find((entry) =>
+      entry.providerId === "openai-codex" && canonicalModelId(entry.id) === normalized)?.contextWindow)
+      ?? readContextWindowTokens(models.find((entry) => entry.provider === "openai-codex")?.contextWindow);
+    if (codex !== undefined) return codex;
+  }
+  return readContextWindowTokens(catalog.find((entry) =>
+    entry.providerId === provider && canonicalModelId(entry.id) === normalized)?.contextWindow)
+    ?? readContextWindowTokens(models.find((entry) => entry.provider === provider)?.contextWindow);
+}
+
+/** A model spec is not a relay entitlement; only use exact canonical entries,
+ * never another intermediary's limits or a fuzzy match. */
+export function canonicalModelOutputTokenLimit(id: string, api: string | undefined, catalog: readonly ModelCatalogEntry[] = []): number | undefined {
+  const normalized = canonicalModelId(id);
+  const provider = canonicalProviderForApi(normalized, api);
   if (!provider) return undefined;
   // The publisher's model limit belongs to the model, not the wire encoding
   // selected in a relay group (e.g. a GPT switched to Chat Completions).

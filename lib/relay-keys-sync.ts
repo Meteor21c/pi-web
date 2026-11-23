@@ -6,6 +6,7 @@ import {
   applyPlazaContextWindows,
   contextWindowsForModels,
   fetchRelayModelPlaza,
+  firstTierContextWindow,
   officialCostsForModels,
   type RelayModelPlaza,
 } from "./relay-model-plaza";
@@ -242,18 +243,22 @@ async function run(session: AccountSession, accountId: string, epoch: number): P
       const key = keys[cursor++];
       const providerId = providerIdFor(accountId, String(key.id), initial, initialIndex);
       const test = await testRelayConnection(key.key);
+      if (epoch !== relayOperationEpoch()) return;
       const partition = test.ok
         ? partitionRelayModelIds(test.modelIds ?? [])
         : { chatModelIds: [], imageModelIds: [] };
       const catalog = partition.chatModelIds.some((id) => {
         const metadata = test.capabilitiesByModelId?.get(id);
-        return modelCapabilitiesNeedCatalog({ id }, metadata ?? {}) || relayOutputNeedsCatalog(id, metadata);
+        return (metadata?.contextWindow === undefined && firstTierContextWindow(plaza, key.group_id, id) === undefined)
+          || modelCapabilitiesNeedCatalog({ id }, metadata ?? {}) || relayOutputNeedsCatalog(id, metadata);
       })
         ? await (capabilityCatalog ??= loadOptionalModelCapabilityCatalog()) : [];
-      const resolved = test.ok ? resolveMixedRelayModels(partition.chatModelIds, getRelayBaseUrl(), test.capabilitiesByModelId, catalog) : [];
+      const resolved = test.ok
+        ? resolveMixedRelayModels(partition.chatModelIds, getRelayBaseUrl(), test.capabilitiesByModelId, catalog, key.group?.name)
+        : [];
       const resolvedIds = resolved.map((model) => model.id);
       const previousGroup = previousGroups.get(providerId);
-      // A missing plaza entry should not silently raise a previously capped window.
+      // Keep the same group's last known pricing tier through temporary catalog gaps.
       const sameGroup = key.group_id !== undefined && String(previousGroup?.groupId) === String(key.group_id);
       const plazaGroup = plaza?.groups.find((group) => String(group.id) === String(key.group_id));
       const previousWindows = sameGroup && plazaGroup?.long_context_pricing_enabled !== false

@@ -10,6 +10,7 @@ import { sanitizeBaseUrlOverride } from "./relay-config-save";
 import { readUpstreamModelCapabilities } from "./model-capabilities";
 import type { RelayModelUpstreamMetadata } from "./relay-models";
 import { upstreamRelayOutputTokenLimit } from "./relay-output-policy";
+import { upstreamRelayContextWindow } from "./relay-model-policy";
 
 const GPT_RE = /gpt|codex/i;
 const CLAUDE_RE = /claude/i;
@@ -71,9 +72,11 @@ export async function testRelayConnection(
       const entries = (json as { data: Array<Record<string, unknown> & { id: string }> }).data;
       const capabilitiesByModelId = new Map(entries.map((entry) => {
         const maxOutputTokens = upstreamRelayOutputTokenLimit(entry);
+        const contextWindow = upstreamRelayContextWindow(entry);
         return [entry.id.trim(), {
           ...readUpstreamModelCapabilities(entry),
           ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+          ...(contextWindow === undefined ? {} : { contextWindow }),
         }] as const;
       }));
       return { ok: true, modelCount: ids.length, gptCount, claudeCount, modelIds: ids, capabilitiesByModelId };

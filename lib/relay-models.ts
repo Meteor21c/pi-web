@@ -11,13 +11,14 @@
  */
 
 import { getRelayBaseUrl, getRelayResponsesBaseUrl } from "./relay-config";
-import { canonicalAnthropicThinkingCompat, canonicalModelOutputTokenLimit, resolveModelCapabilities } from "./model-capability-catalog";
+import { canonicalAnthropicThinkingCompat, canonicalModelContextWindow, canonicalModelOutputTokenLimit, resolveModelCapabilities } from "./model-capability-catalog";
 import { relayModelCapabilityCompat, type ModelCapabilities } from "./model-capabilities";
 import type { ModelCatalogEntry } from "./model-catalog";
 import {
   RELAY_CLAUDE_DEFAULT_CONTEXT_WINDOW,
   RELAY_GPT_DEFAULT_CONTEXT_WINDOW,
   RELAY_OTHER_DEFAULT_CONTEXT_WINDOW,
+  readContextWindowTokens,
   relayDefaultContextWindow,
 } from "./relay-model-policy";
 import { isRelayImageGenerationModel } from "./relay-image-generation";
@@ -35,6 +36,10 @@ export interface RelayModelDef extends ModelCapabilities, RelayOutputPreferences
   contextWindow?: number;
   /** Explicit context window chosen by the user. */
   meteorAgentContextWindowOverride?: number;
+  /** Context window reported by the authenticated relay catalog. */
+  meteorAgentUpstreamContextWindow?: number;
+  /** Auto window from the matching models.dev or bundled Pi configuration. */
+  meteorAgentCatalogContextWindow?: number;
   maxTokens?: number;
   api?: string;
   baseUrl?: string;
@@ -44,6 +49,7 @@ export interface RelayModelDef extends ModelCapabilities, RelayOutputPreferences
 
 export interface RelayModelUpstreamMetadata extends ModelCapabilities {
   maxOutputTokens?: number;
+  contextWindow?: number;
 }
 
 const GPT_FAMILY = { contextWindow: RELAY_GPT_DEFAULT_CONTEXT_WINDOW, maxTokens: 128_000, cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } } as const;
@@ -147,11 +153,13 @@ export function resolveRelayModels(family: "gpt" | "claude" | "other", remoteIds
       meteorAgentMaxOutputTokensSource: "catalog",
     };
     const compat = family === "claude" ? canonicalAnthropicThinkingCompat(id) : undefined;
+    const contextWindow = canonicalModelContextWindow(id, relayModelApi(family)) ?? model.contextWindow;
     return {
       ...model,
       ...output,
       name: id,
-      maxTokens: resolveRelayMaxOutputTokens(output, model.contextWindow, model.maxTokens),
+      contextWindow,
+      maxTokens: resolveRelayMaxOutputTokens(output, contextWindow, model.maxTokens),
       ...resolveModelCapabilities({ id }),
       ...(compat ? { compat } : {}),
     };
@@ -164,6 +172,7 @@ export function resolveMixedRelayModels(
   base = getRelayBaseUrl(),
   upstream: ReadonlyMap<string, RelayModelUpstreamMetadata> = new Map(),
   catalog: readonly ModelCatalogEntry[] = [],
+  groupName?: string,
 ): RelayModelDef[] {
   return [...new Set(ids)].flatMap((id) => {
     // Non-chat endpoints must not be advertised as conversational models.
@@ -178,7 +187,9 @@ export function resolveMixedRelayModels(
       meteorAgentMaxOutputTokensLimit: limit,
       meteorAgentMaxOutputTokensSource: relayLimit === undefined ? "catalog" : "relay",
     };
-    const contextWindow = model.contextWindow ?? relayDefaultContextWindow(id);
+    const catalogContext = canonicalModelContextWindow(id, api, groupName, catalog);
+    const upstreamContext = readContextWindowTokens(metadata?.contextWindow);
+    const contextWindow = upstreamContext ?? catalogContext ?? model.contextWindow ?? relayDefaultContextWindow(id);
     const compat = api === "anthropic-messages" ? canonicalAnthropicThinkingCompat(id) : relayModelCapabilityCompat(id);
     return [{
       ...model,
@@ -186,6 +197,8 @@ export function resolveMixedRelayModels(
       ...output,
       name: id,
       contextWindow,
+      ...(upstreamContext === undefined ? {} : { meteorAgentUpstreamContextWindow: upstreamContext }),
+      ...(catalogContext === undefined ? {} : { meteorAgentCatalogContextWindow: catalogContext }),
       maxTokens: resolveRelayMaxOutputTokens(output, contextWindow, model.maxTokens),
       api,
       baseUrl: family === "claude" ? base : `${base}/v1`,

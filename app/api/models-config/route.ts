@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readModelsConfig, modelsConfigRevision, writeModelsConfigIfCurrent } from "@/lib/models-config-store";
+import { readModelsConfig, modelsConfigForEditor, modelsConfigRevision, writeModelsConfigIfCurrent } from "@/lib/models-config-store";
 import { capabilityRecord, readModelInput, readModelThinkingLevelMap } from "@/lib/model-capabilities";
 import { loadOptionalModelCapabilityCatalog, modelCapabilitiesNeedCatalog, resolveModelCapabilities } from "@/lib/model-capability-catalog";
 import { isRelayProviderId } from "@/lib/relay-config";
@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const config = readModelsConfig();
-  return NextResponse.json(config, { headers: { ETag: modelsConfigRevision(config), "Cache-Control": "no-store" } });
+  return NextResponse.json(modelsConfigForEditor(config), { headers: { ETag: modelsConfigRevision(config), "Cache-Control": "no-store" } });
 }
 
 /** Apply defaults to newly created custom entries, preserving explicit edits. */
@@ -59,7 +59,7 @@ export async function PUT(req: Request) {
     await fillNewModelCapabilities(body, previous);
     const next = writeModelsConfigIfCurrent(body, revision);
     if (!next) return conflict();
-    return NextResponse.json({ success: true, config: readModelsConfig() }, { headers: { ETag: next } });
+    return NextResponse.json({ success: true, config: modelsConfigForEditor(readModelsConfig()) }, { headers: { ETag: next } });
   } catch {
     return NextResponse.json({ error: "Unable to save configuration." }, { status: 500 });
   }
