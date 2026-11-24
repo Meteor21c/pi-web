@@ -408,8 +408,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     sessionIdRef, scrollContainerRef,
     lastUserMsgRef, promptAnchorActive,
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
-    handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
-    handleRecallQueue,
+    handleCompact, handleFollowUp, handleAbortCompaction,
+    handleQueueAction,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, handleGoalChange, loadTools, loadSlashCommands, scrollUserMsgToTop,
     loadContext, activeLeafId, scrollToBottom, scrollToMessage,
@@ -1158,9 +1158,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       ref={chatInputRef}
       onSend={handleSend}
       onAbort={handleAbort}
-      onSteer={agentRunning ? handleSteer : undefined}
       onFollowUp={agentRunning ? handleFollowUp : undefined}
-      onPromptWithStreamingBehavior={agentRunning ? handlePromptWithStreamingBehavior : undefined}
       isStreaming={sessionBusy}
       model={displayModelValue}
       isAutoModelSelection={isAutoModelSelection}
@@ -1214,7 +1212,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       retryInfo={retryInfo}
       queuedMessages={queuedMessages}
       inputHistory={inputHistory}
-      onRecallQueue={handleRecallQueue}
+      onQueueAction={handleQueueAction}
       slashCommands={slashCommands}
       slashCommandsLoading={slashCommandsLoading}
       availableTools={availableTools}

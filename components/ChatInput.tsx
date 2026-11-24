@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
-import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
+import type { BuiltinSlashCommandResult, CompactResultInfo, SlashCommandInfo } from "@/hooks/useAgentSession";
+import type { QueueAction, QueuedInput, QueuedMessages } from "@/lib/agent-input-queue";
 import type { SkillsResponse } from "@/lib/api-types";
 import type { TextContent, UserMessage } from "@/lib/types";
 import {
@@ -10,13 +11,16 @@ import {
   mergeRestoredSubmissionDraft,
   mergeRestoredSubmissionText,
   rekeyDraft as rekeyStoredDraft,
+  restoreDraftSubmission,
   setDraft,
+  toChatDraftImage,
   type ChatDraftImage,
 } from "@/lib/draft-store";
 import {
   MAX_ATTACHED_IMAGE_BYTES,
   MAX_ATTACHED_IMAGES,
   isBase64ImageWithinLimits,
+  type AttachedImage,
 } from "@/lib/image-attachments";
 import {
   buildEntriesFromFiles, buildAtInsertText, buildFileAtMentionsText, extractAtQuery, filterFileEntries,
@@ -36,12 +40,6 @@ import { MODEL_THINKING_LEVELS, resolveThinkingLevelOption, type ThinkingLevelOp
 
 export { filterModelOptions } from "./ModelSelector";
 
-export interface AttachedImage {
-  data: string;   // base64, no prefix
-  mimeType: string;
-  previewUrl: string; // object URL for display
-}
-
 interface ComposerUploadResponse {
   uploaded?: string[];
   errors?: Array<{ name: string; error: string }>;
@@ -51,9 +49,7 @@ interface ComposerUploadResponse {
 interface Props {
   onSend: (message: string, images?: AttachedImage[]) => void;
   onAbort: () => void;
-  onSteer?: (message: string, images?: AttachedImage[]) => void;
   onFollowUp?: (message: string, images?: AttachedImage[]) => void;
-  onPromptWithStreamingBehavior?: (message: string, behavior: "steer" | "followUp", images?: AttachedImage[]) => void;
   isStreaming: boolean;
   /** Text-only composer without the session controls or outer spacing. */
   compact?: boolean;
@@ -97,7 +93,7 @@ interface Props {
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
   queuedMessages?: QueuedMessages | null;
   inputHistory?: string[];
-  onRecallQueue?: () => void;
+  onQueueAction?: (id: string, action: QueueAction) => Promise<void>;
   slashCommands?: SlashCommandInfo[];
   slashCommandsLoading?: boolean;
   availableTools?: ToolEntry[];
@@ -115,7 +111,6 @@ export interface ChatInputHandle {
   insertText: (text: string) => void;
   insertIfEmpty: (text: string) => void;
   replaceMessage: (message: UserMessage) => void;
-  prependText: (text: string) => void;
   addImages: (files: File[]) => void;
   rekeyDraft: (previousKey: string, nextKey: string) => void;
   restoreSubmission: (text: string, images?: ChatDraftImage[], targetDraftKey?: string) => void;
@@ -508,8 +503,17 @@ export async function compressImageFile(file: File): Promise<{ data: string; mim
   }
 }
 
-function imageToDraftImage(image: AttachedImage): ChatDraftImage {
-  return { data: image.data, mimeType: image.mimeType };
+async function saveOriginalImage(file: File): Promise<string> {
+  const response = await fetch("/api/attachments/image", {
+    method: "POST",
+    headers: { "Content-Type": file.type, "X-Image-Name": encodeURIComponent(file.name) },
+    body: file,
+  });
+  const result = await response.json().catch(() => null) as { filePath?: unknown } | null;
+  if (!response.ok || typeof result?.filePath !== "string" || !result.filePath) {
+    throw new Error("Could not save the original image");
+  }
+  return result.filePath;
 }
 
 function draftImageToAttachedImage(image: ChatDraftImage): AttachedImage {
@@ -522,7 +526,6 @@ function draftImageToAttachedImage(image: ChatDraftImage): AttachedImage {
 function draftImagesToAttachedImages(images: ChatDraftImage[] | undefined): AttachedImage[] {
   return (images ?? [])
     .filter(isBase64ImageWithinLimits)
-    .slice(0, MAX_ATTACHED_IMAGES)
     .map(draftImageToAttachedImage);
 }
 
@@ -564,59 +567,47 @@ function revokeImagePreview(image: AttachedImage): void {
   }
 }
 
-function QueuedMessageRow({ kind, text }: { kind: "steer" | "follow-up"; text: string }) {
+function QueuedMessageRow({ item, busy, canSteer, onAction }: {
+  item: QueuedInput;
+  busy: boolean;
+  canSteer: boolean;
+  onAction?: (id: string, action: QueueAction) => void;
+}) {
   const { t } = useI18n();
+  const { id, kind, text, imageCount } = item;
   const steering = kind === "steer";
+  const statusColor = steering ? "var(--warning-text, #a16207)" : "var(--accent)";
+  const imageLabel = imageCount > 0 ? t("chat.queuedImages", { count: imageCount }) : null;
+  const buttonClass = "rounded-md border border-border px-2 py-1 text-xs text-text hover:bg-bg-hover disabled:opacity-50";
   return (
-    <div
-      title={text}
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 9,
-        padding: "7px 9px",
-        border: `0.5px solid ${steering ? "color-mix(in srgb, var(--accent) 22%, transparent)" : "color-mix(in srgb, #6366f1 18%, transparent)"}`,
-        borderRadius: 11,
-        background: steering
-          ? "color-mix(in srgb, var(--accent) 7%, var(--assistant-bg))"
-          : "color-mix(in srgb, #6366f1 6%, var(--assistant-bg))",
-        fontSize: 12,
-        color: "var(--text-muted)",
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          width: 24,
-          height: 24,
-          display: "grid",
-          placeItems: "center",
-          flexShrink: 0,
-          borderRadius: 8,
-          background: steering ? "color-mix(in srgb, var(--accent) 13%, transparent)" : "color-mix(in srgb, #6366f1 12%, transparent)",
-          color: steering ? "var(--accent)" : "#6366f1",
-        }}
-        aria-hidden="true"
-      >
-        {steering ? (
-          <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M6 1.5 10.5 6 6 10.5" /><line x1="1.5" y1="6" x2="10" y2="6" />
-          </svg>
-        ) : (
-          <svg width="13" height="13" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 2.5h5.5a1 1 0 0 1 1 1V7" /><path d="m7 5 2.5 2.5L12 5" /><path d="M9.5 7.5H3a1 1 0 0 1-1-1V4" />
-          </svg>
-        )}
-      </span>
-      <span style={{ minWidth: 0, flex: 1 }}>
-        <strong style={{ display: "block", marginBottom: 2, color: "var(--text)", fontSize: 11.5, fontWeight: 600 }}>
-          {steering ? t("chat.steeringCurrent") : t("chat.followUpQueued")}
-        </strong>
-        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{text}</span>
-        <small style={{ display: "block", marginTop: 3, color: "var(--text-dim)", fontSize: 9.5, lineHeight: 1.35 }}>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border px-2.5 py-2 text-xs">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <strong className="shrink-0 rounded px-1.5 py-0.5 font-semibold" style={{
+            color: statusColor,
+            background: "color-mix(in srgb, " + statusColor + " 12%, transparent)",
+          }}>
+            {steering ? t("chat.steeringCurrent") : t("chat.followUpQueued")}
+          </strong>
+          {text && <span className="truncate text-text" title={text}>{text}</span>}
+          {imageLabel && <span className="shrink-0 text-text-muted">{imageLabel}</span>}
+        </div>
+        <small className="mt-0.5 block text-text-muted">
           {steering ? t("chat.steeringCurrentHint") : t("chat.followUpQueuedHint")}
         </small>
-      </span>
+      </div>
+      {id && onAction && (
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {!steering && canSteer && (
+            <button type="button" className={buttonClass} disabled={busy} onClick={() => onAction(id, "steer")}>
+              {t("chat.promoteToSteer")}
+            </button>
+          )}
+          <button type="button" className={buttonClass} disabled={busy} onClick={() => onAction(id, "recall")}>
+            {t("chat.recall")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -717,18 +708,17 @@ export function ModelScopeWarningBanner({ warnings }: { warnings?: string[] }) {
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
+  onSend, onAbort, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   workMode, pendingWorkMode, showWorkMode, workModeDisabled, onNewWorkModeChanged, onSessionWorkModeChange, onResolvedWorkMode,
   messagePlaceholder, onShowPreviousGoal, approvalPolicyControl,
   subagentMode, onSubagentModeChange, subagentModeDisabled,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
-  retryInfo, queuedMessages, inputHistory = [], onRecallQueue,
+  retryInfo, queuedMessages, inputHistory = [], onQueueAction,
   slashCommands, slashCommandsLoading, availableTools, onLoadSlashCommands,
   onBuiltinCommand,
   soundEnabled, onSoundToggle, onAudioUnlock,
-  onPromptWithStreamingBehavior,
   draftKey,
   cwd,
   compact = false,
@@ -747,6 +737,22 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     phase: "idle" | "uploading" | "success" | "error";
     message?: string;
   }>({ phase: "idle" });
+  const [savingImages, setSavingImages] = useState(false);
+  const [imageSaveFailed, setImageSaveFailed] = useState(false);
+  const [queueActionPending, setQueueActionPending] = useState(false);
+  const tooManyImages = attachedImages.length > MAX_ATTACHED_IMAGES;
+  const attachmentsUploading = savingImages || fileUploadStatus.phase === "uploading";
+  const uploadStatus = savingImages
+    ? { phase: "uploading", message: t("chat.savingImages") }
+    : !attachmentsUploading && (tooManyImages || imageSaveFailed)
+      ? { phase: "error", message: tooManyImages
+        ? t("chat.tooManyAttachedImages", { count: MAX_ATTACHED_IMAGES })
+        : t("chat.imageSaveFailed") }
+      : fileUploadStatus;
+  const queueItems: QueuedInput[] = queuedMessages?.items ?? [
+    ...(queuedMessages?.steering ?? []).map((text): QueuedInput => ({ kind: "steer", text, imageCount: 0 })),
+    ...(queuedMessages?.followUp ?? []).map((text): QueuedInput => ({ kind: "followUp", text, imageCount: 0 })),
+  ];
   const trimmedValue = value.trimStart();
   const bashMode = attachedImages.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
@@ -793,6 +799,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
+  const composerMountedRef = useRef(false);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
 
@@ -834,24 +841,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
       });
     },
-    prependText(text: string) {
-      if (!text.trim()) return;
-      const ta = textareaRef.current;
-      const current = ta ? ta.value : value;
-      // Mirrors the TUI's queue restore: queued text first, then whatever
-      // the user already typed, separated by a blank line.
-      const combined = [text, current].filter((t) => t.trim()).join("\n\n");
-      valueRef.current = combined;
-      setValue(combined);
-      setAtQuery(null);
-      requestAnimationFrame(() => {
-        if (!ta) return;
-        ta.focus();
-        ta.setSelectionRange(combined.length, combined.length);
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-      });
-    },
     rekeyDraft(previousKey: string, nextKey: string) {
       if (previousKey === nextKey) return;
       if (draftKeyRef.current !== previousKey) {
@@ -861,7 +850,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
       const currentDraft = {
         value: valueRef.current,
-        images: attachedImagesRef.current.map(imageToDraftImage),
+        images: attachedImagesRef.current.map(toChatDraftImage),
       };
       const moved = rekeyStoredDraft(previousKey, nextKey, currentDraft) ?? { value: "", images: [] };
       const unchanged = moved.value === currentDraft.value
@@ -901,7 +890,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         images,
         targetsCurrentComposer ? valueRef.current : (storedDraft?.value ?? ""),
         targetsCurrentComposer
-          ? attachedImagesRef.current.map(imageToDraftImage)
+          ? attachedImagesRef.current.map(toChatDraftImage)
           : (storedDraft?.images ?? []),
       );
       // The first optimistic message switches ChatWindow out of its empty-state
@@ -910,13 +899,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (destinationDraftKey) setDraft(destinationDraftKey, restoredDraft);
       if (!targetsCurrentComposer) return;
       const restoredImages = images?.length
-        ? [
-            ...draftImagesToAttachedImages(images).slice(
-              0,
-              Math.max(0, MAX_ATTACHED_IMAGES - attachedImagesRef.current.length),
-            ),
-            ...attachedImagesRef.current,
-          ].slice(0, MAX_ATTACHED_IMAGES)
+        ? [...draftImagesToAttachedImages(images), ...attachedImagesRef.current]
         : attachedImagesRef.current;
       // Session promotion can rekey this composer before React flushes the
       // functional updates below, so update the imperative snapshot first.
@@ -931,9 +914,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       setHistoryMenuOpen(false);
       if (images?.length) {
         setAttachedImages((current) => {
-          const available = Math.max(0, MAX_ATTACHED_IMAGES - current.length);
-          const restored = draftImagesToAttachedImages(images)
-            .slice(0, available);
+          const restored = draftImagesToAttachedImages(images);
           const next = restored.length > 0 ? [...restored, ...current] : current;
           attachedImagesRef.current = next;
           return next;
@@ -987,23 +968,34 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       .filter((f) => f.type.startsWith("image/") && f.size <= MAX_ATTACHED_IMAGE_BYTES)
       .slice(0, remaining);
     if (!imageFiles.length) return;
+    const targetDraftKey = draftKeyRef.current;
+    if (pendingImageCountRef.current === 0) setImageSaveFailed(false);
     pendingImageCountRef.current += imageFiles.length;
+    setSavingImages(true);
     try {
-      const newImages = await Promise.all(
+      const results = await Promise.allSettled(
         imageFiles.map(async (file) => ({
           ...await compressImageFile(file),
-          previewUrl: URL.createObjectURL(file),
+          filePath: await saveOriginalImage(file),
         }))
       );
-      setAttachedImages((prev) => {
-        const accepted = newImages.slice(0, Math.max(0, MAX_ATTACHED_IMAGES - prev.length));
-        newImages.slice(accepted.length).forEach(revokeImagePreview);
-        const next = [...prev, ...accepted];
-        attachedImagesRef.current = next;
-        return next;
-      });
+      if (!composerMountedRef.current || draftKeyRef.current !== targetDraftKey) {
+        const saved = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+        if (targetDraftKey && saved.length) restoreDraftSubmission(targetDraftKey, "", saved);
+        return;
+      }
+
+      const saved = results.flatMap((result, index) => result.status === "fulfilled"
+        ? [{ ...result.value, file: imageFiles[index] }]
+        : [])
+        .map(({ file, ...image }) => ({ ...image, previewUrl: URL.createObjectURL(file) }));
+      const next = [...attachedImagesRef.current, ...saved];
+      attachedImagesRef.current = next;
+      setAttachedImages(next);
+      if (results.some((result) => result.status === "rejected")) setImageSaveFailed(true);
     } finally {
       pendingImageCountRef.current -= imageFiles.length;
+      if (composerMountedRef.current) setSavingImages(pendingImageCountRef.current > 0);
     }
   }, [compact]);
 
@@ -1102,6 +1094,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setAtQuery(null);
     setHistoryMenuOpen(false);
     setFileUploadStatus({ phase: "idle" });
+    setImageSaveFailed(false);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
@@ -1114,7 +1107,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!draftKey || draftKeyRef.current !== draftKey) return;
     setDraft(draftKey, {
       value,
-      images: attachedImages.map(imageToDraftImage),
+      images: attachedImages.map(toChatDraftImage),
     });
   }, [attachedImages, draftKey, value]);
 
@@ -1125,7 +1118,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (previousDraftKey) {
       setDraft(previousDraftKey, {
         value: valueRef.current,
-        images: attachedImagesRef.current.map(imageToDraftImage),
+        images: attachedImagesRef.current.map(toChatDraftImage),
       });
     }
 
@@ -1138,6 +1131,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setValue(nextValue);
     setAtQuery(null);
     setHistoryMenuOpen(false);
+    setImageSaveFailed(false);
     setAttachedImages((prev) => {
       prev.forEach(revokeImagePreview);
       return nextImages;
@@ -1168,7 +1162,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [resizeTextarea]);
 
   useEffect(() => {
+    composerMountedRef.current = true;
     return () => {
+      composerMountedRef.current = false;
       attachedImagesRef.current.forEach(revokeImagePreview);
     };
   }, []);
@@ -1190,6 +1186,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [attachedImages.length, clearInput, onBuiltinCommand]);
 
   const handleSend = useCallback(async () => {
+    if (pendingImageCountRef.current > 0 || fileUploadStatus.phase === "uploading" || tooManyImages) return;
     const msg = value.trim();
     if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
@@ -1198,7 +1195,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (isStreaming) return;
     clearInput();
     onSend(msg, attachedImages.length ? attachedImages : undefined);
-  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock, fileUploadStatus.phase, tooManyImages]);
 
   const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -1231,7 +1228,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? t(slashQuery ? "chat.match" : "chat.command")
     : t(slashQuery ? "chat.matches" : "chat.commands", { count: filteredSlashCommands.length });
   const hasInputText = Boolean(value.trim());
-  const canQueueStreamingMessage = hasInputText || attachedImages.length > 0;
+  const canSubmitMessage = !attachmentsUploading && !tooManyImages && (hasInputText || attachedImages.length > 0);
   // Warn when images are attached but the selected model is known not to accept
   // image input (#584), including a resolved default. Unknown models stay silent.
   const showImageUnsupportedWarning = (
@@ -1510,7 +1507,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     });
   }, [updateAtQuery]);
 
-  const sendQueued = useCallback((mode: "steer" | "followup") => {
+  const sendQueued = useCallback(() => {
+    if (!onFollowUp || pendingImageCountRef.current > 0 || fileUploadStatus.phase === "uploading" || tooManyImages) return;
     const msg = value.trim();
     if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
@@ -1518,19 +1516,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       void runBuiltinCommand(msg);
       return;
     }
-    const streamingBehavior = mode === "steer" ? "steer" : "followUp";
-    if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
-      clearInput();
-      onPromptWithStreamingBehavior(msg, streamingBehavior, attachedImages.length ? attachedImages : undefined);
-      return;
-    }
     clearInput();
-    if (mode === "steer" && onSteer) {
-      onSteer(msg, attachedImages.length ? attachedImages : undefined);
-    } else if (mode === "followup" && onFollowUp) {
-      onFollowUp(msg, attachedImages.length ? attachedImages : undefined);
+    onFollowUp(msg, attachedImages.length ? attachedImages : undefined);
+  }, [value, attachedImages, onBuiltinCommand, onFollowUp, clearInput, onAudioUnlock, runBuiltinCommand, fileUploadStatus.phase, tooManyImages]);
+
+  const updateQueueItem = useCallback(async (id: string, action: QueueAction) => {
+    if (!onQueueAction || queueActionPending) return;
+    setQueueActionPending(true);
+    try {
+      await onQueueAction(id, action);
+    } finally {
+      setQueueActionPending(false);
     }
-  }, [value, attachedImages, onBuiltinCommand, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, runBuiltinCommand]);
+  }, [onQueueAction, queueActionPending]);
 
   const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
     const lastIndex = displayedSlashCommands.length - 1;
@@ -1702,14 +1700,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
       if (sendShortcut) {
         e.preventDefault();
-        if (isStreaming && (onSteer || onFollowUp)) {
-          sendQueued((e.altKey && onFollowUp) || !onSteer ? "followup" : "steer");
+        if (isStreaming && onFollowUp) {
+          sendQueued();
         } else {
           handleSend();
         }
       }
     },
-    [isMobile, isStreaming, onSteer, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
+    [isMobile, isStreaming, onFollowUp, onAbort, slashMenuOpen, slashQuery, displayedSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value]
   );
 
   const handleInput = useCallback(() => {
@@ -1945,74 +1943,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             />
           );
         })()}
-        {/* Steering belongs to the current run; follow-ups wait for the next
-            turn. Upstream stores both safely, but the UI must not present
-            them as one undifferentiated queue. */}
-        {((queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0)) > 0 && (
-          <div style={{
-            marginBottom: 8,
-            border: "0.5px solid color-mix(in srgb, var(--border) 68%, transparent)",
-            borderRadius: 14,
-            background: "color-mix(in srgb, var(--bg-panel) 70%, transparent)",
-            padding: 7,
-          }}>
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 8,
-              padding: "1px 2px 7px 4px",
-            }}>
-              <span style={{
-                fontSize: 11,
-                fontWeight: 600,
-                color: "var(--text-dim)",
-              }}>
-                {t("chat.pendingMessages", { count: (queuedMessages?.steering.length ?? 0) + (queuedMessages?.followUp.length ?? 0) })}
-              </span>
-              {onRecallQueue && (
-                <button
-                  onClick={onRecallQueue}
-                   title={t("chat.recallTitle")}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "4px 12px",
-                    fontSize: 12,
-                    color: "var(--text)",
-                    background: "transparent",
-                    border: "1px solid var(--border)",
-                    borderRadius: 7,
-                    cursor: "pointer",
-                    transition: "background 0.12s, border-color 0.12s",
-                    whiteSpace: "nowrap",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.borderColor = "color-mix(in srgb, var(--accent) 45%, var(--border))";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.borderColor = "var(--border)";
-                  }}
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="9 14 4 9 9 4" />
-                    <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
-                  </svg>
-                   {t("chat.recall")}
-                </button>
-              )}
-            </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {queuedMessages?.steering.map((text, i) => (
-                <QueuedMessageRow key={`steer-${i}`} kind="steer" text={text} />
-              ))}
-              {queuedMessages?.followUp.map((text, i) => (
-                <QueuedMessageRow key={`followup-${i}`} kind="follow-up" text={text} />
-              ))}
-            </div>
+        {queueItems.length > 0 && (
+          <div aria-label={t("chat.pendingMessages", { count: queueItems.length })} className="mb-2 grid gap-1.5">
+            {queueItems.map((item, index) => (
+              <QueuedMessageRow
+                key={item.id ?? item.kind + "-" + index}
+                item={item}
+                busy={queueActionPending}
+                canSteer={Boolean(onFollowUp)}
+                onAction={onQueueAction ? updateQueueItem : undefined}
+              />
+            ))}
           </div>
         )}
         {/* Retry banner */}
@@ -2063,18 +2004,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {compactError}
           </div>
         )}
-        {fileUploadStatus.phase !== "idle" && (
+        {uploadStatus.phase !== "idle" && (
           <div
-            role={fileUploadStatus.phase === "error" ? "alert" : "status"}
+            role={uploadStatus.phase === "error" ? "alert" : "status"}
             aria-live="polite"
             style={{
               display: "flex",
               alignItems: "center",
               gap: 6,
               marginBottom: 6,
-              color: fileUploadStatus.phase === "error"
+              color: uploadStatus.phase === "error"
                 ? "#ef4444"
-                : fileUploadStatus.phase === "success"
+                : uploadStatus.phase === "success"
                   ? "#22c55e"
                   : "var(--text-muted)",
               fontSize: 11,
@@ -2083,12 +2024,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               overflowWrap: "anywhere",
             }}
           >
-            {fileUploadStatus.phase === "uploading" && (
+            {uploadStatus.phase === "uploading" && (
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" style={{ animation: "spin 0.8s linear infinite", flexShrink: 0 }} aria-hidden="true">
                 <path d="M21 12a9 9 0 1 1-5.7-8.4" />
               </svg>
             )}
-            <span>{fileUploadStatus.message}</span>
+            <span>{uploadStatus.message}</span>
           </div>
         )}
         {/* Image previews */}
@@ -2100,6 +2041,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 <img
                   src={img.previewUrl}
                   alt=""
+                  title={img.filePath}
                   style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)", display: "block" }}
                 />
                 <button
@@ -2595,7 +2537,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               gap: 8,
               alignItems: compact ? "stretch" : "center",
               background: "var(--assistant-bg)",
-              border: compact ? "none" : `1px solid ${bashMode ? "var(--tool-bg)" : isStreaming && (onSteer || onFollowUp)
+              border: compact ? "none" : `1px solid ${bashMode ? "var(--tool-bg)" : isStreaming && onFollowUp
                 ? "rgba(234,179,8,0.4)"
                 : "color-mix(in srgb, var(--border) 70%, transparent)"}`,
               borderRadius: compact ? 0 : 22,
@@ -2632,8 +2574,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onInput={handleInput}
             onPaste={handlePaste}
             placeholder={
-              isStreaming && (onSteer || onFollowUp)
-                ? t("chat.steerPlaceholder")
+              isStreaming && onFollowUp
+                ? t("chat.queuePlaceholder")
                 : isStreaming ? t("chat.agentPlaceholder")
                 : messagePlaceholder ?? t("chat.messagePlaceholder")
             }
@@ -2656,84 +2598,36 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
           />
 
-          {isStreaming ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, alignSelf: "flex-end" }}>
-              <span className="ui-thinking-dots" aria-hidden="true" style={{ marginRight: 2 }}><span /><span /><span /></span>
-              {onSteer && (
-                <button
-                  onClick={() => sendQueued("steer")}
-                  disabled={!canQueueStreamingMessage}
-                  title={t("chat.steerHint")}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 5,
-                    padding: "7px 12px",
-                    background: canQueueStreamingMessage ? "rgba(234,179,8,0.12)" : "none",
-                    border: "1px solid rgba(234,179,8,0.35)",
-                    borderRadius: 8,
-                    color: canQueueStreamingMessage ? "rgba(180,130,0,1)" : "var(--text-dim)",
-                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
-                    transition: "background 0.12s",
-                  }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M5 1 L9 5 L5 9" /><line x1="1" y1="5" x2="9" y2="5" />
-                  </svg>
-                  {t("chat.steer")}
-                </button>
-              )}
-              {onFollowUp && (
-                <button
-                  onClick={() => sendQueued("followup")}
-                  disabled={!canQueueStreamingMessage}
-                  title={`${t("chat.followUpHint")} (${isMobile ? "Ctrl/Cmd+" : ""}Alt/Option+Enter)`}
-                  aria-keyshortcuts={isMobile ? "Control+Alt+Enter Meta+Alt+Enter" : "Alt+Enter"}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 5,
-                    padding: "7px 12px",
-                    background: canQueueStreamingMessage ? "rgba(129,140,248,0.12)" : "none",
-                    border: "1px solid rgba(129,140,248,0.35)",
-                    borderRadius: 8,
-                    color: canQueueStreamingMessage ? "rgba(99,102,241,1)" : "var(--text-dim)",
-                    cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
-                    fontSize: 13, fontWeight: 600, letterSpacing: "-0.01em",
-                    transition: "background 0.12s",
-                  }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="5" y1="1" x2="5" y2="6" /><polyline points="2.5 3.5 5 1 7.5 3.5" />
-                    <line x1="2" y1="9" x2="8" y2="9" />
-                  </svg>
-                  {t("chat.followUp")}
-                </button>
-              )}
-            </div>
+          {isStreaming && !onFollowUp ? (
+            <span className="ui-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
           ) : (
             <button
-              onClick={handleSend}
-              disabled={!value.trim() && !attachedImages.length}
+              onClick={isStreaming ? sendQueued : handleSend}
+              disabled={!canSubmitMessage}
+              title={isStreaming ? t("chat.followUpHint") : undefined}
+              aria-keyshortcuts={isMobile ? "Control+Enter Meta+Enter" : "Enter"}
               className="ui-send-btn"
               style={{
                 flexShrink: 0,
                 alignSelf: "flex-end",
                 display: "flex", alignItems: "center", gap: 6,
                 padding: "7px 16px",
-                background: (value.trim() || attachedImages.length) ? "var(--accent)" : "var(--bg-panel)",
+                background: canSubmitMessage ? "var(--accent)" : "var(--bg-panel)",
                 border: "none",
                 borderRadius: 999,
-                color: (value.trim() || attachedImages.length) ? "var(--accent-contrast)" : "var(--text-dim)",
-                cursor: (value.trim() || attachedImages.length) ? "pointer" : "not-allowed",
+                color: canSubmitMessage ? "var(--accent-contrast)" : "var(--text-dim)",
+                cursor: canSubmitMessage ? "pointer" : "not-allowed",
                 fontSize: 13,
                 fontWeight: 600,
                 letterSpacing: "-0.01em",
-                boxShadow: (value.trim() || attachedImages.length) ? "0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent)" : "none",
+                boxShadow: canSubmitMessage ? "0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent)" : "none",
               }}
             >
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="2" y1="7" x2="11" y2="7" />
                 <polyline points="7.5 3 12 7 7.5 11" />
               </svg>
-              {t("chat.send")}
+              {t(isStreaming ? "chat.queueMessage" : "chat.send")}
             </button>
           )}
           </div>
@@ -2762,15 +2656,15 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               onClick={() => fileInputRef.current?.click()}
               title={t("chat.attachFiles")}
               aria-label={t("chat.attachFiles")}
-              disabled={fileUploadStatus.phase === "uploading"}
+              disabled={attachmentsUploading}
               style={{
                 flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
                 width: 32, height: 32, padding: 0,
                 background: "none", border: "none",
                 borderRadius: 9,
                 color: attachedImages.length || fileUploadStatus.phase === "success" ? "var(--accent)" : "var(--text-muted)",
-                cursor: fileUploadStatus.phase === "uploading" ? "wait" : "pointer",
-                opacity: fileUploadStatus.phase === "uploading" ? 0.7 : 1,
+                cursor: attachmentsUploading ? "wait" : "pointer",
+                opacity: attachmentsUploading ? 0.7 : 1,
                 transition: "background 0.12s, color 0.12s",
               }}
               onMouseEnter={(e) => {

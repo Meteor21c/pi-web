@@ -17,7 +17,10 @@ import { isBlockingExtensionUiRequest } from "@/lib/browser-notifications";
 import { extensionUiQueueReducer } from "./extension-ui-queue";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { AgentCommandError, isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
-import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
+import { clearDraft, rekeyDraft, restoreDraftSubmission, toChatDraftImage, type ChatDraft, type ChatDraftImage } from "@/lib/draft-store";
+import type { QueueAction, QueuedMessages } from "@/lib/agent-input-queue";
+import { appendImageAttachmentPaths } from "@/lib/file-fuzzy";
+import type { AttachedImage } from "@/lib/image-attachments";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import { useI18n } from "@/hooks/useI18n";
@@ -94,16 +97,11 @@ type AgentStateResponse = Partial<SessionWorkMode> & {
   runActivity?: RunActivity;
   extensionStatuses?: ExtensionStatusItem[];
   extensionWidgets?: ExtensionWidgetItem[];
-  queuedMessages?: { steering?: string[]; followUp?: string[] } | null;
+  queuedMessages?: Partial<QueuedMessages> | null;
 };
 
-export interface QueuedMessages {
-  steering: string[];
-  followUp: string[];
-}
-
-function normalizeQueuedMessages(q?: { steering?: string[]; followUp?: string[] } | null): QueuedMessages {
-  return { steering: q?.steering ?? [], followUp: q?.followUp ?? [] };
+function normalizeQueuedMessages(q?: Partial<QueuedMessages> | null): QueuedMessages {
+  return { steering: q?.steering ?? [], followUp: q?.followUp ?? [], items: q?.items };
 }
 
 type ExtensionUiDialogRequest = Exclude<BlockingExtensionUiRequest, { method: "custom" }>;
@@ -270,16 +268,9 @@ export interface ChatInputHandle {
   insertText: (text: string) => void;
   insertIfEmpty: (content: string) => void;
   replaceMessage: (message: UserMessage) => void;
-  prependText: (text: string) => void;
   addImages: (files: File[]) => void;
   rekeyDraft: (previousKey: string, nextKey: string) => void;
-  restoreSubmission: (text: string, images?: Array<{ data: string; mimeType: string }>, targetDraftKey?: string) => void;
-}
-
-export interface AttachedImage {
-  data: string;
-  mimeType: string;
-  previewUrl: string;
+  restoreSubmission: (text: string, images?: ChatDraftImage[], targetDraftKey?: string) => void;
 }
 
 type SelectedModel = { provider: string; modelId: string };
@@ -556,10 +547,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const restoreSubmission = useCallback((
     text: string,
-    images: AttachedImage[] | undefined,
+    images: ChatDraftImage[] | undefined,
     targetDraftKey: string | undefined,
   ) => {
-    const draftImages = images?.map(({ data, mimeType }) => ({ data, mimeType }));
+    const draftImages = images?.map(toChatDraftImage);
     const destinationDraftKey = resolveComposerDraftKey(targetDraftKey);
     if (
       !sessionHookMountedRef.current
@@ -1559,10 +1550,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "queue_update":
-        setQueuedMessages({
-          steering: [...((event.steering as string[] | undefined) ?? [])],
-          followUp: [...((event.followUp as string[] | undefined) ?? [])],
-        });
+        setQueuedMessages(normalizeQueuedMessages(event as Partial<QueuedMessages>));
         break;
       case "auto_retry_start":
         setRetryInfo({ attempt: event.attempt as number, maxAttempts: event.maxAttempts as number, errorMessage: event.errorMessage as string | undefined });
@@ -1628,14 +1616,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     cancelEventStreamGrace();
     rpcPromptPendingRef.current = true;
 
+    const promptMessage = appendImageAttachmentPaths(message, images);
     const imageBlocks = images?.map((img) => ({ type: "image" as const, source: { type: "base64" as const, media_type: img.mimeType, data: img.data } }));
     const modeState = workModeRef.current?.sid === sessionIdRef.current ? workModeRef.current?.state : undefined;
     const optimisticMode = modeState?.pendingWorkMode ?? modeState?.workMode ?? composerWorkMode;
     const userMsg: UserMessage = {
       role: "user",
       content: imageBlocks?.length
-        ? [...(message.trim() ? [{ type: "text" as const, text: message }] : []), ...imageBlocks]
-        : message,
+        ? [...(promptMessage.trim() ? [{ type: "text" as const, text: promptMessage }] : []), ...imageBlocks]
+        : promptMessage,
       timestamp: Date.now(),
       turnWorkMode: optimisticMode === "plan" || optimisticMode === "goal" ? optimisticMode : undefined,
     };
@@ -1684,7 +1673,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         promptRequestStarted = true;
         await sendAgentCommand(sid, {
           type: "prompt",
-          message,
+          message: promptMessage,
           ...approval,
           ...(effectiveSubagentMode ? { subagentMode: effectiveSubagentMode } : {}),
           ...(piImages?.length ? { images: piImages } : {}),
@@ -1696,7 +1685,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         promptRequestStarted = true;
         await sendAgentCommand(session.id, {
           type: "prompt",
-          message,
+          message: promptMessage,
           ...approval,
           ...(effectiveSubagentMode ? { subagentMode: effectiveSubagentMode } : {}),
           ...(piImages?.length ? { images: piImages } : {}),
@@ -2107,9 +2096,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // Let AgentSession.prompt decide atomically whether to queue against the
   // current run or start a new turn if it settled while the request was in
   // flight. Direct steer/followUp calls can strand a message in an idle queue.
-  const sendStreamingPrompt = useCallback(async (
+  const handleFollowUp = useCallback(async (
     message: string,
-    behavior: "steer" | "followUp",
     images?: AttachedImage[],
   ) => {
     const sid = sessionIdRef.current;
@@ -2123,9 +2111,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       await sendAgentCommand(sid, {
         type: "prompt",
-        message,
-        streamingBehavior: behavior,
-        ...(piImages?.length ? { images: piImages } : {}),
+        message: appendImageAttachmentPaths(message, images),
+        streamingBehavior: "followUp",
+        ...(piImages?.length ? {
+          images: piImages,
+          draftMessage: message,
+          imagePaths: images?.map((image) => image.filePath ?? null),
+        } : {}),
       });
     } catch (e) {
       console.error("Failed to submit streaming prompt:", e);
@@ -2140,22 +2132,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice, composerDraftKey, restoreSubmission]);
 
-  const handleSteer = useCallback(async (message: string, images?: AttachedImage[]) => {
-    await sendStreamingPrompt(message, "steer", images);
-  }, [sendStreamingPrompt]);
-
-  const handlePromptWithStreamingBehavior = useCallback(async (
-    message: string,
-    behavior: "steer" | "followUp",
-    images?: AttachedImage[],
-  ) => {
-    await sendStreamingPrompt(message, behavior, images);
-  }, [sendStreamingPrompt]);
-
-  const handleFollowUp = useCallback(async (message: string, images?: AttachedImage[]) => {
-    await sendStreamingPrompt(message, "followUp", images);
-  }, [sendStreamingPrompt]);
-
   const handleAbortCompaction = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid) return;
@@ -2166,23 +2142,25 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, []);
 
-  const handleRecallQueue = useCallback(async () => {
+  const handleQueueAction = useCallback(async (id: string, action: QueueAction) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
     try {
-      const result = await sendAgentCommand<{ steering?: string[]; followUp?: string[] }>(sid, { type: "clear_queue" });
-      // clearQueue also emits an empty queue_update, but that only reaches us
-      // while SSE is connected — clear locally so idle recalls update the UI.
-      setQueuedMessages({ steering: [], followUp: [] });
-      const texts = [...(result?.steering ?? []), ...(result?.followUp ?? [])];
-      if (texts.length > 0) {
-        opts.chatInputRef?.current?.prependText(texts.join("\n\n"));
+      const draft = await sendAgentCommand<ChatDraft | null>(sid, { type: "update_queue_item", id, action });
+      if (sessionIdRef.current === sid) {
+        setQueuedMessages((current) => ({
+          ...current,
+          items: current.items?.flatMap((item) => item.id !== id ? [item] : action === "steer"
+            ? [{ ...item, kind: "steer" }]
+            : []),
+        }));
       }
+      if (draft) restoreSubmission(draft.value, draft.images, composerDraftKey);
     } catch (e) {
-      console.error("Failed to recall queued messages:", e);
-      addNotice({ type: "error", message: "Failed to recall queued messages" });
+      console.error("Failed to update queued message:", e);
+      addNotice({ type: "error", message: t("chat.queueActionFailed") });
     }
-  }, [opts.chatInputRef, addNotice]);
+  }, [addNotice, composerDraftKey, restoreSubmission, t]);
 
   const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {
     const version = ++thinkingChangeVersionRef.current;
@@ -2590,8 +2568,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     lastUserMsgRef, pendingScrollToUserRef, initialScrollDoneRef,
     // Actions
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
-    handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
-    handleRecallQueue,
+    handleCompact, handleFollowUp, handleAbortCompaction,
+    handleQueueAction,
     handleBuiltinSlashCommand,
     setNoticePaused: setPausedNoticeId,
     handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, handleGoalChange, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages, loadContext,

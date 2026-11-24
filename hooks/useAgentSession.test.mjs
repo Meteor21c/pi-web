@@ -203,7 +203,7 @@ test("existing-session prompts rely on the persisted tool selection", () => {
   );
   const existingSessionPrompt = sendSource.slice(sendSource.indexOf("} else if (session)"));
 
-  assert.match(existingSessionPrompt, /type: "prompt",\s*message,/);
+  assert.match(existingSessionPrompt, /type: "prompt",\s*message: promptMessage,/);
   assert.doesNotMatch(existingSessionPrompt, /toolNames:/);
   assert.doesNotMatch(sendSource, /restoreSubmission, toolPreset\]\);/);
 });
@@ -279,7 +279,7 @@ test("streaming submissions cannot be stranded in an idle direct queue", () => {
   );
 
   assert.match(queueSource, /type: "prompt"/);
-  assert.match(queueSource, /streamingBehavior: behavior/);
+  assert.match(queueSource, /streamingBehavior: "followUp"/);
   assert.match(queueSource, /if \(isPromptRejectedError\(e\)\) restore\(\)/);
   assert.doesNotMatch(queueSource, /type: "steer"/);
   assert.doesNotMatch(queueSource, /type: "follow_up"/);

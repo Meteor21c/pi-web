@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { existsSync, realpathSync } from "fs";
 import { resolve } from "path";
 import { validateAgentImages } from "./image-attachments";
+import { AgentInputQueue } from "./agent-input-queue";
 import { invalidateModelsCache } from "./models-cache";
 import { withSavedRelayContextWindow } from "./models-config-store";
 import { createMeteorAgentBrandExtension, METEORAGENT_REPLY_GUIDANCE, rebrandMeteorAgentSystemPrompt } from "./meteoragent-brand";
@@ -357,6 +358,7 @@ export class AgentSessionWrapper {
   private configuredToolNames?: string[];
   private useDefaultPlanTools = false;
   private activeQueueSubmissions = 0;
+  private readonly inputQueue: AgentInputQueue;
   private subagentMode?: SubagentMode;
   private currentSubagentTask?: SubagentTask;
   private subagentWait?: AbortController;
@@ -376,6 +378,7 @@ export class AgentSessionWrapper {
     public readonly inner: AgentSessionLike,
     options: AgentSessionWrapperOptions = {},
   ) {
+    this.inputQueue = new AgentInputQueue(inner);
     this.exactSystemPrompt = options.exactSystemPrompt;
     this.promptSelection = options.promptSelection;
     this.chatOnly = options.chatOnly ?? false;
@@ -926,7 +929,12 @@ export class AgentSessionWrapper {
         this.computerUseApprovalRun = undefined;
         this.finishRunTiming();
       }
-      if (event.type === "agent_start") {
+      if (event.type === "queue_update") {
+        // Pi emits before inserting the core message. Publish the settled state.
+        queueMicrotask(() => {
+          if (this._alive) this.emit({ type: "queue_update", ...this.inputQueue.snapshot() });
+        });
+      } else if (event.type === "agent_start") {
         const resumedGoal = this.goalRun?.resumedGoal;
         if (this.goalRun) this.goalRun.resumedGoal = undefined;
         this.emit({ ...event, computerUseApprovalPolicy: this.activeComputerUseApprovalPolicy,
@@ -1513,6 +1521,9 @@ export class AgentSessionWrapper {
       if (type === "prompt" || type === "steer" || type === "follow_up") {
         const imageError = validateAgentImages(command.images);
         if (imageError) throw new Error(imageError);
+        if (Array.isArray(command.images)) {
+          this.inputQueue.rememberDraft(command.images as ImageContent[], command.draftMessage, command.imagePaths);
+        }
       }
 
       switch (type) {
@@ -1762,10 +1773,7 @@ export class AgentSessionWrapper {
           model: model ? { id: model.id, provider: model.provider } : undefined,
           messageCount: 0,
           pendingMessageCount: this.inner.pendingMessageCount,
-          queuedMessages: {
-            steering: [...this.inner.getSteeringMessages()],
-            followUp: [...this.inner.getFollowUpMessages()],
-          },
+          queuedMessages: this.inputQueue.snapshot(),
           contextUsage: contextUsage
             ? { percent: contextUsage.percent, contextWindow: contextUsage.contextWindow, tokens: contextUsage.tokens }
             : null,
@@ -1945,9 +1953,18 @@ export class AgentSessionWrapper {
       }
 
       case "clear_queue": {
-        // Full clear only: pi has no single-item dequeue, and clear+requeue
-        // races against the agent loop pulling messages mid-flight.
         return this.inner.clearQueue();
+      }
+
+      case "update_queue_item": {
+        const { id, action } = command;
+        if (typeof id !== "string" || (action !== "recall" && action !== "steer")) {
+          throw new Error("A queue item ID and valid action are required");
+        }
+        const draft = this.inputQueue.update(id, action, this.inner.isStreaming || Boolean(this.subagentWait));
+        if (action === "steer") this.subagentWait?.abort();
+        this.emit({ type: "queue_update", ...this.inputQueue.snapshot() });
+        return draft;
       }
 
       case "steer": {

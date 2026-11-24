@@ -187,3 +187,10 @@ export function buildFileLineMentionText(entryPath: string, startLine: number, e
 export function buildFileAtMentionsText(entryPaths: string[]): string {
   return entryPaths.map((entryPath) => buildAtMentionText(entryPath, false)).join("");
 }
+
+export function appendImageAttachmentPaths(message: string, images?: readonly { filePath?: string }[]): string {
+  const paths = [...new Set(images?.flatMap(({ filePath }) => filePath ? [filePath] : []))];
+  if (!paths.length) return message;
+  const mentions = buildFileAtMentionsText(paths).trimEnd();
+  return message ? `${message}\n\n${mentions}` : mentions;
+}

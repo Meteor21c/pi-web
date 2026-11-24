@@ -37,7 +37,7 @@ test("preserves pasted HTML links as Markdown without changing plain text layout
   assert.equal(replaceLinksWithMarkdown("plain text", [link("missing", "https://example.com")]), null);
 });
 
-test("follow-up shortcuts preserve newline, IME, mobile and completion behavior", () => {
+test("Enter queues messages during a run and preserves newline, IME, mobile and completion behavior", () => {
   const source = ts.createSourceFile("ChatInput.tsx", readFileSync(new URL("./ChatInput.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   function findHandler(node) {
     if (ts.isVariableDeclaration(node) && node.name.getText(source) === "handleKeyDown") {
@@ -50,8 +50,8 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
     compilerOptions: { target: ts.ScriptTarget.ES2020 },
   }).outputText);
   const cases = [
-    ["Enter steers", {}, {}, "steer"],
-    ["Alt+Enter follows up", { altKey: true }, {}, "followup"],
+    ["Enter queues", {}, {}, "queue"],
+    ["Alt+Enter queues", { altKey: true }, {}, "queue"],
     ["idle Alt+Enter sends", { altKey: true }, { isStreaming: false }, "send"],
     ["Shift+Enter inserts a newline", { shiftKey: true }, {}, "native"],
     ["Alt+Shift+Enter keeps native behavior", { altKey: true, shiftKey: true }, {}, "native"],
@@ -61,11 +61,10 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
     ["composition grace blocks sending", { altKey: true }, { lastCompositionEndAtRef: { current: 950 } }, "prevented"],
     ["mobile Alt+Enter keeps native behavior", { altKey: true }, { isMobile: true }, "native"],
     ["mobile composition grace cannot send", { altKey: true }, { isMobile: true, lastCompositionEndAtRef: { current: 950 } }, "native"],
-    ["mobile Ctrl+Alt+Enter follows up", { altKey: true, ctrlKey: true }, { isMobile: true }, "followup"],
-    ["mobile Cmd+Alt+Enter follows up", { altKey: true, metaKey: true }, { isMobile: true }, "followup"],
+    ["mobile Ctrl+Enter queues", { ctrlKey: true }, { isMobile: true }, "queue"],
+    ["mobile Cmd+Enter queues", { metaKey: true }, { isMobile: true }, "queue"],
     ["mobile modified Enter respects composition grace", { altKey: true, ctrlKey: true }, { isMobile: true, lastCompositionEndAtRef: { current: 950 } }, "prevented"],
-    ["Enter falls back to follow-up", {}, { onSteer: undefined }, "followup"],
-    ["Alt+Enter falls back to steer", { altKey: true }, { onFollowUp: undefined }, "steer"],
+    ["Enter leaves busy commands to the normal send handler when queueing is unavailable", {}, { onFollowUp: undefined }, "send"],
     ["slash completion takes priority", { altKey: true }, { slashMenuOpen: true, slashQuery: "help" }, "slash"],
     ["available built-in commands take priority", { altKey: true }, { slashMenuOpen: true, slashQuery: "copy", value: "/copy", displayedSlashCommands: [{ name: "copy", source: "builtin", availableWhileStreaming: true }] }, "send"],
     ["file completion takes priority", { altKey: true }, { atMenuOpen: true, atQuery: {} }, "file"],
@@ -81,8 +80,8 @@ test("follow-up shortcuts preserve newline, IME, mobile and completion behavior"
       historyMenuOpen: false, inputHistory: ["previous"], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [{}], slashActiveIndex: 0,
       atMenuOpen: false, atQuery: null, atMatches: [{}], atActiveIndex: 0,
-      onSteer() {}, onFollowUp() {},
-      sendQueued(mode) { action = mode; }, handleSend() { action = "send"; },
+      onFollowUp() {},
+      sendQueued() { action = "queue"; }, handleSend() { action = "send"; },
       applySlashCommand() { action = "slash"; },
       isExactSlashCommand, value: "", setSlashMenuOpen() {},
       applyAtCompletion() { action = "file"; },
@@ -121,7 +120,7 @@ test("file mention arrows wrap around the match list", () => {
       historyMenuOpen: false, inputHistory: [], historyActiveIndex: 0,
       slashMenuOpen: false, slashQuery: null, displayedSlashCommands: [], slashActiveIndex: 0,
       atMenuOpen: true, atQuery: {}, atMatches: Array.from({ length }, () => ({})), atActiveIndex,
-      onSteer() {}, onFollowUp() {},
+      onFollowUp() {},
       sendQueued() {}, handleSend() {},
       applySlashCommand() {},
       isExactSlashCommand() { return false; }, value: "@file",
@@ -159,15 +158,16 @@ test("cycleListIndex wraps in both directions", () => {
   assert.equal(cycleListIndex(-1, 4, 1), 0);
 });
 
-test("shows the follow-up shortcut in the button tooltip", () => {
+test("shows one queue button with Enter as its shortcut", () => {
   const html = renderToStaticMarkup(
     React.createElement(I18nProvider, null, React.createElement(ChatInput, {
       onSend() {}, onAbort() {}, onFollowUp() {}, isStreaming: true,
     })),
   );
 
-  assert.match(html, /title="Queue this message after the agent finishes \(Alt\/Option\+Enter\)"/);
-  assert.match(html, /aria-keyshortcuts="Alt\+Enter"/);
+  assert.match(html, /title="Send this message after the current task finishes"/);
+  assert.match(html, /aria-keyshortcuts="Enter"/);
+  assert.doesNotMatch(html, /Steer current response|>Follow-up</);
 });
 
 test("renders the upstream model error", () => {
@@ -439,25 +439,30 @@ test("makes the image extension and image skill distinct", () => {
   assert.deepEqual(filterUserFacingSlashCommands([extension]), [extension]);
 });
 
-test("visually distinguishes steering from follow-up messages", () => {
+test("distinguishes pending steering from follow-ups and exposes per-message queue actions", () => {
   const html = renderToStaticMarkup(
     React.createElement(I18nProvider, null, React.createElement(ChatInput, {
       onSend() {},
       onAbort() {},
-      onSteer() {},
       onFollowUp() {},
+      onQueueAction() {},
       isStreaming: true,
       queuedMessages: {
-        steering: ["adjust the current answer"],
-        followUp: ["do this after completion"],
+        items: [
+          { id: "steer-1", kind: "steer", text: "adjust the current answer", imageCount: 0 },
+          { id: "follow-1", kind: "followUp", text: "do this after completion", imageCount: 2 },
+        ],
       },
     })),
   );
 
-  assert.match(html, /Steering the current response/);
-  assert.match(html, /Injected after the current tool step/);
-  assert.match(html, /Follow-up queued/);
-  assert.match(html, /Sent as the next message after the current run finishes/);
+  assert.match(html, /Pending steer/);
+  assert.match(html, /Joins this response after the current step/);
+  assert.match(html, />Queued</);
+  assert.match(html, /Sends after the current task finishes/);
+  assert.equal((html.match(/Steer current response/g) ?? []).length, 1);
+  assert.equal((html.match(/Recall and edit/g) ?? []).length, 2);
+  assert.match(html, /Images: 2/);
 });
 
 test("file mention menu remeasures when its layout container shifts the anchor", () => {
@@ -631,7 +636,7 @@ test("restores a cleared submission using the queued React state", () => {
 });
 
 test("keeps a failed first submission recoverable across a composer remount", () => {
-  const image = { data: "AQID", mimeType: "image/png" };
+  const image = { data: "AQID", mimeType: "image/png", filePath: "/attachments/image-abc/original.png" };
   const restored = mergeRestoredSubmissionDraft(
     "failed submission",
     [image],
@@ -650,6 +655,19 @@ test("keeps a failed first submission recoverable across a composer remount", ()
       images: [image],
     },
   );
+});
+
+test("keeps all images when a recalled draft and the current draft together exceed a message's limit", () => {
+  const recalled = Array.from({ length: 6 }, (_, index) => ({
+    data: "AQID", mimeType: "image/png", filePath: `/attachments/recalled-${index}.png`,
+  }));
+  const current = Array.from({ length: 5 }, (_, index) => ({
+    data: "AQID", mimeType: "image/png", filePath: `/attachments/current-${index}.png`,
+  }));
+  assert.deepEqual(mergeRestoredSubmissionDraft("recalled", recalled, "draft", current), {
+    value: "recalled\n\ndraft",
+    images: [...recalled, ...current],
+  });
 });
 
 test("preserves duplicate image attachments when restoring a submission", () => {

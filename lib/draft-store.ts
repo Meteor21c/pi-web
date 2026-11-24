@@ -1,11 +1,12 @@
 import {
-  MAX_ATTACHED_IMAGES,
   isBase64ImageWithinLimits,
+  type AttachedImage,
 } from "./image-attachments";
 
-export interface ChatDraftImage {
-  data: string;
-  mimeType: string;
+export type ChatDraftImage = Omit<AttachedImage, "previewUrl">;
+
+export function toChatDraftImage({ data, mimeType, filePath }: ChatDraftImage): ChatDraftImage {
+  return { data, mimeType, ...(filePath ? { filePath } : {}) };
 }
 
 export interface ChatDraft {
@@ -57,8 +58,7 @@ export function mergeRestoredSubmissionDraft(
 ): ChatDraft {
   const images = [...(submittedImages ?? []), ...currentImages]
     .filter(isBase64ImageWithinLimits)
-    .slice(0, MAX_ATTACHED_IMAGES)
-    .map(({ data, mimeType }) => ({ data, mimeType }));
+    .map(toChatDraftImage);
 
   return {
     value: mergeRestoredSubmissionText(submittedText, currentText),
