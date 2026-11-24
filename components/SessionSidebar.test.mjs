@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { registerHooks } from "node:module";
 import test from "node:test";
 import { createJiti } from "jiti";
+
+registerHooks({
+  load(url, context, nextLoad) {
+    if (!url.endsWith("/FileActions.module.css")) return nextLoad(url, context);
+    return { format: "module", shortCircuit: true, source: "export default {};" };
+  },
+});
 
 const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconfigPaths: true });
 const { getSessionListIndices } = await jiti.import("./SessionSidebar.tsx");
