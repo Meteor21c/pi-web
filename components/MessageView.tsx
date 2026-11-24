@@ -1087,11 +1087,6 @@ export function ThinkingBlock({ block, duration, isStreaming = false, sessionId,
   return (
     <div style={{
       minWidth: 0,
-      border: "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))",
-      borderLeft: "3px solid color-mix(in srgb, var(--accent) 55%, var(--border))",
-      borderRadius: 9,
-      padding: "7px 10px",
-      background: "color-mix(in srgb, var(--accent) 4%, var(--bg))",
       fontSize: "calc(12px + var(--chat-font-size-offset, 0px))",
       lineHeight: 1.5,
     }}>
@@ -1103,21 +1098,21 @@ export function ThinkingBlock({ block, duration, isStreaming = false, sessionId,
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: 6,
           width: "100%",
           minWidth: 0,
-          minHeight: 22,
-          padding: 0,
+          minHeight: 26,
+          padding: "2px 8px",
           background: "transparent",
           border: "none",
-          color: "var(--text)",
+          color: "var(--text-muted)",
           cursor: "pointer",
           font: "inherit",
           textAlign: "left",
         }}
       >
         <ThinkingIcon active={expanded || isStreaming} />
-        <span style={{ flexShrink: 0, fontWeight: 600 }}>{t("chat.thinkingBlockTitle")}</span>
+        <span style={{ flexShrink: 0, fontWeight: 500 }}>{t("chat.thinkingBlockTitle")}</span>
         {!expanded && isStreaming && !block.thinking && (
           <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-muted)" }}>
             {t("chat.thinkingPending")}
@@ -1134,9 +1129,10 @@ export function ThinkingBlock({ block, duration, isStreaming = false, sessionId,
         <div
           style={{
             minWidth: 0,
-            marginTop: 8,
-            paddingTop: 8,
-            borderTop: "1px solid var(--border)",
+            marginTop: 4,
+            padding: "8px 10px",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
             color: error ? "#f87171" : "var(--text-muted)",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
