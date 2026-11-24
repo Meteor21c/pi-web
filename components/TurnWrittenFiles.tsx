@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/hooks/useI18n";
+import { useFileContextMenu } from "@/hooks/useFileContextMenu";
 import { getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import type { WrittenFile } from "@/lib/turn-written-files";
 import { getFileIcon } from "./FileIcons";
@@ -11,6 +12,7 @@ export function TurnWrittenFiles({ files, cwd, onOpenFile }: {
   onOpenFile?: (filePath: string) => void;
 }) {
   const { locale, t } = useI18n();
+  const openFileMenu = useFileContextMenu();
   if (files.length === 0) return null;
   const heading = t("chat.filesWritten", { count: files.length.toLocaleString(locale) });
 
@@ -33,7 +35,9 @@ export function TurnWrittenFiles({ files, cwd, onOpenFile }: {
             </>
           );
           return (
-            <li key={filePath}>
+            <li key={filePath} onContextMenu={(event) => openFileMenu(event, {
+              filePath, onPreview: onOpenFile ? () => onOpenFile(filePath) : undefined,
+            })}>
               {onOpenFile ? (
                 <button
                   type="button"

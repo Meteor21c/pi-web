@@ -378,6 +378,7 @@ export const enLocale: LocalePlugin = {
     "files.saveCopy": "Save a copy",
     "files.actions": "File actions",
     "files.actionsFor": "File actions · {name}",
+    "files.previewInMagent": "View in Magent",
     "files.openLocally": "Open with a local app",
     "files.openFolderLocally": "Open folder on this computer",
     "files.revealLocally": "Show in folder",

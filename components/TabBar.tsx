@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { getFileIcon } from "./FileIcons";
 import { useI18n } from "@/hooks/useI18n";
+import { useFileContextMenu } from "@/hooks/useFileContextMenu";
 import type { FileViewerDisplayMode, FileViewerState } from "@/lib/file-viewer-state";
 
 export interface Tab {
@@ -26,6 +27,7 @@ interface Props {
 
 export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
   const { t } = useI18n();
+  const openFileMenu = useFileContextMenu();
   const [hoveredClose, setHoveredClose] = useState<string | null>(null);
 
   return (
@@ -66,6 +68,9 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
               }
             }}
             onClick={() => onSelectTab(tab.id)}
+            onContextMenu={!tab.kind && tab.filePath ? (event) => openFileMenu(event, {
+              filePath: tab.filePath, onPreview: () => onSelectTab(tab.id),
+            }) : undefined}
             onMouseDown={(e) => {
               if (e.button === 1) e.preventDefault();
             }}

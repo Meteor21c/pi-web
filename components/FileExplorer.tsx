@@ -15,6 +15,7 @@ import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/
 import type { FileIndexEntry } from "@/lib/file-fuzzy";
 import { buildSearchTree, type SearchTreeNode } from "@/lib/search-tree";
 import { useI18n } from "@/hooks/useI18n";
+import { useFileContextMenu } from "@/hooks/useFileContextMenu";
 type Translate = ReturnType<typeof useI18n>["t"];
 
 interface FileEntry {
@@ -244,6 +245,7 @@ function TreeNode({
   t: Translate;
 }) {
   const open = expandedPaths.has(node.fullPath);
+  const openFileMenu = useFileContextMenu();
   const highlighted = highlightedPaths.has(node.fullPath);
   const normalizedPath = normalizeFilePathSlashes(node.fullPath);
   const gitStatus = gitStatusByPath.get(normalizedPath);
@@ -300,7 +302,11 @@ function TreeNode({
 
   return (
     <div>
-      <div className="file-tree-row" style={{ paddingLeft: 8 + depth * 14 }}>
+      <div className="file-tree-row" style={{ paddingLeft: 8 + depth * 14 }}
+        onContextMenu={(event) => openFileMenu(event, {
+          filePath: node.fullPath, isDirectory: node.isDir, onPreview: node.isDir ? undefined : handleClick,
+        })}
+      >
         <button
           type="button"
           className="file-tree-entry"
@@ -390,11 +396,16 @@ function ChangeRow({
   t: Translate;
 }) {
   const [hovered, setHovered] = useState(false);
+  const openFileMenu = useFileContextMenu();
   const name = getFileName(status.filePath);
   const rel = getRelativeFilePath(status.filePath, cwd);
+  const openDiff = () => onOpenFile(status.filePath, name, { modeHint: "diff" });
   return (
     <div
-      onClick={() => onOpenFile(status.filePath, name, { modeHint: "diff" })}
+      onClick={openDiff}
+      onContextMenu={(event) => openFileMenu(event, {
+        filePath: status.filePath, nativeAvailable: status.status !== "deleted", onPreview: openDiff, previewLabel: t("i18n.diff"),
+      })}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       title={status.filePath}

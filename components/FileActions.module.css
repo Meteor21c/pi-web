@@ -19,10 +19,11 @@
 .menu {
   position: fixed;
   inset: auto;
-  width: min(208px, calc(100vw - 16px));
+  width: min(208px, calc(var(--vp-w, 100vw) - 16px));
   box-sizing: border-box;
   margin: 0;
   padding: 4px;
+  overflow-y: auto;
   background: var(--bg-panel);
   color: var(--text);
   border: 1px solid var(--border);

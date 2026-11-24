@@ -46,6 +46,13 @@ test("keeps local file markdown links in the app", () => {
   assert.doesNotMatch(fileUrlHtml, /target=|rel=|\snode=/);
 });
 
+test("a linked code filename uses the explicit path without a nested file button", () => {
+  const html = renderMarkdown("[`Installer.dmg`](/home/me/project/release/Installer.dmg)");
+
+  assert.match(html, /<a href="\/home\/me\/project\/release\/Installer\.dmg"><code class="markdown-inline-code">Installer\.dmg<\/code><\/a>/);
+  assert.doesNotMatch(html, /<button|markdown-file-reference/);
+});
+
 test("turns inline local paths into clickable in-app file references", () => {
   const html = renderMarkdown("生成完成：`/home/me/project/output.png`");
   assert.match(html, /class="markdown-file-reference"/);

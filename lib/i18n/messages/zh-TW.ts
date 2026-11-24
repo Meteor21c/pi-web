@@ -378,6 +378,7 @@ export const zhTWLocale: LocalePlugin = {
     "files.saveCopy": "另存副本",
     "files.actions": "檔案操作",
     "files.actionsFor": "檔案操作 · {name}",
+    "files.previewInMagent": "在 Magent 中檢視",
     "files.openLocally": "用本機應用程式開啟",
     "files.openFolderLocally": "在本機開啟資料夾",
     "files.revealLocally": "在資料夾中顯示",

@@ -1,10 +1,12 @@
 "use client";
 
-import { useId, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import { getFileName } from "@/lib/file-paths";
 import { isLocalDesktopHost } from "@/lib/local-desktop";
 import type { NativeFileAction } from "@/lib/native-directory";
 import { useI18n } from "@/hooks/useI18n";
+import { FileContextMenuContext, type FileContextMenuTarget, type OpenFileContextMenu } from "@/hooks/useFileContextMenu";
+import { currentUiScale } from "@/lib/ui-scale";
 import styles from "./FileActions.module.css";
 
 const MENU_WIDTH = 208;
@@ -65,6 +67,68 @@ function NativeFileButtons({
   );
 }
 
+type ContextMenu = FileContextMenuTarget & { x: number; y: number };
+
+export function FileContextMenuProvider({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
+  const local = useLocalDesktop();
+  const [target, setTarget] = useState<ContextMenu | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const openMenu: OpenFileContextMenu = useCallback((event, item) => {
+    if (event.defaultPrevented || !menuRef.current?.showPopover
+      || ((!local || item.nativeAvailable === false) && !item.onPreview)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.clientX || event.clientY) {
+      setTarget({ ...item, x: event.clientX, y: event.clientY });
+    } else {
+      const { left, bottom } = event.currentTarget.getBoundingClientRect();
+      setTarget({ ...item, x: left, y: bottom });
+    }
+  }, [local]);
+
+  const close = () => setTarget((current) => current === target ? null : current);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu?.showPopover) return;
+    if (!target) {
+      if (menu.matches(":popover-open")) menu.hidePopover();
+      return;
+    }
+    if (!menu.matches(":popover-open")) menu.showPopover();
+    const scale = currentUiScale();
+    const margin = 8 * scale;
+    menu.style.maxHeight = `${Math.max(0, window.innerHeight - margin * 2) / scale}px`;
+    const { width, height } = menu.getBoundingClientRect();
+    const x = Math.max(margin, Math.min(target.x, window.innerWidth - width - margin));
+    const y = Math.max(margin, Math.min(target.y, window.innerHeight - height - margin));
+    menu.style.left = `${x / scale}px`;
+    menu.style.top = `${y / scale}px`;
+    menu.style.maxHeight = `${Math.max(0, window.innerHeight - y - margin) / scale}px`;
+    menu.querySelector("button")?.focus({ preventScroll: true });
+  }, [target]);
+
+  return (
+    <FileContextMenuContext.Provider value={openMenu}>
+      {children}
+      <div ref={menuRef} popover="auto" className={styles.menu} role="group"
+        aria-label={target ? t("files.actionsFor", { name: getFileName(target.filePath) }) : t("files.actions")}
+        onToggle={(event) => { if (!event.currentTarget.matches(":popover-open")) setTarget(null); }}
+        onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}
+      >
+        {target?.onPreview && <button type="button" onClick={() => { close(); target.onPreview?.(); }}>
+          {target.previewLabel ?? t("files.previewInMagent")}
+        </button>}
+        {target && local && target.nativeAvailable !== false && (
+          <NativeFileButtons key={target.filePath} filePath={target.filePath} isDirectory={target.isDirectory} onSuccess={close} />
+        )}
+      </div>
+    </FileContextMenuContext.Provider>
+  );
+}
+
 export function FileActionsMenu({
   filePath,
   isDirectory,
@@ -90,13 +154,14 @@ export function FileActionsMenu({
     const menu = menuRef.current;
     if (!menu) return;
     const { top, bottom, right } = event.currentTarget.getBoundingClientRect();
+    const scale = currentUiScale();
     const availableBelow = window.innerHeight - bottom;
-    const above = availableBelow < 228 && top > availableBelow;
-    const maxLeft = window.innerWidth - MENU_WIDTH - 8;
-    menu.style.left = `${Math.max(8, Math.min(maxLeft, right - MENU_WIDTH))}px`;
-    menu.style.top = above ? "auto" : `${bottom + 4}px`;
-    menu.style.bottom = above ? `${window.innerHeight - top + 4}px` : "auto";
-    menu.style.maxHeight = `${Math.max(48, (above ? top : availableBelow) - 12)}px`;
+    const above = availableBelow < 228 * scale && top > availableBelow;
+    const maxLeft = window.innerWidth / scale - MENU_WIDTH - 8;
+    menu.style.left = `${Math.max(8, Math.min(maxLeft, right / scale - MENU_WIDTH))}px`;
+    menu.style.top = above ? "auto" : `${bottom / scale + 4}px`;
+    menu.style.bottom = above ? `${(window.innerHeight - top) / scale + 4}px` : "auto";
+    menu.style.maxHeight = `${Math.max(48, (above ? top : availableBelow) / scale - 12)}px`;
   };
 
   const close = () => {

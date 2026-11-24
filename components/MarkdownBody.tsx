@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, type MouseEvent } from "react";
+import { createContext, useContext, useMemo, type MouseEvent } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { useI18n } from "@/hooks/useI18n";
+import { useFileContextMenu } from "@/hooks/useFileContextMenu";
 import { looksLikeLocalFileReference, resolveLocalFileHref, resolveLocalFileReference, shouldOpenLocalFileInApp } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins, markdownUrlTransform, normalizeDisplayMath } from "@/lib/markdown";
@@ -17,13 +18,17 @@ interface MarkdownBodyProps {
   onOpenFile?: (filePath: string) => void;
 }
 
+const InsideMarkdownLink = createContext(false);
+
 export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
   const { t } = useI18n();
+  const openFileMenu = useFileContextMenu();
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   const standaloneSvg = isSvgMarkup(children);
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
-    code({ className, children, ...props }) {
+    code: function MarkdownCode({ className, children, ...props }) {
+      const insideLink = useContext(InsideMarkdownLink);
       delete props.node;
       const lang = className?.replace("language-", "").toLowerCase() ?? "";
       const raw = String(children);
@@ -43,7 +48,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         }
         return <CodeBlock code={raw.replace(/\n$/, "")} lang={lang} isStreaming={isStreaming} />;
       }
-      const externalUrl = resolveExternalHttpUrl(raw);
+      const externalUrl = insideLink ? null : resolveExternalHttpUrl(raw);
       if (externalUrl) {
         return (
           <a
@@ -58,7 +63,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
           </a>
         );
       }
-      const filePath = onOpenFile && looksLikeLocalFileReference(raw)
+      const filePath = !insideLink && onOpenFile && looksLikeLocalFileReference(raw)
         ? resolveLocalFileReference(raw, cwd)
         : null;
       if (filePath && onOpenFile) {
@@ -69,6 +74,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
             title={filePath}
             aria-label={t("chat.openFile", { file: filePath })}
             onClick={() => onOpenFile(filePath)}
+            onContextMenu={(event) => openFileMenu(event, { filePath, onPreview: () => onOpenFile(filePath) })}
           >
             <code className="markdown-inline-code">{children}</code>
             <span className="markdown-file-reference-icon" aria-hidden="true">↗</span>
@@ -92,10 +98,13 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       delete props.node;
       const filePath = onOpenFile ? resolveLocalFileHref(href, cwd) : null;
       const openFile = onOpenFile;
+      // An explicit Markdown link owns its label, including a code span with
+      // a bare filename. That label must not guess a second destination.
+      const label = <InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider>;
       if (!filePath || !openFile) {
         return (
           <a href={href} {...props} target="_blank" rel="noopener noreferrer">
-            {children}
+            {label}
           </a>
         );
       }
@@ -109,12 +118,15 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       };
 
       return (
-        <a href={href} {...props} onClick={handleClick}>
-          {children}
+        <a href={href} {...props} onClick={handleClick}
+          onContextMenu={(event) => openFileMenu(event, { filePath, onPreview: () => openFile(filePath) })}
+        >
+          {label}
         </a>
       );
     },
-    img({ src, alt, ...props }) {
+    img: function MarkdownImage({ src, alt, ...props }) {
+      const insideLink = useContext(InsideMarkdownLink);
       delete props.node;
       const filePath = typeof src === "string" ? resolveLocalFileHref(src, cwd) : null;
       const imageSrc = filePath
@@ -122,27 +134,29 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         : src;
       if (typeof imageSrc !== "string" || !imageSrc) return null;
       // Dynamic local paths are served directly by the file API.
-      return (
-        <ImagePreview src={imageSrc} alt={alt ?? ""}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            {...props}
-            src={imageSrc}
-            alt={alt ?? ""}
-            loading="lazy"
-            decoding="async"
-            style={{
-              display: "block",
-              maxWidth: "min(100%, 420px)",
-              maxHeight: 320,
-              objectFit: "contain",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              ...(props.style as React.CSSProperties | undefined),
-            }}
-          />
-        </ImagePreview>
+      const image = (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          {...props}
+          src={imageSrc}
+          alt={alt ?? ""}
+          loading="lazy"
+          decoding="async"
+          onContextMenu={!insideLink && filePath ? (event) => openFileMenu(event, {
+            filePath, onPreview: onOpenFile ? () => onOpenFile(filePath) : undefined,
+          }) : undefined}
+          style={{
+            display: "block",
+            maxWidth: "min(100%, 420px)",
+            maxHeight: 320,
+            objectFit: "contain",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            ...(props.style as React.CSSProperties | undefined),
+          }}
+        />
       );
+      return insideLink ? image : <ImagePreview src={imageSrc} alt={alt ?? ""}>{image}</ImagePreview>;
     },
     table({ children }) {
       return (
@@ -151,7 +165,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         </div>
       );
     },
-  }), [cwd, isStreaming, onOpenFile, t]);
+  }), [cwd, isStreaming, onOpenFile, openFileMenu, t]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>

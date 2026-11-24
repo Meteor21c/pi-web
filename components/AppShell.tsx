@@ -7,6 +7,7 @@ import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
 import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { FileViewer } from "./FileViewer";
+import { FileContextMenuProvider } from "./FileActions";
 import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
 import { SettingsPanel } from "./SettingsPanel";
@@ -1822,7 +1823,7 @@ export function AppShell() {
   };
 
   return (
-    <>
+    <FileContextMenuProvider>
     <style>{`
       @keyframes session-info-pop {
         0% {
@@ -2628,6 +2629,6 @@ export function AppShell() {
       />
     )}
     <AppUpdatePrompt />
-    </>
+    </FileContextMenuProvider>
   );
 }

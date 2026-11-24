@@ -10,6 +10,7 @@ import { vs } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import ReactMarkdown from "react-markdown";
 import { useTheme } from "@/hooks/useTheme";
+import { useFileContextMenu } from "@/hooks/useFileContextMenu";
 import {
   DOCX_PREVIEW_MAX_BYTES,
   getFileExt,
@@ -240,6 +241,23 @@ function ViewerFileActions({
       downloadHref={getFileApiUrl(filePath, "download", sourceSessionId)}
       onMention={onMention}
     />
+  );
+}
+
+function ViewerFilePath({ filePath, cwd, missing, className, style }: {
+  filePath: string;
+  cwd?: string;
+  missing?: boolean;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const openFileMenu = useFileContextMenu();
+  return (
+    <span className={className} style={style} title={filePath}
+      onContextMenu={missing ? undefined : (event) => openFileMenu(event, { filePath })}
+    >
+      {getRelativeFilePath(filePath, cwd)}
+    </span>
   );
 }
 
@@ -527,9 +545,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           flexShrink: 0,
         }}
       >
-        <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
-        </span>
+        <ViewerFilePath filePath={filePath} cwd={cwd} style={{ fontFamily: "var(--font-mono)" }} />
         <span style={{ marginLeft: "auto" }}>{ext || "image"}</span>
         {naturalSize && <span>{naturalSize.w} × {naturalSize.h}</span>}
         {formatSizeStr && <span>{formatSizeStr}</span>}
@@ -697,9 +713,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           flexShrink: 0,
         }}
       >
-        <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
-        </span>
+        <ViewerFilePath filePath={filePath} cwd={cwd} style={{ fontFamily: "var(--font-mono)" }} />
         <span style={{ marginLeft: "auto" }}>{ext || "audio"}</span>
         {duration != null && <span>{formatDuration(duration)}</span>}
         {size != null && <span>{formatSize(size)}</span>}
@@ -850,9 +864,7 @@ function VideoViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }: Pr
           flexShrink: 0,
         }}
       >
-        <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
-        </span>
+        <ViewerFilePath filePath={filePath} cwd={cwd} style={{ fontFamily: "var(--font-mono)" }} />
         <span style={{ marginLeft: "auto" }}>{ext || "video"}</span>
         {duration != null && <span>{formatDuration(duration)}</span>}
         {size != null && <span>{formatSize(size)}</span>}
@@ -1037,9 +1049,8 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, watchEnabled = true }:
           flexShrink: 0,
         }}
       >
-        <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
-        </span>
+        <ViewerFilePath filePath={filePath} cwd={cwd}
+          style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} />
         <span style={{ marginLeft: "auto" }}>{ext === "docx" ? "docx preview" : "pdf"}</span>
         {size != null && <span>{formatSize(size)}</span>}
         <ViewerFileActions filePath={filePath} sourceSessionId={sourceSessionId} />
@@ -1136,6 +1147,7 @@ function TextFileViewer({
 }: Props) {
   const { isDark } = useTheme();
   const { t } = useI18n();
+  const openFileMenu = useFileContextMenu();
   const [data, setData] = useState<FileData | null>(null);
   const [gitDiff, setGitDiff] = useState<GitFileDiffResponse | null>(null);
   const [gitDiffLoading, setGitDiffLoading] = useState(false);
@@ -1537,7 +1549,7 @@ function TextFileViewer({
     return (
       <div className="file-viewer-unpreviewable">
         <div className="file-viewer-toolbar">
-          <span className="file-viewer-path" title={filePath}>{getRelativeFilePath(filePath, cwd)}</span>
+          <ViewerFilePath filePath={filePath} cwd={cwd} className="file-viewer-path" />
           <span className="file-viewer-meta" title={info}>{info}</span>
           <ViewerFileActions
             filePath={filePath}
@@ -1580,9 +1592,8 @@ function TextFileViewer({
           flexShrink: 0,
         }}
       >
-        <span className="file-viewer-path" style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
-          {getRelativeFilePath(filePath, cwd)}
-        </span>
+        <ViewerFilePath filePath={filePath} cwd={cwd} missing={isDeletedDiff} className="file-viewer-path"
+          style={{ fontFamily: "var(--font-mono)" }} />
 
         <span className="file-viewer-meta" title={metadata}>{metadata}</span>
         {!isDeletedDiff && (
@@ -1774,7 +1785,13 @@ function TextFileViewer({
                     onOpenFile(linkedFile);
                   };
 
-                  return <a href={href} {...props} onClick={handleClick}>{children}</a>;
+                  return (
+                    <a href={href} {...props} onClick={handleClick}
+                      onContextMenu={(event) => openFileMenu(event, { filePath: linkedFile, onPreview: () => onOpenFile(linkedFile) })}
+                    >
+                      {children}
+                    </a>
+                  );
                 },
                 img({ src, alt, ...props }) {
                   delete props.node;
@@ -1786,7 +1803,11 @@ function TextFileViewer({
                     : src;
                   // Dynamic local paths are served directly by the file API.
                   // eslint-disable-next-line @next/next/no-img-element
-                  return <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props} />;
+                  return <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props}
+                    onContextMenu={imagePath ? (event) => openFileMenu(event, {
+                      filePath: imagePath, onPreview: onOpenFile ? () => onOpenFile(imagePath) : undefined,
+                    }) : undefined}
+                  />;
                 },
               }}
             >
