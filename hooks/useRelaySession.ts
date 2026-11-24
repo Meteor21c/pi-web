@@ -18,5 +18,5 @@ export function useRelaySession() {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
-  return { ...snapshot, login: client.login, logout: client.logout, recheck: client.recheck };
+  return { ...snapshot, login: client.login, browserLogin: client.browserLogin, logout: client.logout, recheck: client.recheck };
 }

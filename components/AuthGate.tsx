@@ -15,6 +15,8 @@ import type { FormEvent, ReactNode } from "react";
 import Image from "next/image";
 import { useRelaySession } from "@/hooks/useRelaySession";
 import { useI18n } from "@/hooks/useI18n";
+import { relayLoginMessageKey } from "@/lib/relay-session-client";
+import { RelayBrowserLogin } from "./RelayBrowserLogin";
 import { RelayOnboarding, type RelayOnboardingPhase } from "./RelayOnboarding";
 import { BootSplash } from "./BootSplash";
 
@@ -26,19 +28,6 @@ const REGISTER_URL = "https://api.meteor21c.fun";
 const SPLASH_MIN_VISIBLE_MS = 2000;
 /** 第一阶段（账号检查）最短展示：避免第一行字一闪而过、第二行字干等。 */
 const SPLASH_STAGE1_MIN_MS = 900;
-
-function errorKeyToMessage(message?: string): string | null {
-  switch (message) {
-    case "invalid-credentials":
-      return "brand.auth.loginFailed";
-    case "captcha-required":
-      return "brand.auth.captchaRequired";
-    case "network":
-      return "brand.auth.networkError";
-    default:
-      return null;
-  }
-}
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const { status, expired, login, recheck, generation } = useRelaySession();
@@ -81,8 +70,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     try {
       const result = await login(email, password);
       if (!result.ok) {
-        const mapped = errorKeyToMessage(result.message);
-        setErrorKey(mapped ?? "brand.auth.loginFailed");
+        setErrorKey(relayLoginMessageKey(result.message));
         return;
       }
       setPassword("");
@@ -110,6 +98,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           alignItems: "center",
           justifyContent: "center",
           padding: 24,
+          overflowY: "auto",
           background: "radial-gradient(120% 120% at 50% 0%, #1b2030 0%, #0d1018 60%)",
           color: "#e7e9ee",
           fontFamily: "var(--font-sans, ui-sans-serif, system-ui, sans-serif)",
@@ -120,6 +109,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
           style={{
             width: "100%",
             maxWidth: 384,
+              maxHeight: "100%",
+              overflowY: "auto",
             padding: "32px 28px",
             borderRadius: 24,
             background: "rgba(22, 26, 38, 0.92)",
@@ -164,65 +155,59 @@ export function AuthGate({ children }: { children: ReactNode }) {
             </div>
           </div>
 
-          <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {expired && (
-              <div
-                role="status"
-                style={{
-                  fontSize: 13,
-                  color: "#ffd48a",
-                  background: "rgba(255,190,90,0.12)",
-                  border: "1px solid rgba(255,190,90,0.28)",
-                  borderRadius: 10,
-                  padding: "8px 12px",
-                }}
-              >
-                {t("brand.auth.sessionExpired")}
-              </div>
-            )}
-            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "rgba(231,233,238,0.8)" }}>
-              {t("brand.auth.email")}
-              <input
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                style={inputStyle}
-              />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "rgba(231,233,238,0.8)" }}>
-              {t("brand.auth.password")}
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                style={inputStyle}
-              />
-            </label>
+          <RelayBrowserLogin disabled={submitting} />
+          {expired && (
+            <p role="status" style={{ margin: "12px 0 0", fontSize: 13, color: "#ffd48a" }}>
+              {t("brand.auth.sessionExpired")}
+            </p>
+          )}
+          <details style={{ marginTop: 16, color: "rgba(231,233,238,0.8)", fontSize: 13 }}>
+            <summary style={{ cursor: "pointer" }}>{t("brand.auth.passwordLogin")}</summary>
+            <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 12 }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "rgba(231,233,238,0.8)" }}>
+                {t("brand.auth.email")}
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  style={inputStyle}
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "rgba(231,233,238,0.8)" }}>
+                {t("brand.auth.password")}
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  style={inputStyle}
+                />
+              </label>
 
-            {errorKey !== null && (
-              <div
-                role="alert"
-                style={{
-                  fontSize: 13,
-                  color: "#ff9a9a",
-                  background: "rgba(255,90,90,0.12)",
-                  border: "1px solid rgba(255,90,90,0.25)",
-                  borderRadius: 10,
-                  padding: "8px 12px",
-                }}
-              >
-                {t(errorKey)}
-              </div>
-            )}
+              {errorKey !== null && (
+                <div
+                  role="alert"
+                  style={{
+                    fontSize: 13,
+                    color: "#ff9a9a",
+                    background: "rgba(255,90,90,0.12)",
+                    border: "1px solid rgba(255,90,90,0.25)",
+                    borderRadius: 10,
+                    padding: "8px 12px",
+                  }}
+                >
+                  {t(errorKey)}
+                </div>
+              )}
 
-            <button type="submit" disabled={submitting} className="ui-send-btn" style={buttonStyle(submitting)}>
-              {submitting ? t("brand.auth.loggingIn") : t("brand.auth.login")}
-            </button>
-          </form>
+              <button type="submit" disabled={submitting} className="ui-send-btn" style={buttonStyle(submitting)}>
+                {submitting ? t("brand.auth.loggingIn") : t("brand.auth.login")}
+              </button>
+            </form>
+          </details>
 
           <div style={{ marginTop: 18, textAlign: "center", fontSize: 13, color: "rgba(231,233,238,0.6)" }}>
             {t("brand.auth.registerHint")}{" "}

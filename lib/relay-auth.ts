@@ -55,6 +55,8 @@ export interface RelayKey {
 export type RelayAuthErrorKind =
   | "invalid-credentials"
   | "captcha-required"
+  | "second-factor-required"
+  | "rate-limited"
   | "network"
   | "relay-error";
 
@@ -89,9 +91,14 @@ function unwrap(payload: unknown): Record<string, unknown> {
   return (payload ?? {}) as Record<string, unknown>;
 }
 
-function classify(status: number): RelayAuthErrorKind {
-  if (status === 401 || status === 403) return "invalid-credentials";
-  if (status === 422 || status === 400) return "invalid-credentials";
+function classify(path: string, status: number, reason: unknown): RelayAuthErrorKind {
+  if (typeof reason === "string" && /^(?:TURNSTILE|CAPTCHA|TENCENT_CAPTCHA|ALIYUN_CAPTCHA)_(?:VERIFICATION_FAILED|REQUIRED)$/.test(reason)) {
+    return "captcha-required";
+  }
+  if (status === 429) return "rate-limited";
+  if (path === "/api/v1/auth/login" && (reason === "INVALID_CREDENTIALS" || (!reason && status === 401))) {
+    return "invalid-credentials";
+  }
   return "relay-error";
 }
 
@@ -118,7 +125,8 @@ async function request(path: string, init: RequestInit, deps?: RelayAuthDeps): P
       (body && typeof body === "object" && "message" in body && typeof (body as { message?: unknown }).message === "string"
         ? (body as { message: string }).message
         : `HTTP ${res.status}`);
-    throw new RelayAuthError(classify(res.status), message, res.status);
+    const reason = body && typeof body === "object" && "reason" in body ? body.reason : undefined;
+    throw new RelayAuthError(classify(path, res.status, reason), message, res.status);
   }
   return unwrap(body);
 }
@@ -134,6 +142,13 @@ export async function relayLogin(email: string, password: string, deps?: RelayAu
     },
     deps,
   );
+  if (data.requires_2fa === true) {
+    throw new RelayAuthError("second-factor-required", "Sign-in requires a second factor");
+  }
+  return parseRelayLoginTokens(data);
+}
+
+function parseRelayLoginTokens(data: Record<string, unknown>): RelayLoginTokens & { user?: RelayUserInfo } {
   const accessToken = typeof data.access_token === "string" ? data.access_token : "";
   if (!accessToken) throw new RelayAuthError("relay-error", "Login response missing access_token");
   return {
@@ -142,6 +157,42 @@ export async function relayLogin(email: string, password: string, deps?: RelayAu
     expiresIn: typeof data.expires_in === "number" ? data.expires_in : 24 * 3600,
     user: normalizeRelayUser(data.user),
   };
+}
+
+export async function relayStartBrowserLogin() {
+  const data = await request("/api/v1/auth/magent/start", { method: "POST" });
+  const requestId = data.request_id;
+  const deviceCode = data.device_code;
+  const interval = data.interval;
+  const expiresIn = data.expires_in;
+  if (typeof requestId !== "string" || !/^[a-f0-9]{32}$/.test(requestId)
+    || typeof deviceCode !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(deviceCode)
+    || typeof interval !== "number" || !Number.isInteger(interval) || interval < 5 || interval > 60
+    || typeof expiresIn !== "number" || !Number.isInteger(expiresIn) || expiresIn <= interval || expiresIn > 600) {
+    throw new RelayAuthError("relay-error", "Invalid browser sign-in response");
+  }
+  const verificationUrl = new URL(`${base()}/oauth/magent/authorize`);
+  verificationUrl.searchParams.set("request", requestId);
+  return {
+    requestId,
+    deviceCode,
+    interval,
+    expiresIn,
+    verificationUrl: verificationUrl.href,
+    userCode: `${requestId.slice(0, 4)}-${requestId.slice(4, 8)}`.toUpperCase(),
+  };
+}
+
+export async function relayPollBrowserLogin(requestId: string, deviceCode: string) {
+  const data = await request("/api/v1/auth/magent/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ request_id: requestId, device_code: deviceCode }),
+  });
+  if (data.status === "pending" || data.status === "denied" || data.status === "expired") {
+    return { status: data.status } as const;
+  }
+  return { status: "authenticated", login: parseRelayLoginTokens(data) } as const;
 }
 
 /** POST /api/v1/auth/refresh —— 轮换取新 token 对。 */
@@ -388,14 +439,16 @@ async function sessionPath(): Promise<string> {
   return join(getAgentDir(), "meteoragent-session.json");
 }
 
-async function writeRelaySessionStore(store: RelaySessionStoreFile): Promise<void> {
+async function writeRelaySessionStore(store: RelaySessionStoreFile, isCurrent = () => true): Promise<boolean> {
   const file = await sessionPath();
+  if (!isCurrent()) return false;
   const dir = dirname(file);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
   renameSync(temporary, file);
   chmodSync(file, 0o600);
+  return true;
 }
 
 async function readRelaySessionStore(): Promise<RelaySessionStoreFile> {
@@ -510,15 +563,39 @@ export function sameRelayAccount(a: RelaySessionFile | null, b: RelaySessionFile
   return (a.generation ?? a.accessToken) === (b.generation ?? b.accessToken);
 }
 
-export async function commitRelayLogin(session: RelaySessionFile, epoch: number): Promise<boolean> {
+export async function commitRelayLogin(
+  session: RelaySessionFile,
+  epoch: number,
+  isCurrent = () => true,
+): Promise<boolean> {
   return withRelaySessionMutation(async () => {
-    if (epoch !== authState.epoch) return false;
+    if (epoch !== authState.epoch || !isCurrent()) return false;
     const store = await readRelaySessionStore();
     const committed = upsertRelaySession(store, { ...session, generation: randomUUID() }, true);
-    if (!committed || epoch !== authState.epoch) return false;
-    await writeRelaySessionStore(store);
-    return true;
+    if (!committed) return false;
+    return writeRelaySessionStore(store, () => epoch === authState.epoch && isCurrent());
   });
+}
+
+export async function finishRelayLogin(
+  login: RelayLoginTokens & { user?: RelayUserInfo },
+  epoch: number,
+  isCurrent = () => true,
+) {
+  if (epoch !== authState.epoch || !isCurrent()) return null;
+  const user = login.user ?? await relayFetchMe(login.accessToken);
+  const accountId = relayAccountIdForEmail(user.email);
+  const now = Date.now();
+  const saved = await commitRelayLogin({
+    accountId,
+    email: user.email,
+    accessToken: login.accessToken,
+    accessTokenExpiresAt: now + login.expiresIn * 1000,
+    refreshToken: login.refreshToken,
+    updatedAt: now,
+    user,
+  }, epoch, isCurrent);
+  return saved ? { ok: true, accountId, user } as const : null;
 }
 
 /** Token-free account list for account selection UI. */

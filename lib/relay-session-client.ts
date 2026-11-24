@@ -1,6 +1,25 @@
 import type { RelayUserInfo } from "./relay-auth";
 
 export type RelaySessionStatus = "disabled" | "loading" | "authenticated" | "unauthenticated" | "error";
+export type BrowserLoginResult =
+  | { status: "started"; id: string; verificationUrl: string; userCode: string; expiresIn: number; interval: number }
+  | { status: "authenticated"; accountId: string }
+  | { status: "pending" | "cancelled" | "expired" | "denied" | "unavailable" }
+  | { status: "error"; message?: string };
+
+export function relayLoginMessageKey(message?: string): string {
+  switch (message) {
+    case "invalid-credentials": return "brand.auth.loginFailed";
+    case "captcha-required": return "brand.auth.captchaRequired";
+    case "second-factor-required": return "brand.auth.secondFactorRequired";
+    case "rate-limited": return "brand.auth.rateLimited";
+    case "network": return "brand.auth.networkError";
+    case "session-changed":
+    case "login-cancelled": return "brand.auth.browserCancelled";
+    default: return "brand.auth.relayError";
+  }
+}
+
 interface Snapshot {
   status: RelaySessionStatus;
   user: RelayUserInfo | null;
@@ -21,10 +40,16 @@ export function createRelaySessionClient(enabled: boolean, request: typeof fetch
   const notifyOtherTabs = () => {
     try { window.localStorage.setItem("relay-session-changed", String(Date.now()) + Math.random()); } catch { /* storage is optional */ }
   };
-  const post = (path: string, body: object = {}) => request(path, {
+  const post = (path: string, body: object = {}, signal?: AbortSignal) => request(path, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   });
+  const acceptLogin = (body: { ok?: boolean; user?: RelayUserInfo; accountId?: string }, generation: number) => {
+    if (!body.ok || !body.user || typeof body.accountId !== "string" || !body.accountId) return null;
+    publish({ status: "authenticated", user: body.user, expired: false, error: null, generation });
+    notifyOtherTabs();
+    return body.accountId;
+  };
   const recheck = (): Promise<void> => {
     if (!enabled) return Promise.resolve();
     if (pending) return pending;
@@ -61,13 +86,26 @@ export function createRelaySessionClient(enabled: boolean, request: typeof fetch
         const res = await post("/api/relay-auth/login", { email, password });
         const body = await res.json();
         if (generation !== epoch) return { ok: false, message: "session-changed" };
-        if (res.ok && body.ok && body.user && typeof body.accountId === "string" && body.accountId) {
-          publish({ status: "authenticated", user: body.user, expired: false, error: null, generation });
-          notifyOtherTabs();
-          return { ok: true, accountId: body.accountId };
-        }
+        const accountId = res.ok ? acceptLogin(body, generation) : null;
+        if (accountId) return { ok: true, accountId };
         return { ok: false, message: body.message };
       } catch { return { ok: false, message: "network" }; }
+    },
+    browserLogin: async (action: "start" | "poll" | "cancel", id?: string, signal?: AbortSignal): Promise<BrowserLoginResult> => {
+      const generation = epoch;
+      try {
+        const res = await post("/api/relay-auth/browser", { action, id }, signal);
+        const body = await res.json();
+        if (signal?.aborted || generation !== epoch) return { status: "cancelled" };
+        if (!res.ok) return { status: "error", message: body.message };
+        if (body.status === "authenticated") {
+          const accountId = acceptLogin(body, ++epoch);
+          return accountId ? { status: "authenticated", accountId } : { status: "error" };
+        }
+        return body as BrowserLoginResult;
+      } catch {
+        return signal?.aborted ? { status: "cancelled" } : { status: "error", message: "network" };
+      }
     },
     logout: async (): Promise<void> => {
       const generation = ++epoch;

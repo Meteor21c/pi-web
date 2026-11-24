@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useRelaySession } from "@/hooks/useRelaySession";
+import { relayLoginMessageKey } from "@/lib/relay-session-client";
+import { RelayBrowserLogin } from "./RelayBrowserLogin";
 import {
   ConfigButton,
   ConfigDetail,
@@ -78,22 +80,6 @@ export function RelayOnboarding({ onSuccess, onPhaseChange }: RelayOnboardingPro
     else setPhase("login");
   }, [status, generation]);
 
-  const mapLoginError = useCallback(
-    (message?: string): string => {
-      switch (message) {
-        case "invalid-credentials":
-          return t("brand.auth.loginFailed");
-        case "captcha-required":
-          return t("brand.auth.captchaRequired");
-        case "network":
-          return t("brand.auth.networkError");
-        default:
-          return message ? message : t("brand.auth.loginFailed");
-      }
-    },
-    [t],
-  );
-
   const handleLogin = useCallback(async () => {
     if (loggingIn || !email.trim() || !password) return;
     setLoggingIn(true);
@@ -101,14 +87,14 @@ export function RelayOnboarding({ onSuccess, onPhaseChange }: RelayOnboardingPro
     try {
       const res = await login(email.trim(), password);
       if (!res.ok) {
-        setLoginError(mapLoginError(res.message));
+        setLoginError(t(relayLoginMessageKey(res.message)));
         return;
       }
       // 登录成功 → useRelaySession 将 status 置为 authenticated → 上方 effect 进入 auto
     } finally {
       setLoggingIn(false);
     }
-  }, [loggingIn, email, password, login, mapLoginError]);
+  }, [loggingIn, email, password, login, t]);
 
   // 自动配置：进入 auto 阶段后执行。
   // 服务端拉取全部 key 并验证各自目录；目录探测不代表付费推理测试。
@@ -216,6 +202,7 @@ export function RelayOnboarding({ onSuccess, onPhaseChange }: RelayOnboardingPro
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <RelayBrowserLogin disabled={loggingIn} />
           <ConfigField label={t("brand.auth.email")}>
             <input
               type="email"

@@ -52,8 +52,10 @@ import { ProviderUsageSummary } from "./ProviderUsageSummary";
 import { RelayUsageSummary } from "./RelayUsageSummary";
 import { RelayKeyRefresh } from "./RelayKeyRefresh";
 import { RelayOnboarding } from "./RelayOnboarding";
+import { RelayBrowserLogin } from "./RelayBrowserLogin";
 import { isRelayProviderId } from "@/lib/relay-config";
 import { useRelaySession } from "@/hooks/useRelaySession";
+import { relayLoginMessageKey } from "@/lib/relay-session-client";
 import {
   readContextWindowTokens,
   relayDefaultContextWindow,
@@ -2238,6 +2240,7 @@ function RelayAddAccountDetail({ login, onDone }: {
   login: (email: string, password: string) => Promise<{ ok: boolean; accountId?: string; message?: string }>;
   onDone: (accountId: string) => Promise<void> | void;
 }) {
+  const { t } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2249,7 +2252,7 @@ function RelayAddAccountDetail({ login, onDone }: {
     try {
       const result = await login(email.trim(), password);
       if (!result.ok || !result.accountId) {
-        setError(result.message === "invalid-credentials" ? "邮箱或密码不正确。" : "登录失败，请检查网络后重试。");
+        setError(relayLoginMessageKey(result.message));
         return;
       }
       await onDone(result.accountId);
@@ -2267,6 +2270,7 @@ function RelayAddAccountDetail({ login, onDone }: {
           </p>
         </ConfigDetailHeaderInfo>
       </ConfigDetailHeader>
+      <RelayBrowserLogin onDone={onDone} disabled={busy} />
       <Field label="邮箱">
         <TextInput value={email} onChange={setEmail} placeholder="you@example.com" />
       </Field>
@@ -2278,7 +2282,7 @@ function RelayAddAccountDetail({ login, onDone }: {
           onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
         />
       </Field>
-      {error && <div role="alert" style={{ color: "#f87171", fontSize: 12 }}>{error}</div>}
+      {error && <div role="alert" style={{ color: "#f87171", fontSize: 12 }}>{t(error)}</div>}
       <div>
         <ConfigButton variant="primary" disabled={busy || !email.trim() || !password} onClick={() => void submit()}>
           {busy ? "正在登录..." : "登录并同步"}
