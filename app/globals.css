@@ -2819,8 +2819,7 @@ button.turn-files-row:focus-visible { outline: 2px solid var(--accent); outline-
   .ui-turn-process { transition: none; }
 }
 
-.chat-subagent-mode,
-.chat-goal-reopen {
+.chat-subagent-mode {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
@@ -2832,9 +2831,7 @@ button.turn-files-row:focus-visible { outline: 2px solid var(--accent); outline-
   font-size: 12px;
 }
 
-.chat-subagent-mode:hover,
-.chat-goal-reopen:hover { background: var(--bg-hover); }
-.chat-goal-reopen { cursor: pointer; white-space: nowrap; }
+.chat-subagent-mode:hover { background: var(--bg-hover); }
 .chat-subagent-mode select {
   height: 30px;
   max-width: 138px;
@@ -2845,8 +2842,7 @@ button.turn-files-row:focus-visible { outline: 2px solid var(--accent); outline-
   cursor: pointer;
 }
 
-.chat-subagent-mode select:focus-visible,
-.chat-goal-reopen:focus-visible { outline: 2px solid var(--accent); border-radius: 5px; }
+.chat-subagent-mode select:focus-visible { outline: 2px solid var(--accent); border-radius: 5px; }
 .chat-subagent-mode select:disabled { opacity: .65; cursor: default; }
 .chat-subagent-mode option { background: var(--bg-panel); color: var(--text); }
 

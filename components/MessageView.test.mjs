@@ -458,6 +458,17 @@ test("renders assistant images instead of dropping the image content block", () 
   assert.match(html, /max-height:320px/);
 });
 
+test("uses the conversation's file access for a local image embedded in an assistant reply", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "local",
+    model: "model",
+    content: [{ type: "text", text: "![Preview](/tmp/chat-preview/preview%20file.png)" }],
+  }, { cwd: "/home/me/project", sessionId: "session-1", onOpenFile() {} });
+
+  assert.match(html, /src="\/api\/files\/tmp\/chat-preview\/preview%20file\.png\?type=read&amp;sessionId=session-1"/);
+});
+
 test("renders pi-image-gen detail images inline with tool details closed", () => {
   const block = {
     type: "toolCall",

@@ -4,7 +4,8 @@ import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useIm
 import type { BuiltinSlashCommandResult, CompactResultInfo, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { QueueAction, QueuedInput, QueuedMessages } from "@/lib/agent-input-queue";
 import type { SkillsResponse } from "@/lib/api-types";
-import type { TextContent, UserMessage } from "@/lib/types";
+import { getUserMessageText } from "@/lib/message-display";
+import type { UserMessage } from "@/lib/types";
 import {
   clearDraft,
   getDraft,
@@ -81,7 +82,6 @@ interface Props {
   showWorkMode?: boolean;
   workModeDisabled?: boolean;
   messagePlaceholder?: string;
-  onShowPreviousGoal?: () => void;
   approvalPolicyControl?: React.ReactNode;
   onNewWorkModeChanged?: () => Promise<void>;
   onSessionWorkModeChange?: (mode: WorkMode) => Promise<void>;
@@ -537,13 +537,7 @@ export function canRestoreUserMessage(
   return !value.trim() && attachedImageCount === 0 && pendingImageCount === 0;
 }
 
-export function getUserMessageText(message: UserMessage): string {
-  if (typeof message.content === "string") return message.content;
-  return message.content
-    .filter((block): block is TextContent => block.type === "text")
-    .map((block) => block.text)
-    .join("\n");
-}
+export { getUserMessageText };
 
 export function getUserMessageDraftImages(message: UserMessage): ChatDraftImage[] {
   if (typeof message.content === "string") return [];
@@ -712,7 +706,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
   onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
   workMode, pendingWorkMode, showWorkMode, workModeDisabled, onNewWorkModeChanged, onSessionWorkModeChange, onResolvedWorkMode,
-  messagePlaceholder, onShowPreviousGoal, approvalPolicyControl,
+  messagePlaceholder, approvalPolicyControl,
   subagentMode, onSubagentModeChange, subagentModeDisabled,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onQueueAction,
@@ -2706,11 +2700,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               onSessionModeChange={onSessionWorkModeChange}
               onResolvedMode={onResolvedWorkMode}
             />}
-            {onShowPreviousGoal && (
-              <button type="button" className="chat-goal-reopen" onClick={onShowPreviousGoal}>
-                {t("chat.goal.reopen")}
-              </button>
-            )}
             {approvalPolicyControl}
             {onSubagentModeChange && (
               <label className="chat-subagent-mode" title={t(subagentModeDisabled

@@ -5,7 +5,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import { useI18n } from "@/hooks/useI18n";
 import { useFileContextMenu } from "@/hooks/useFileContextMenu";
 import { looksLikeLocalFileReference, resolveLocalFileHref, resolveLocalFileReference, shouldOpenLocalFileInApp } from "@/lib/file-links";
-import { encodeFilePathForApi } from "@/lib/file-paths";
+import { getFileApiUrl } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins, markdownUrlTransform, normalizeDisplayMath } from "@/lib/markdown";
 import { isSvgMarkup, MermaidBlock, CodeBlock, SvgBlock } from "./MermaidBlock";
 import { ImagePreview } from "./ImagePreview";
@@ -15,12 +15,13 @@ interface MarkdownBodyProps {
   className?: string;
   isStreaming?: boolean;
   cwd?: string;
+  sessionId?: string;
   onOpenFile?: (filePath: string) => void;
 }
 
 const InsideMarkdownLink = createContext(false);
 
-export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, isStreaming, cwd, sessionId, onOpenFile }: MarkdownBodyProps) {
   const { t } = useI18n();
   const openFileMenu = useFileContextMenu();
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
@@ -129,9 +130,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       const insideLink = useContext(InsideMarkdownLink);
       delete props.node;
       const filePath = typeof src === "string" ? resolveLocalFileHref(src, cwd) : null;
-      const imageSrc = filePath
-        ? `/api/files/${encodeFilePathForApi(filePath)}?type=read`
-        : src;
+      const imageSrc = filePath ? getFileApiUrl(filePath, "read", sessionId) : src;
       if (typeof imageSrc !== "string" || !imageSrc) return null;
       // Dynamic local paths are served directly by the file API.
       const image = (
@@ -165,7 +164,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         </div>
       );
     },
-  }), [cwd, isStreaming, onOpenFile, openFileMenu, t]);
+  }), [cwd, isStreaming, sessionId, onOpenFile, openFileMenu, t]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>

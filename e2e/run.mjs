@@ -62,6 +62,9 @@ try {
   writeFileSync(join(agentDir, "extensions", "e2e-dialog.js"), extensionSource);
   const longEntries = Array.from({ length: 5000 }, (_, i) =>
     message(`e${i}`, i ? `e${i - 1}` : null, i % 2 ? "assistant" : "user", text(i)));
+  for (const entry of longEntries) {
+    if (entry.message.role === "assistant") Object.assign(entry.message, { provider: "test", model: "E2E Model" });
+  }
   longEntries.splice(1, 0, message("alternate", "e0", "user", "E2E alternate history branch"));
   writeSession(LONG, longEntries);
   writeSession(BRANCH, [
@@ -201,14 +204,57 @@ try {
 
     // Exercise the real IntersectionObserver and prepend path, twice.
     for (let turn = 0; turn < 2; turn++) {
+      const contextRoute = `**/api/sessions/${LONG}/context?*`;
+      let releasePage;
+      const gate = new Promise((resolve) => { releasePage = resolve; });
+      await page.route(contextRoute, async (route) => {
+        await gate;
+        await route.continue().catch(() => {});
+      }, { times: 1 });
+      const requestPromise = page.waitForRequest((request) =>
+        new URL(request.url()).pathname === `/api/sessions/${LONG}/context`);
       const responsePromise = page.waitForResponse((response) =>
         new URL(response.url()).pathname === `/api/sessions/${LONG}/context`);
-      await sentinel.evaluate((element) => element.scrollIntoView({ block: "start", behavior: "instant" }));
+      try {
+        await sentinel.evaluate((element) => element.scrollIntoView({ block: "start", behavior: "instant" }));
+        await requestPromise;
+        // Move away from the sentinel while the response is pending. Record frames
+        // with native anchoring disabled so transient jumps cannot pass this check.
+        await page.locator("[data-entry-id='e4956']").evaluate((element) => {
+          const scroll = element.closest(".overflow-y-auto");
+          scroll.style.setProperty("overflow-anchor", "none");
+          const offset = () => element.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+          scroll.scrollTop += offset() - 120;
+          const expected = offset();
+          const width = scroll.clientWidth;
+          let maxShift = 0;
+          let widthChanged = false;
+          let frame;
+          const measure = () => {
+            maxShift = Math.max(maxShift, Math.abs(offset() - expected));
+            widthChanged ||= scroll.clientWidth !== width;
+            frame = requestAnimationFrame(measure);
+          };
+          measure();
+          window.endHistoryFrameCheck = () => {
+            cancelAnimationFrame(frame);
+            return { maxShift, widthChanged };
+          };
+        });
+      } finally {
+        releasePage();
+      }
       const response = await responsePromise;
       const older = (await response.json()).context;
       const firstMessage = older.messages.find((message) => message.role === "user")?.content;
       assert.equal(typeof firstMessage, "string", "Older page must contain user messages");
       await page.getByText(firstMessage, { exact: true }).waitFor({ state: "attached" });
+      const reading = await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+        resolve(window.endHistoryFrameCheck());
+      })));
+      assert.ok(reading.maxShift < 2, `History moved the reading position by ${reading.maxShift}px`);
+      assert.equal(reading.widthChanged, false, "Showing the timeline must preserve the chat width");
+      assert.equal(await page.locator(".chat-reading-column [data-entry-id] .ui-msg-enter").count(), 0, "Historical messages must not replay entry animations");
       await page.getByText(text(4999), { exact: true }).evaluate((element) => element.scrollIntoView({ block: "end", behavior: "instant" }));
     }
     assert.deepEqual(await latestUser.evaluate((element) => ({

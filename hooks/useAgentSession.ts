@@ -8,6 +8,7 @@ import type {
   ExtensionUiAnswer,
   ExtensionUiRequest,
   ExtensionWidgetItem,
+  SessionContext,
   SessionInfo,
   SessionTreeNode,
   ToolResultMessage,
@@ -41,6 +42,7 @@ import {
   CHAT_SCROLL_REATTACH_TOLERANCE,
   CHAT_SCROLL_TAIL_TOLERANCE,
   getLiveFollowAttached,
+  mergeLoadedSessionContext,
 } from "@/lib/chat-lazy-load";
 import {
   INITIAL_STREAMING_STATE,
@@ -58,14 +60,7 @@ export interface SessionData {
   tree: SessionTreeNode[];
   leafId: string | null;
   toolNames?: string[];
-  context: {
-    messages: AgentMessage[];
-    entryIds: string[];
-    oldestEntryId: string | null;
-    hasMore: boolean;
-    thinkingLevel: string;
-    model: { provider: string; modelId: string } | null;
-  };
+  context: SessionContext;
   /** Cumulative usage over ALL session-file entries (incl. compacted history). */
   stats?: SessionFileStats;
 }
@@ -311,6 +306,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [activeToolResults, setActiveToolResults] = useState<Map<string, ToolResultMessage>>(new Map());
   const [entryIds, setEntryIds] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const loadedContextRef = useRef<Pick<SessionData, "sessionId" | "context"> | null>(null);
+  const contextBranchRef = useRef({ pending: false });
+  const sessionLoadSequenceRef = useRef({ next: 0, applied: 0 });
   const [hasEarlierMessages, setHasEarlierMessages] = useState(false);
   const [streamState, dispatch] = useReducer(streamReducer, INITIAL_STREAMING_STATE);
   const [agentRunning, setAgentRunning] = useState(false);
@@ -606,12 +604,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
     let messagesLoaded = false;
+    const branch = contextBranchRef.current;
+    const sequence = ++sessionLoadSequenceRef.current.next;
     try {
       if (showLoading) setLoading(true);
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
+      if (sessionIdRef.current !== sid || branch !== contextBranchRef.current || branch.pending
+        || sequence < sessionLoadSequenceRef.current.applied) return null;
       if (res.status === 404) {
         if (showLoading) {
+          loadedContextRef.current = null;
           setData(null);
           setActiveLeafId(null);
           setMessages([]);
@@ -624,8 +627,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
-      if (sessionIdRef.current !== sid) return null;
-      const persistedMessages = d.context.messages;
+      if (sessionIdRef.current !== sid || !sessionHookMountedRef.current
+        || branch !== contextBranchRef.current || branch.pending || sequence < sessionLoadSequenceRef.current.applied) return null;
+      sessionLoadSequenceRef.current.applied = sequence;
+      const loaded = loadedContextRef.current;
+      if (!showLoading && loaded?.sessionId === sid) d.context = mergeLoadedSessionContext(loaded.context, d.context);
+      loadedContextRef.current = d;
       if (d.workMode !== undefined) {
         updateWorkMode(sid, {
           workMode: d.workMode,
@@ -636,7 +643,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (workModeRef.current?.sid === sid) Object.assign(d, workModeRef.current.state);
       setData(d);
       setActiveLeafId(d.leafId);
-      setMessages(persistedMessages);
+      setMessages(d.context.messages);
       setEntryIds(d.context.entryIds ?? []);
       setHistoryCursor(d.context.oldestEntryId);
       setHasEarlierMessages(d.context.hasMore);
@@ -646,7 +653,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setThinkingLevel((d.context.thinkingLevel as ThinkingLevelOption | undefined) ?? "auto");
 
       messagesLoaded = true;
-      if (showLoading) setLoading(false);
+      if (showLoading && !includeState) setLoading(false);
       if (!includeState) return null;
 
       try {
@@ -682,7 +689,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [setToolPresetState, syncLiveModel, syncLiveWorkMode, updateWorkMode]);
 
-  const loadContext = useCallback(async (sid: string, leafId: string | null, before?: string | null, options?: { tail?: number; signal?: AbortSignal }) => {
+  const loadContext = useCallback(async (sid: string, leafId: string | null, before?: string | null, options?: {
+    tail?: number; signal?: AbortSignal; onBeforePrepend?: () => void;
+  }) => {
+    if (before && contextBranchRef.current.pending) return;
+    const branch = before ? contextBranchRef.current : { pending: true };
+    if (!before) contextBranchRef.current = branch;
     try {
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       if (leafId) params.set("leafId", leafId);
@@ -694,31 +706,34 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const res = await fetch(url, { signal: options?.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as { context: SessionData["context"] };
-      if (sessionIdRef.current !== sid || options?.signal?.aborted || !sessionHookMountedRef.current) return;
-      setHistoryCursor(d.context.oldestEntryId);
-      setHasEarlierMessages(d.context.hasMore);
-      setData((prev) => {
-        if (!prev || prev.sessionId !== sid) return prev;
-        const context = before ? {
-          ...prev.context,
-          messages: [...d.context.messages, ...prev.context.messages],
-          entryIds: [...d.context.entryIds, ...prev.context.entryIds],
+      if (sessionIdRef.current !== sid || options?.signal?.aborted || !sessionHookMountedRef.current
+        || branch !== contextBranchRef.current) return;
+      let context = d.context;
+      if (before) {
+        const loaded = loadedContextRef.current;
+        if (loaded?.sessionId !== sid || loaded.context.oldestEntryId !== before) return;
+        options?.onBeforePrepend?.();
+        context = {
+          ...loaded.context,
+          messages: [...d.context.messages, ...loaded.context.messages],
+          entryIds: [...d.context.entryIds, ...loaded.context.entryIds],
           oldestEntryId: d.context.oldestEntryId,
           hasMore: d.context.hasMore,
-        } : d.context;
-        return { ...prev, context };
-      });
-      if (before) {
-        // Older page: prepend so scroll position stays anchored.
+        };
         setMessages((prev) => [...d.context.messages, ...prev]);
-        setEntryIds((prev) => [...d.context.entryIds, ...prev]);
       } else {
-        setMessages(d.context.messages);
-        setEntryIds(d.context.entryIds ?? []);
+        setMessages(context.messages);
       }
+      loadedContextRef.current = { sessionId: sid, context };
+      setData((prev) => prev?.sessionId === sid ? { ...prev, context } : prev);
+      setEntryIds(context.entryIds);
+      setHistoryCursor(context.oldestEntryId);
+      setHasEarlierMessages(context.hasMore);
       return d.context;
     } catch (e) {
       if (!options?.signal?.aborted) console.error("Failed to load context:", e);
+    } finally {
+      if (!before) branch.pending = false;
     }
   }, []);
 
@@ -878,16 +893,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionRef.current!.maintain(sid);
   }, []);
 
-  // Keep the selected chat warm. A side preview only observes an active child.
   const observeSession = !previewOnly || opts.sessionRunning === true;
-  useEffect(() => {
-    const sid = session?.id;
-    if (!sid || !observeSession) return;
-    maintainEventsConnected(sid);
-    return () => {
-      if (sessionIdRef.current === sid) eventConnectionRef.current?.close();
-    };
-  }, [maintainEventsConnected, observeSession, session?.id]);
 
   useEffect(() => {
     const sid = session?.id;
@@ -1459,7 +1465,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           // Pi can emit a system/loadout update before acknowledging the user
           // prompt. Match the local placeholder even when it isn't last.
           const turnWorkMode = event.turnWorkMode === "plan" || event.turnWorkMode === "goal" ? event.turnWorkMode : undefined;
-          const delivered: UserMessage = { ...completed, turnWorkMode };
+          const isSteering = event.isSteering === true ? true : undefined;
+          const delivered: UserMessage = { ...completed, turnWorkMode, isSteering };
           const optimistic = optimisticUserMessageRef.current;
           optimisticUserMessageRef.current = null;
           setMessages((prev) => reconcileDeliveredUserMessage(prev, optimistic, delivered));
@@ -1843,8 +1850,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setActiveLeafId(leafId);
     const sid = sessionIdRef.current;
     if (!sid) return;
-    await loadContext(sid, leafId);
-    if (leafId) {
+    const context = await loadContext(sid, leafId);
+    if (context && leafId) {
       sendAgentCommand(sid, { type: "navigate_tree", targetId: leafId }).catch(() => {});
     }
   }, [loadContext]);
@@ -2389,6 +2396,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (agentState.state.extensionWidgets !== undefined) setExtensionWidgets(agentState.state.extensionWidgets ?? []);
           if (agentState.state.queuedMessages !== undefined) setQueuedMessages(normalizeQueuedMessages(agentState.state.queuedMessages));
         }
+        setLoading(false);
       });
     }
     return () => {
@@ -2411,6 +2419,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Set up observation after the mount effect has restored the mounted flag.
+  // React can replay both effects after cleanup on a fresh page load in dev.
+  useEffect(() => {
+    const sid = session?.id;
+    if (!sid || !observeSession) return;
+    maintainEventsConnected(sid);
+    return () => {
+      if (sessionIdRef.current === sid) eventConnectionRef.current?.close();
+    };
+  }, [maintainEventsConnected, observeSession, session?.id]);
 
   useEffect(() => {
     onSystemPromptChange?.(systemPrompt);
@@ -2442,6 +2461,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   useLayoutEffect(() => {
     if (messages.length > 0) {
+      if (!scrollContainerRef.current) return;
       if (pendingScrollToUserRef.current) {
         pendingScrollToUserRef.current = false;
         initialScrollDoneRef.current = true;
@@ -2453,7 +2473,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         scrollToBottom("auto");
       }
     }
-  }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
+  }, [messages.length, loading, agentRunning, scrollToBottom, scrollUserMsgToTop]);
 
   useEffect(() => {
     if (previewOnly) return;

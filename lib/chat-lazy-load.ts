@@ -1,26 +1,21 @@
-export const VISIBLE_PAGE_SIZE = 50;
+import type { SessionContext } from "./types";
+
 export const CHAT_SCROLL_TAIL_TOLERANCE = 8;
 export const CHAT_SCROLL_REATTACH_TOLERANCE = 96;
 
-export function getVisibleRenderWindow(totalCount: number, visibleCount: number): {
-  startIndex: number;
-  hasMore: boolean;
-} {
-  const clampedVisibleCount = Math.min(Math.max(visibleCount, 0), Math.max(totalCount, 0));
-  const startIndex = Math.max(0, totalCount - clampedVisibleCount);
-  return { startIndex, hasMore: startIndex > 0 };
-}
-
-export function getNextVisibleCount(currentVisibleCount: number, pageSize = VISIBLE_PAGE_SIZE): number {
-  return currentVisibleCount + pageSize;
-}
-
-export function captureScrollDistance(scrollHeight: number, scrollTop: number): number {
-  return scrollHeight - scrollTop;
-}
-
-export function restoreScrollTop(scrollHeight: number, savedDistance: number): number {
-  return Math.max(0, scrollHeight - savedDistance);
+export function mergeLoadedSessionContext(loaded: SessionContext, latest: SessionContext): SessionContext {
+  if (!latest.hasMore || latest.entryIds.length === 0) return latest;
+  const overlap = loaded.entryIds.indexOf(latest.entryIds[0]);
+  // Retain the prefix only when the new page continues the entire loaded suffix.
+  // A common ancestor alone can also occur after switching branches.
+  if (overlap < 0 || !loaded.entryIds.slice(overlap).every((id, index) => id === latest.entryIds[index])) return latest;
+  return {
+    ...latest,
+    messages: [...loaded.messages.slice(0, overlap), ...latest.messages],
+    entryIds: [...loaded.entryIds.slice(0, overlap), ...latest.entryIds],
+    oldestEntryId: loaded.oldestEntryId,
+    hasMore: loaded.hasMore,
+  };
 }
 
 export function isScrollAtTail(

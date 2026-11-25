@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantContentBlock, AssistantMessage, ThinkingContent, ToolCallContent } from "./types";
+import type { AgentMessage, AssistantContentBlock, AssistantMessage, ThinkingContent, ToolCallContent, UserMessage } from "./types";
 import type { GoalOutcomeStatus, SessionGoal } from "./session-goal-types";
 
 interface DisplayOptions {
@@ -12,6 +12,27 @@ export function getThinkingPreview(thinking: string): string {
 export function isMessageGroupAnchor(message: { role?: AgentMessage["role"]; customType?: string }): boolean {
   return message.role === "user"
     || (message.role === "custom" && message.customType === "compaction");
+}
+
+export function startsUserTurn(message: AgentMessage): boolean {
+  return message.role === "user" && !message.isSteering;
+}
+
+const IMAGE_HINT_SUFFIX = /(^|\r?\n\r?\n)(\[Image[^\r\n]*\](?:\r?\n\[Image[^\r\n]*\])*)$/;
+const IMAGE_RESIZE_NOTE = /^\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by \d+\.\d{2} to map to original image\.\]$/;
+
+export function getUserMessageText(message: UserMessage): string {
+  if (typeof message.content === "string") return message.content;
+  const text = message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  if (!message.content.some((block) => block.type === "image")) return text;
+
+  // Pi appends its image notes as a separate paragraph for the model.
+  return text.replace(IMAGE_HINT_SUFFIX, (suffix, separator: string, notes: string) => {
+    const lines = notes.split(/\r?\n/);
+    const visible = lines.filter((line) => !IMAGE_RESIZE_NOTE.test(line));
+    if (visible.length === lines.length) return suffix;
+    return visible.length ? separator + visible.join("\n") : "";
+  });
 }
 
 export function isEmptyThinkingBlock(block: AssistantContentBlock, options: DisplayOptions = {}): block is ThinkingContent {

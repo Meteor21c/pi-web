@@ -57,6 +57,8 @@ export interface UserMessage {
   timestamp?: number;
   /** Display metadata for the mode used by this turn. */
   turnWorkMode?: Exclude<WorkMode, "auto">;
+  /** Delivered within the current task through Pi's steering queue. */
+  isSteering?: true;
 }
 
 export interface AgentUsage {

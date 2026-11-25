@@ -15,7 +15,7 @@ import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { listSessionsIncremental } from "./session-list-scanner";
 import { readSessionThinkingSelection } from "./session-thinking";
-import { readTurnWorkModes } from "./session-work-mode";
+import { readUserTurnMetadata } from "./session-work-mode";
 
 export { getAgentDir };
 
@@ -488,12 +488,12 @@ export function buildSessionContext(
   const messages: AgentMessage[] = [];
   const entryIds: string[] = [];
   const userIds = new Set(sliced.flatMap((entry) => entry.type === "message" && entry.message.role === "user" ? [entry.id] : []));
-  const workModes = readTurnWorkModes(entries, userIds);
+  const userTurnMetadata = readUserTurnMetadata(entries, userIds);
   for (const entry of sliced) {
     const m = entryToUiMessage(entry, options);
     if (m) {
-      const turnWorkMode = workModes.get(entry.id);
-      messages.push(m.role === "user" && turnWorkMode ? { ...m, turnWorkMode } : m);
+      const metadata = userTurnMetadata.get(entry.id);
+      messages.push(m.role === "user" && metadata ? { ...m, ...metadata } : m);
       entryIds.push(entry.id);
     }
   }

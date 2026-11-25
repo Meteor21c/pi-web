@@ -7,7 +7,7 @@ import { ThinkingIcon } from "./ThinkingIcon";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
-import { getAssistantErrorMessage, isEmptyThinkingBlock, isTruncatedResponseError } from "@/lib/message-display";
+import { getAssistantErrorMessage, getUserMessageText, isEmptyThinkingBlock, isTruncatedResponseError } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { isEditToolName } from "@/lib/tool-names";
 import { USER_QUESTION_TOOL, type UserQuestionResult } from "@/lib/user-questions";
@@ -19,7 +19,7 @@ import { getSubagentDisplayName, SUBAGENT_NOTIFICATION_TYPE } from "@/lib/subage
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { isRelayProviderId } from "@/lib/relay-config";
 import { resolveLocalFileHref, resolveLocalFilePath } from "@/lib/file-links";
-import { encodeFilePathForApi } from "@/lib/file-paths";
+import { getFileApiUrl } from "@/lib/file-paths";
 import type {
   AgentMessage,
   AgentUsage,
@@ -190,6 +190,7 @@ function loadThinkingContent(sessionId: string, entryId: string, blockIndex: num
 
 interface Props {
   message: AgentMessage;
+  animateIn?: boolean;
   isStreaming?: boolean;
   toolResults?: Map<string, ToolResultMessage>;
   modelNames?: Record<string, string>;
@@ -300,12 +301,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, blockIndices, hideMetadata, onFork, forkingEntryId, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, animateIn = true, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, blockIndices, hideMetadata, onFork, forkingEntryId, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
   if (message.role === "user") {
-    return <UserMessageView message={message as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onNavigate={onNavigate} onEditContent={onEditContent} />;
+    return <UserMessageView message={message as UserMessage} animateIn={animateIn} cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile} entryId={entryId} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} blockIndices={blockIndices} hideMetadata={hideMetadata} onFork={onFork} forkingEntryId={forkingEntryId} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} animateIn={animateIn} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} blockIndices={blockIndices} hideMetadata={hideMetadata} onFork={onFork} forkingEntryId={forkingEntryId} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -321,7 +322,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
       }
       return null;
     }
-    return <CustomMessageView message={message as CustomMessage} cwd={cwd} onOpenFile={onOpenFile} />;
+    return <CustomMessageView message={message as CustomMessage} cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile} />;
   }
   if (message.role === "bashExecution") {
     return <BashExecutionView message={message as BashExecutionMessage} sessionId={sessionId} />;
@@ -329,6 +330,7 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
   return null;
 }, (prev, next) => {
   return prev.message === next.message
+    && prev.animateIn === next.animateIn
     && prev.isStreaming === next.isStreaming
     && haveSameRelevantToolResults(prev.message, prev.toolResults, next.toolResults)
     && prev.modelNames === next.modelNames
@@ -354,9 +356,11 @@ export const MessageView = memo(function MessageView({ message, isStreaming, too
     && prev.sessionId === next.sessionId;
 });
 
-function UserMessageView({ message, cwd, onOpenFile, entryId, onNavigate, onEditContent }: {
+function UserMessageView({ message, animateIn, cwd, sessionId, onOpenFile, entryId, onNavigate, onEditContent }: {
   message: UserMessage;
+  animateIn: boolean;
   cwd?: string;
+  sessionId?: string;
   onOpenFile?: (filePath: string) => void;
   entryId?: string;
   onNavigate?: (entryId: string) => Promise<boolean>;
@@ -367,13 +371,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onNavigate, onEdit
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
-  const content =
-    typeof message.content === "string"
-      ? message.content
-      : message.content
-          .filter((b): b is TextContent => b.type === "text")
-          .map((b) => b.text)
-          .join("\n");
+  const content = getUserMessageText(message);
 
   const imageBlocks: ImageContent[] =
     typeof message.content === "string"
@@ -430,7 +428,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onNavigate, onEdit
 
   return (
     <div
-      className="ui-msg-enter"
+      className={animateIn ? "ui-msg-enter" : undefined}
       style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: "flex-end" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -508,13 +506,13 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onNavigate, onEdit
                 )}
               </div>
               {expanded && (
-                <MarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</MarkdownBody>
+                <MarkdownBody className="markdown-user-message" cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile}>{content}</MarkdownBody>
               )}
             </div>
           ) : (
           <>
           {imageBlocksNode}
-          {content && <SafeMarkdownBody className="markdown-user-message" cwd={cwd} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>}
+          {content && <SafeMarkdownBody className="markdown-user-message" cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile}>{content}</SafeMarkdownBody>}
           </>
           )}
         </div>
@@ -526,6 +524,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onNavigate, onEdit
         display: "flex", alignItems: "center", justifyContent: "flex-end",
         gap: 6, marginTop: 3,
       }}>
+        {message.isSteering && <span className="text-[11px] text-text-dim">{t("chat.steeringMessage")}</span>}
         <div style={{
           display: "flex", gap: 3,
           opacity: hovered ? 1 : 0,
@@ -597,6 +596,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onNavigate, onEdit
 
 function AssistantMessageView({
   message,
+  animateIn,
   isStreaming,
   toolResults,
   modelNames,
@@ -620,6 +620,7 @@ function AssistantMessageView({
   writtenFiles,
 }: {
   message: AssistantMessage;
+  animateIn: boolean;
   isStreaming?: boolean;
   toolResults?: Map<string, ToolResultMessage>;
   modelNames?: Record<string, string>;
@@ -763,7 +764,7 @@ function AssistantMessageView({
     <div
       data-message-role="assistant"
       data-entry-id={entryId}
-      className="ui-msg-enter"
+      className={animateIn ? "ui-msg-enter" : undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -990,7 +991,7 @@ function AssistantMessageView({
 
 function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDuration, cwd, onOpenFile, onOpenSession, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; searchTarget?: boolean; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; cwd?: string; onOpenFile?: (filePath: string) => void; onOpenSession?: (sessionId: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
   if (block.type === "text") {
-    return <div data-message-text data-search-target={searchTarget || undefined}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile} /></div>;
+    return <div data-message-text data-search-target={searchTarget || undefined}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile} /></div>;
   }
   if (block.type === "image") {
     return <AssistantImageBlock block={block as ImageContent} />;
@@ -1006,8 +1007,8 @@ function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDur
   return null;
 }
 
-function TextBlock({ block, isStreaming, cwd, onOpenFile }: { block: TextContent; isStreaming?: boolean; cwd?: string; onOpenFile?: (filePath: string) => void }) {
-  return <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>;
+function TextBlock({ block, isStreaming, cwd, sessionId, onOpenFile }: { block: TextContent; isStreaming?: boolean; cwd?: string; sessionId?: string; onOpenFile?: (filePath: string) => void }) {
+  return <SafeMarkdownBody isStreaming={isStreaming} cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile}>{block.text}</SafeMarkdownBody>;
 }
 
 function AssistantImageBlock({ block }: { block: ImageContent }) {
@@ -1687,7 +1688,7 @@ function CompactionFileList({ title, files }: { title: string; files: string[] }
   );
 }
 
-function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string) => void }) {
+function CustomMessageView({ message, cwd, sessionId, onOpenFile }: { message: CustomMessage; cwd?: string; sessionId?: string; onOpenFile?: (filePath: string) => void }) {
   const { t } = useI18n();
   const isHiddenDisplay = message.display === false;
   const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);
@@ -1757,7 +1758,7 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
                 })}
               </div>
             )}
-             {text ? <MarkdownBody className="markdown-custom-message" cwd={cwd} onOpenFile={onOpenFile}>{text}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("i18n.noMessage")}</span>}
+             {text ? <MarkdownBody className="markdown-custom-message" cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile}>{text}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("i18n.noMessage")}</span>}
           </div>
         ) : (
           <button
@@ -1889,7 +1890,6 @@ function getToolResultImages(
   const generated = detailImages.flatMap((value): ImageContent[] => {
     const detail = typeof value === "string" ? { path: value } : isRecord(value) ? value : null;
     if (!detail) return [];
-    const sessionQuery = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
     const mimeType = typeof detail.mimeType === "string" ? detail.mimeType : undefined;
     const rawSource = typeof detail.path === "string"
       ? detail.path.trim()
@@ -1923,7 +1923,7 @@ function getToolResultImages(
       source: {
         type: "url",
         ...(mimeType ? { media_type: mimeType } : {}),
-        url: `/api/files/${encodeFilePathForApi(filePath)}?type=read${sessionQuery}`,
+        url: getFileApiUrl(filePath, "read", sessionId),
       },
     } satisfies ImageContent];
   });

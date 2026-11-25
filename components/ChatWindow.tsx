@@ -5,13 +5,13 @@ import { createPortal } from "react-dom";
 import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, CustomMessage, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { getAssistantErrorMessage, getAssistantTimelineSegments, hasFinalAssistantStop, isMessageGroupAnchor, readGoalOutcomeStatus, shouldShowSettledGoalFinal, stoppedWithoutFinalAnswer } from "@/lib/message-display";
+import { getAssistantErrorMessage, getAssistantTimelineSegments, getUserMessageText, hasFinalAssistantStop, isMessageGroupAnchor, readGoalOutcomeStatus, shouldShowSettledGoalFinal, startsUserTurn, stoppedWithoutFinalAnswer } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
 import type { WorkMode } from "@/lib/prompt-presets";
 import { USER_QUESTION_TOOL } from "@/lib/user-questions";
-import type { ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
+import { readPreferredApprovalPolicy, savePreferredApprovalPolicy, type ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
 import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, SUBAGENT_RESULTS_TYPE, type SubagentMode } from "@/lib/subagent-mode";
 import { readTurnDurationMs, TURN_TIMING_TYPE } from "@/lib/session-timing";
@@ -23,7 +23,7 @@ import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ApprovalPolicySelector } from "./ApprovalPolicySelector";
 import { SessionGoalTracker } from "./SessionGoalTracker";
 import { UserQuestionDialog } from "./UserQuestionDialog";
-import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
+import { CHAT_MINIMAP_WIDTH, ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { AnsiText } from "./AnsiText";
 import { useI18n } from "@/hooks/useI18n";
@@ -36,14 +36,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { ToolEntry } from "@/lib/tool-presets";
 import { findChatScrollAnchor, type ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { sendAgentCommand } from "@/lib/agent-client";
-import {
-  captureScrollDistance,
-  getPromptAnchorSpacerHeight,
-  getVisibleRenderWindow,
-  isScrollAtTail,
-  restoreScrollTop,
-  VISIBLE_PAGE_SIZE,
-} from "@/lib/chat-lazy-load";
+import { getPromptAnchorSpacerHeight, isScrollAtTail } from "@/lib/chat-lazy-load";
 
 interface Props {
   session: SessionInfo | null;
@@ -168,24 +161,12 @@ function AgentActivityCard({ phase, streamingStage, startedAt, lastActivityAt, w
   );
 }
 
-const CHAT_MINIMAP_WIDTH = 36;
-
 function isGoalOutcomeMessage(message: AgentMessage): message is CustomMessage & { customType: typeof GOAL_OUTCOME_TYPE } {
   return message.role === "custom" && message.customType === GOAL_OUTCOME_TYPE;
 }
 
 function getUserInputText(message: AgentMessage): string | null {
-  if (message.role !== "user") return null;
-  if (typeof message.content === "string") {
-    const text = message.content.trim();
-    return text.length > 0 ? text : null;
-  }
-  const text = message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
-  return text.length > 0 ? text : null;
+  return message.role === "user" ? getUserMessageText(message).trim() || null : null;
 }
 
 function aggregateTurnUsage(messages: AgentMessage[], start: number, end: number): AgentUsage | undefined {
@@ -243,14 +224,15 @@ function activitySummary(blocks: AssistantContentBlock[], commandCount: number, 
     || t(blocks.some((block) => block.type === "text") ? "chat.activityGoalDetails" : "chat.activityThoughtSummary");
 }
 
-function ProcessDetailsButton({ summary, activeLabel, failureCount = 0, open, onToggle, t }: {
+function ProcessDetailsButton({ summary, activeLabel, hasFailure = false, open, onToggle, t }: {
   summary: string;
   activeLabel?: string | null;
-  failureCount?: number;
+  hasFailure?: boolean;
   open: boolean;
   onToggle: () => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }) {
+  const showFailure = hasFailure && !open;
   return (
     <button
       type="button"
@@ -258,13 +240,12 @@ function ProcessDetailsButton({ summary, activeLabel, failureCount = 0, open, on
       aria-label={(open ? t("chat.collapseProcess") : t("chat.expandProcess")) + ": " + summary}
       onClick={onToggle}
       title={open ? t("chat.collapseProcess") : t("chat.expandProcess")}
-      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0, minHeight: 28, padding: "3px 0", border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
+      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", minWidth: 0, minHeight: 28, padding: "3px 0", border: "none", background: "transparent", color: showFailure ? "var(--error, #ef4444)" : "var(--text-muted)", cursor: "pointer", fontSize: 12, textAlign: "left" }}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: activeLabel ? "var(--accent)" : undefined, animation: activeLabel ? "pulse 1.5s ease-in-out infinite" : undefined }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0, color: activeLabel && !showFailure ? "var(--accent)" : undefined, animation: activeLabel ? "pulse 1.5s ease-in-out infinite" : undefined }}>
         <rect x="3" y="4" width="18" height="16" rx="3" /><path d="m7 9 3 3-3 3m6 0h4" />
       </svg>
       <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeLabel ? activeLabel + " · " + summary : summary}</span>
-      {failureCount > 0 && <span style={{ flexShrink: 0, color: "var(--error, #ef4444)", fontSize: 11 }}>{t("chat.activityFailureSummary", { count: failureCount })}</span>}
       <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" style={{ flexShrink: 0, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}><path d="m4 2.5 3.5 3.5L4 9.5" /></svg>
     </button>
   );
@@ -306,10 +287,9 @@ function TurnProcessSection({ open, entryId, sectionRef, children }: {
   );
 }
 
-function TurnActivity({ sections, live, failureCount, processEntryIds, attachProcessRefs, t }: {
+function TurnActivity({ sections, live, processEntryIds, attachProcessRefs, t }: {
   sections: TurnSection[];
   live: boolean;
-  failureCount: number;
   processEntryIds: string[];
   attachProcessRefs: (element: HTMLDivElement | null, indices?: Set<number>) => void;
   t: React.ComponentProps<typeof ProcessDetailsButton>["t"];
@@ -322,7 +302,7 @@ function TurnActivity({ sections, live, failureCount, processEntryIds, attachPro
     <>
       {!live && sections.some(({ process }) => process) && (
         <div className="ui-turn-process-summary" data-entry-id={processEntryIds[0]} data-process-entry-ids={processEntryIds.join(" ")} ref={attachProcessRefs}>
-          <ProcessDetailsButton summary={t("chat.processDetails")} failureCount={failureCount} open={open} onToggle={() => setOpen((value) => !value)} t={t} />
+          <ProcessDetailsButton summary={t("chat.processDetails")} open={open} onToggle={() => setOpen((value) => !value)} t={t} />
         </div>
       )}
       {sections.map((section) => section.process ? (
@@ -363,7 +343,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const completionNotificationsEnabled = !previewOnly && session?.relation?.kind !== "subagent";
   const [subagentMode, setSubagentMode] = useState<SubagentMode>(DEFAULT_SUBAGENT_MODE);
   const [composerWorkMode, setComposerWorkMode] = useState<WorkMode>("auto");
-  const [computerUseApprovalPolicy, setComputerUseApprovalPolicy] = useState<ComputerUseApprovalPolicy>("ask");
+  const [computerUseApprovalPolicy, setComputerUseApprovalPolicy] = useState<ComputerUseApprovalPolicy | null>(null);
+  useEffect(() => {
+    setComputerUseApprovalPolicy(readPreferredApprovalPolicy());
+  }, []);
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -420,7 +403,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     subagentMode: previewOnly || session?.relation?.kind === "subagent" ? undefined : subagentMode,
     previewOnly,
     composerWorkMode,
-    computerUseApprovalPolicy: completionNotificationsEnabled ? computerUseApprovalPolicy : "ask",
+    computerUseApprovalPolicy: completionNotificationsEnabled ? computerUseApprovalPolicy ?? "ask" : "ask",
   });
   const persistedSessionId = session?.id ?? sessionIdRef.current ?? undefined;
   const goalCardStorageKey = persistedSessionId && `meteoragent:closed-goal:${persistedSessionId}`;
@@ -440,13 +423,12 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     }
   }, [goalCardStorageKey]);
 
-  const setGoalCardClosed = (closed: boolean) => {
+  const dismissGoalCard = () => {
     if (!goalCardStorageKey || !endedGoal) return;
-    const revision = closed ? String(endedGoal.revision) : null;
+    const revision = String(endedGoal.revision);
     setClosedGoalCard({ key: goalCardStorageKey, revision });
     try {
-      if (revision === null) localStorage.removeItem(goalCardStorageKey);
-      else localStorage.setItem(goalCardStorageKey, revision);
+      localStorage.setItem(goalCardStorageKey, revision);
     } catch {
       // Keep the current browser state even if persistence fails.
     }
@@ -693,11 +675,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
   const initialPromptSentRef = useRef(false);
   useEffect(() => {
-    if (loading || error || !initialPrompt || initialPromptSentRef.current) return;
+    if (loading || error || computerUseApprovalPolicy === null || !initialPrompt || initialPromptSentRef.current) return;
     initialPromptSentRef.current = true;
     onInitialPromptConsumed?.();
     void handleSend(initialPrompt);
-  }, [initialPrompt, loading, error, handleSend, onInitialPromptConsumed]);
+  }, [initialPrompt, loading, error, computerUseApprovalPolicy, handleSend, onInitialPromptConsumed]);
 
   useEffect(() => {
     if (
@@ -714,13 +696,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     registerAbortHandler(sessionBusy ? handleAbort : null);
   }, [sessionBusy, handleAbort]);
 
-  // --- Lazy-load historical messages ---
-  // Only render the last N messages initially. When the user scrolls to the
-  // top, load another page while keeping the scroll position stable.
-  const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
+  // The server bounds history to the pages requested so far.
   const sentinelRef = useRef<HTMLDivElement>(null);
   const messageContentRef = useRef<HTMLDivElement | null>(null);
-  const prevScrollDistanceRef = useRef<number | null>(null);
+  const prependAnchorRef = useRef<{ element: HTMLElement; entryId: string; offset: number } | null>(null);
   const loadingOlderRef = useRef(false);
   const restoreStartedRef = useRef(false);
   const pendingScrollRestoreRef = useRef(pendingScrollRestore);
@@ -734,6 +713,37 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     : undefined;
   const searchHistoryRef = useRef({ entryIds, historyCursor, hasEarlierMessages });
   searchHistoryRef.current = { entryIds, historyCursor, hasEarlierMessages };
+
+  const capturePrependAnchor = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    prependAnchorRef.current = null;
+    if (!container || !content) return;
+    const viewportTop = container.getBoundingClientRect().top;
+    for (const element of content.children) {
+      if (!(element instanceof HTMLElement) || !element.dataset.entryId) continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.height === 0 || rect.bottom <= viewportTop) continue;
+      prependAnchorRef.current = { element, entryId: element.dataset.entryId, offset: rect.top - viewportTop };
+      break;
+    }
+  }, [scrollContainerRef]);
+
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    const container = scrollContainerRef.current;
+    const content = messageContentRef.current;
+    prependAnchorRef.current = null;
+    if (!anchor || !container || !content) return;
+    const element = anchor.element.parentElement === content
+      ? anchor.element
+      : Array.from(content.children).find((candidate) => candidate instanceof HTMLElement && (
+        candidate.dataset.entryId === anchor.entryId || candidate.dataset.processEntryIds?.split(" ").includes(anchor.entryId)
+      ));
+    if (!element) return;
+    const offset = element.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    container.scrollTo({ top: container.scrollTop + divideByUiScale(offset - anchor.offset), behavior: "instant" });
+  }, [entryIds, historyCursor, scrollContainerRef]);
 
   useLayoutEffect(() => {
     const sessionId = session?.id;
@@ -776,7 +786,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     const locate = async () => {
       const initialHistory = searchHistoryRef.current;
       if (initialHistory.entryIds.includes(position.anchorEntryId)) {
-        setVisibleCount((current) => Math.max(current, initialHistory.entryIds.length * 2));
         setRestoreAnchorReady(true);
         return;
       }
@@ -793,7 +802,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
             setPendingScrollRestore(null);
             return;
           }
-          setVisibleCount((current) => current + Math.max(VISIBLE_PAGE_SIZE, context.messages.length * 2));
           if (context.entryIds.includes(position.anchorEntryId)) {
             setRestoreAnchorReady(true);
             return;
@@ -836,7 +844,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       scrollToBottom("instant");
       setPendingScrollRestore(null);
     }
-  }, [entryIds, pendingScrollRestore, restoreAnchorReady, scrollToBottom, scrollToMessage, searchTarget, visibleCount]);
+  }, [entryIds, pendingScrollRestore, restoreAnchorReady, scrollToBottom, scrollToMessage, searchTarget]);
 
   useEffect(() => {
     if (!searchTarget || loading) return;
@@ -846,17 +854,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       let found = history.entryIds.includes(searchTarget.entryId);
       if (!found && !sessionBusy && history.hasEarlierMessages && history.historyCursor && !loadingOlderRef.current) {
         loadingOlderRef.current = true;
-        const container = scrollContainerRef.current;
-        if (container) prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
         // ponytail: one extra page of 200 entries; deeper or other-branch hits just open the session.
-        const context = await loadContext(searchTarget.sessionId, activeLeafId, history.historyCursor, { tail: 200, signal: controller.signal });
+        const context = await loadContext(searchTarget.sessionId, activeLeafId, history.historyCursor, {
+          tail: 200, signal: controller.signal, onBeforePrepend: capturePrependAnchor,
+        });
         loadingOlderRef.current = false;
         found = Boolean(context?.entryIds.includes(searchTarget.entryId));
       }
       if (controller.signal.aborted) return;
       if (found) {
-        prevScrollDistanceRef.current = null;
-        setVisibleCount((current) => Math.max(current, (searchHistoryRef.current.entryIds.length + 200) * 2));
         setPendingSearchScroll(searchTarget);
       } else {
         onSearchTargetHandled?.(searchTarget);
@@ -864,7 +870,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     };
     void locate();
     return () => controller.abort();
-  }, [searchTarget, loading, activeLeafId, sessionBusy, loadContext, onSearchTargetHandled, scrollContainerRef]);
+  }, [searchTarget, loading, activeLeafId, sessionBusy, loadContext, onSearchTargetHandled, capturePrependAnchor]);
 
   useLayoutEffect(() => {
     if (!pendingSearchScroll || pendingSearchScroll !== searchTarget) return;
@@ -888,24 +894,20 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   // IntersectionObserver on the sentinel div at the top of the message list.
   // When it becomes visible, load the next page of older messages.
   useEffect(() => {
+    if (loading || pendingScrollRestore || searchTarget || !hasEarlierMessages) return;
     const sentinel = sentinelRef.current;
     const container = scrollContainerRef.current;
     if (!sentinel || !container) return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries[0]?.isIntersecting) return;
-        // No older history loaded yet: fetch the previous page from the server
-        // and prepend it (loadContext handles prepend + scroll anchoring).
-        // Skip while a page is already loading or nothing older exists.
         if (loadingOlderRef.current) return;
-        if (!hasEarlierMessages) return;
         const oldestId = historyCursor;
         if (!oldestId) return;
         const sid = session?.id ?? sessionIdRef.current;
         if (!sid) return;
         loadingOlderRef.current = true;
-        prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
-        void loadContext(sid, activeLeafId, oldestId).finally(() => {
+        void loadContext(sid, null, oldestId, { onBeforePrepend: capturePrependAnchor }).finally(() => {
           loadingOlderRef.current = false;
         });
       },
@@ -913,23 +915,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [historyCursor, hasEarlierMessages, session, activeLeafId, loadContext, sessionIdRef, scrollContainerRef]);
-
-  // Keep the rendered window at least as large as what's loaded, so prepended
-  // (older) pages stay visible instead of being sliced off the top.
-  useEffect(() => {
-    setVisibleCount((current) => Math.max(current, messages.length));
-  }, [messages.length]);
-
-  // After visibleCount increases (more messages prepended), restore the
-  // scroll position so the viewport doesn't jump.
-  useEffect(() => {
-    if (prevScrollDistanceRef.current == null) return;
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    container.scrollTop = restoreScrollTop(container.scrollHeight, prevScrollDistanceRef.current);
-    prevScrollDistanceRef.current = null;
-  }, [visibleCount, scrollContainerRef]);
+  }, [loading, historyCursor, hasEarlierMessages, pendingScrollRestore, searchTarget, session?.id, loadContext, sessionIdRef, scrollContainerRef, capturePrependAnchor]);
   // Push session stats up to AppShell for the top bar.
   // Compare scalar fields to avoid loops from new object identity each render.
   const statsKey = authoritativeSessionStats
@@ -1040,9 +1026,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     return history.reverse();
   }, [messages]);
   const messageRefs = useMessageRefs(visibleMessages.length);
-  const revealHistoryForMinimap = useCallback(() => {
-    setVisibleCount((current) => Math.max(current, messages.length * 2));
-  }, [messages.length]);
 
   const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
   const hasStreamingContent = Boolean(streamState.streamingMessage?.content.length);
@@ -1189,12 +1172,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       showWorkMode={isNew || Boolean(data)}
       workModeDisabled={previewOnly || session?.relation?.kind === "subagent"}
       messagePlaceholder={goalFollowUp ? t("chat.goal.followUpPlaceholder") : undefined}
-      onShowPreviousGoal={goalsEnabled && goalCardClosed ? () => setGoalCardClosed(false) : undefined}
       approvalPolicyControl={completionNotificationsEnabled && <ApprovalPolicySelector
-        policy={subagentModeUnavailable ? "ask" : computerUseApprovalPolicy}
+        policy={subagentModeUnavailable ? "ask" : computerUseApprovalPolicy ?? "ask"}
         currentRunPolicy={sessionBusy ? activeComputerUseApprovalPolicy ?? "ask" : undefined}
-        onChange={setComputerUseApprovalPolicy}
-        disabled={subagentModeUnavailable}
+        onChange={(policy) => {
+          savePreferredApprovalPolicy(policy);
+          setComputerUseApprovalPolicy(policy);
+        }}
+        disabled={subagentModeUnavailable || computerUseApprovalPolicy === null}
       />}
       subagentMode={subagentMode}
       onSubagentModeChange={session?.relation?.kind === "subagent" ? undefined : setSubagentMode}
@@ -1319,10 +1304,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               const timelineMessages: AgentMessage[] = streamState.isStreaming && hasStreamingContent && streamState.streamingMessage
                 ? [...messages, streamState.streamingMessage as AgentMessage]
                 : messages;
-              let lastUserIdx = -1;
-              for (let i = timelineMessages.length - 1; i >= 0; i--) {
-                if (timelineMessages[i].role === "user") { lastUserIdx = i; break; }
-              }
+              const lastUserIdx = timelineMessages.findLastIndex((message) => message.role === "user");
+              const lastTurnStartIdx = timelineMessages.findLastIndex(startsUserTurn);
+              const getMessageKey = (index: number) => entryIds[index] ?? `live-${index - entryIds.length}`;
               const visibleRefIndexByMessage = new Map<number, number>();
               const goalOutcomeByAssistant = new Map<number, ReturnType<typeof readGoalOutcomeStatus>>();
               let refIdx = 0;
@@ -1365,7 +1349,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 const isVisible = isMessageGroupAnchor(msg) || msg.role === "assistant";
                 const currentRefIdx = visibleRefIndexByMessage.get(idx);
                 const keyPrefix = options.keyPrefix ?? "message";
-                const messageKey = entryIds[idx] ?? idx;
+                const messageKey = getMessageKey(idx);
                 let showTimestamp = false;
                 if (msg.role === "assistant") {
                   showTimestamp = true;
@@ -1385,6 +1369,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   <MessageView
                     key={`${keyPrefix}-view-${messageKey}`}
                     message={msg}
+                    animateIn={!entryIds[idx]}
                     isStreaming={streamState.isStreaming && idx === messages.length}
                     blockIndices={options.blockIndices}
                     hideMetadata={options.hideMetadata}
@@ -1406,7 +1391,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     usageOverride={options.usageOverride}
                     showModel={options.showModel}
                     compactUsage={options.compactUsage}
-                    imageBilling={options.imageBilling ?? (entryIds[idx] ? imageBillingByAnchor.get(entryIds[idx]) : undefined)}
+                    imageBilling={"imageBilling" in options ? options.imageBilling : (entryIds[idx] ? imageBillingByAnchor.get(entryIds[idx]) : undefined)}
                     writtenFiles={options.writtenFiles}
                   />
                 );
@@ -1422,13 +1407,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               const goalUnavailable = goalsEnabled && (goalLoading || goalLoadError);
               for (let idx = 0; idx < timelineMessages.length;) {
                 // A lazily loaded history page may start halfway through a turn.
-                const hasUser = timelineMessages[idx].role === "user";
-                const userIdx = hasUser ? idx : idx - 1;
+                const hasTurnStart = startsUserTurn(timelineMessages[idx]);
+                const userIdx = hasTurnStart ? idx : idx - 1;
                 let endIdx = userIdx + 1;
-                while (endIdx < timelineMessages.length && timelineMessages[endIdx].role !== "user") endIdx += 1;
-                const isLiveTurn = (agentRunning || streamState.isStreaming) && userIdx === lastUserIdx;
-                const turnKey = entryIds[userIdx] ?? entryIds[userIdx + 1] ?? userIdx;
-                if (hasUser) rendered.push(renderMessage(userIdx));
+                while (endIdx < timelineMessages.length && !startsUserTurn(timelineMessages[endIdx])) endIdx += 1;
+                const isLatestTurn = userIdx === lastTurnStartIdx;
+                const isLiveTurn = (agentRunning || streamState.isStreaming) && isLatestTurn;
+                const hasCompleteHistory = hasTurnStart || !hasEarlierMessages;
+                const turnKey = getMessageKey(hasTurnStart ? userIdx : idx);
+                if (hasTurnStart) rendered.push(renderMessage(userIdx));
 
                 const turnMessages = timelineMessages.slice(userIdx + 1, endIdx);
                 const retryOffset = turnMessages.findIndex((message) =>
@@ -1439,15 +1426,16 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 const turnWorkMode = anchor?.role === "user" ? anchor.turnWorkMode : undefined;
                 const lastAssistantOffset = turnMessages.findLastIndex((message) => message.role === "assistant");
                 const finalAssistantIdx = lastAssistantOffset === -1 ? -1 : userIdx + 1 + lastAssistantOffset;
+                const repliedToLastInput = lastAssistantOffset > turnMessages.findLastIndex((message) => message.role === "user");
                 const goalOutcome = goalOutcomeByAssistant.get(finalAssistantIdx);
                 const isGoalTurn = turnWorkMode === "goal" || turnMessages.some(isGoalOutcomeMessage)
-                  || (!hasUser && lastUserIdx === -1 && data?.workMode === "goal" && (sessionGoal !== null || goalUnavailable));
-                const canShowFinal = !isGoalTurn || shouldShowSettledGoalFinal({
+                  || (!hasTurnStart && isLatestTurn && data?.workMode === "goal" && (sessionGoal !== null || goalUnavailable));
+                const canShowFinal = repliedToLastInput && (!isGoalTurn || shouldShowSettledGoalFinal({
                   outcome: goalOutcome,
-                  latest: userIdx === lastUserIdx,
+                  latest: isLatestTurn,
                   goalUnavailable,
                   goalStatus: sessionGoal?.status,
-                });
+                }));
                 if (turnModel || turnWorkMode) {
                   rendered.push(<TurnLabels
                     key={"turn-labels-" + turnKey}
@@ -1459,14 +1447,13 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 let processViews: ReactNode[] = [];
                 let processBlocks: AssistantContentBlock[] = [];
                 let processCommands = 0;
-                let processFailures = 0;
+                let processFailed = false;
                 let commandIndices = new Set<number>();
                 let commandKey = "";
                 const processEntryIds = new Set<string>();
                 const processRefIndices = new Set<number>();
                 const outputRefIndices = new Set<number>();
                 const sections: TurnSection[] = [];
-                let turnFailureCount = 0;
                 const finalText: AssistantContentBlock[] = [];
                 let turnDurationMs: number | undefined;
                 const addSectionView = (process: boolean, key: string, view: ReactNode, indices: Iterable<number>) => {
@@ -1498,16 +1485,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                       key={commandKey}
                       summary={activitySummary(processBlocks, processCommands, t)}
                       activeLabel={active ? phaseLabel(agentPhase, t) ?? t("chat.thinking") : undefined}
-                      failureCount={processFailures}
+                      hasFailure={processFailed}
                       t={t}
                     >{processViews}</ProcessDetailsGroup>,
                     commandIndices,
                   );
-                  turnFailureCount += processFailures;
                   processViews = [];
                   processBlocks = [];
                   processCommands = 0;
-                  processFailures = 0;
+                  processFailed = false;
                   commandIndices = new Set();
                 };
                 for (let messageIdx = userIdx + 1; messageIdx < endIdx; messageIdx++) {
@@ -1520,12 +1506,17 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     || (message.role === "custom" && (message.customType === GOAL_CONTINUATION_TYPE
                       || message.customType === SUBAGENT_RESULTS_TYPE
                       || message.customType === AUTOMATIC_SUBAGENT_RETRY_TYPE))) continue;
-                  const messageKey = String(entryIds[messageIdx] ?? messageIdx);
+                  const messageKey = getMessageKey(messageIdx);
+                  if (message.role === "user") {
+                    flushProcess();
+                    addSectionView(false, "steering-" + messageKey, renderMessage(messageIdx), [messageIdx]);
+                    continue;
+                  }
                   if (message.role === "bashExecution") {
                     if (processViews.length === 0) commandKey = "commands-" + messageKey;
                     commandIndices.add(messageIdx);
                     processCommands++;
-                    if (message.cancelled || (message.exitCode !== undefined && message.exitCode !== 0)) processFailures++;
+                    processFailed ||= message.cancelled || (message.exitCode !== undefined && message.exitCode !== 0);
                     processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix: "process-command" }));
                     continue;
                   }
@@ -1542,7 +1533,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   const isStreamingMessage = streamState.isStreaming && messageIdx === messages.length;
                   const segments = getAssistantTimelineSegments(message, {
                     isStreaming: isStreamingMessage,
-                    textMode: messageIdx === finalAssistantIdx && (isLiveTurn || canShowFinal) ? "final" : "activity",
+                    textMode: messageIdx === finalAssistantIdx && (canShowFinal || (isLiveTurn && repliedToLastInput)) ? "final" : "activity",
                     allowStreamingFinal: isLiveTurn,
                     showProgress: messageIdx >= retryIndex,
                     isVisibleToolResult: (block) => getDeliveredToolImages(toolResultsMap.get(block.toolCallId),
@@ -1553,7 +1544,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   for (const segment of segments) {
                     const keyPrefix = segment.kind + "-" + segment.blockIndices[0];
                     const blocks = segment.blockIndices.map((index) => message.content[index]);
-                    const failures = blocks.filter((block) => block.type === "toolCall" && toolResultsMap.get(block.toolCallId)?.isError).length;
                     if (segment.kind !== "activity") {
                       const process = segment.kind === "progress";
                       if (!process && messageIdx === finalAssistantIdx) {
@@ -1563,7 +1553,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                         }
                       }
                       flushProcess();
-                      if (process) turnFailureCount += failures;
                       addSectionView(process, keyPrefix + "-" + messageKey, renderMessage(messageIdx, {
                         attachRef: !process, keyPrefix, blockIndices: segment.blockIndices,
                         hideMetadata: true, showModel: false, showTimestamp: false,
@@ -1572,7 +1561,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     }
                     if (processViews.length === 0) commandKey = "commands-" + messageKey + "-" + segment.blockIndices[0];
                     processBlocks.push(...blocks);
-                    processFailures += failures;
+                    processFailed ||= blocks.some((block) => block.type === "toolCall" && toolResultsMap.get(block.toolCallId)?.isError);
                     commandIndices.add(messageIdx);
                     processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix, blockIndices: segment.blockIndices, hideMetadata: true, showModel: false, showTimestamp: false }));
                   }
@@ -1582,7 +1571,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     // failure visible via the summary footer once the run ends.
                     if (terminal && !isLiveTurn) continue;
                     flushProcess();
-                    turnFailureCount++;
                     addSectionView(true, "error-" + messageKey, renderMessage(messageIdx, {
                       attachRef: false, keyPrefix: "error", blockIndices: [], showModel: false, compactUsage: true,
                     }), [messageIdx]);
@@ -1594,7 +1582,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     key={"turn-activity-" + turnKey}
                     sections={sections}
                     live={isLiveTurn}
-                    failureCount={turnFailureCount}
                     processEntryIds={[...processEntryIds]}
                     attachProcessRefs={(element, indices = processRefIndices) => {
                       for (const refIndex of indices) {
@@ -1606,7 +1593,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 }
                 const finalAssistant = timelineMessages[finalAssistantIdx];
                 if (!isLiveTurn && finalAssistant?.role === "assistant") {
-                  const stoppedWithoutAnswer = canShowFinal && stoppedWithoutFinalAnswer(finalAssistant);
+                  const stoppedWithoutAnswer = hasCompleteHistory && canShowFinal && stoppedWithoutFinalAnswer(finalAssistant);
                   const deliveredImage = stoppedWithoutAnswer && turnMessages.some((message) =>
                     message.role === "assistant" && message.content.some((block) =>
                       block.type === "toolCall" && getDeliveredToolImages(
@@ -1624,7 +1611,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   const canForkReply = canShowFinal && hasFinalAssistantStop(finalAssistant)
                     && (finalText.length > 0 || deliveredImage || finalAssistant.content.some((block) => block.type === "image"));
                   const turnContent = turnMessages.flatMap((message) => message.role === "assistant" ? message.content : []);
-                  const imageCharges = entryIds.slice(userIdx + 1, endIdx).flatMap((entryId) => imageBillingByAnchor.get(entryId) ?? []);
+                  const imageCharges = hasCompleteHistory
+                    ? entryIds.slice(userIdx + 1, endIdx).flatMap((entryId) => imageBillingByAnchor.get(entryId) ?? []) : [];
                   const turnImageBilling = imageCharges.length === 0 ? undefined : imageCharges.reduce((total, charge) => ({
                     imageCount: total.imageCount + charge.imageCount,
                     chargeCount: total.chargeCount + charge.chargeCount,
@@ -1637,15 +1625,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     attachRef: false,
                     blockIndices: [],
                     // Copy only the report visible outside the operation record.
-                    messageOverride: { ...finalAssistant, content: finalText },
+                    messageOverride: { ...finalAssistant, content: finalText, usage: hasCompleteHistory ? finalAssistant.usage : undefined },
                     showModel: false,
-                    usageOverride: aggregateTurnUsage(timelineMessages, userIdx + 1, finalAssistantIdx),
-                    actualCost: aggregateTurnActualCost(timelineMessages, entryIds, userIdx + 1, finalAssistantIdx, relayActualCosts.costs),
+                    usageOverride: hasCompleteHistory ? aggregateTurnUsage(timelineMessages, userIdx + 1, finalAssistantIdx) : undefined,
+                    actualCost: hasCompleteHistory ? aggregateTurnActualCost(timelineMessages, entryIds, userIdx + 1, finalAssistantIdx, relayActualCosts.costs) : undefined,
                     imageBilling: turnImageBilling,
-                    writtenFiles: extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd),
+                    writtenFiles: hasCompleteHistory ? extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd) : undefined,
                   }));
                 }
-                if (!isLiveTurn && turnDurationMs !== undefined) {
+                if (!isLiveTurn && hasCompleteHistory && turnDurationMs !== undefined) {
                   rendered.push(
                     <div key={`turn-duration-${entryIds[userIdx] ?? userIdx}`} className="mb-3 mt-1 text-xs tabular-nums text-text-dim">
                       {t("chat.turnElapsed", { duration: formatRunDuration(turnDurationMs, t) })}
@@ -1654,16 +1642,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 }
                 idx = endIdx;
               }
-              const { startIndex } = getVisibleRenderWindow(rendered.length, visibleCount);
-              const hasMore = startIndex > 0 || hasEarlierMessages;
               return (
                 <>
-                  {hasMore && (
+                  {hasEarlierMessages && (
                      <div ref={sentinelRef} className="py-3 text-center text-xs text-text-muted">
                        {t("chat.loadEarlier")}
                     </div>
                   )}
-                  {rendered.slice(startIndex)}
+                  {rendered}
                 </>
               );
             })()}
@@ -1700,10 +1686,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         ) : (
           <ChatMinimap
             messages={messages}
+            entryIds={entryIds}
             streamingMessage={streamState.streamingMessage}
             scrollContainer={scrollContainerRef}
             messageRefs={messageRefs}
-            onRevealHistory={revealHistoryForMinimap}
           />
         ))}
         </>}
@@ -1813,14 +1799,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   {t("chat.goal.loadFailed")}
                   <button type="button" className="underline" onClick={() => void loadGoal()}>{t("chat.goal.retry")}</button>
                 </div>
-              ) : !goalCardClosed && (
+              ) : (
                 <SessionGoalTracker
-                  goal={sessionGoal}
+                  goal={goalCardClosed ? null : sessionGoal}
                   showCreate={composerWorkMode === "goal"}
                   disabled={goalLoading}
                   running={sessionBusy}
                   runningInGoalMode={agentRunning && data?.workMode === "goal"}
-                  onDismiss={endedGoal ? () => setGoalCardClosed(true) : undefined}
+                  onDismiss={endedGoal && !goalCardClosed ? dismissGoalCard : undefined}
                   onChange={handleGoalChange}
                 />
               ))}

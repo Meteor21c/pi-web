@@ -142,7 +142,8 @@ export function createSubagentExtension(
         promptGuidelines: [
           "Once you have enough context to identify independent work, delegate it early and continue a separate part of the task yourself. Handle straightforward tasks directly when delegation is optional.",
           "Give each child a concrete deliverable, acceptance criteria, and clear file ownership or a read-only scope. Keep concurrent edits in disjoint files and avoid duplicating delegated work.",
-          "Use get_subagent_result when you reach a dependency. Review the outcome and verify the integrated work before reporting completion.",
+          "Identify the first step that needs each result. When research or artifact retrieval is only needed for final comparison or verification, begin implementation while that work runs in the background.",
+          "Use get_subagent_result with wait: true when a specific result blocks the next dependent step and you have no useful independent work left. Review the outcome and verify the integrated work before reporting completion.",
         ],
         executionMode: "parallel",
         parameters: Type.Object({
@@ -202,7 +203,7 @@ export function createSubagentExtension(
                   });
               }
               return {
-                content: [{ type: "text", text: `Subagent started in background (${execution.run.status}). Session ID: ${execution.run.sessionId}. Continue independent work. Use get_subagent_result when you need this result.` }],
+                content: [{ type: "text", text: `Subagent started in background (${execution.run.status}). Session ID: ${execution.run.sessionId}. Start the part you can complete independently. Wait for this result when you reach the step that needs it.` }],
                 details: subagentToolDetails(execution.run),
               };
             }

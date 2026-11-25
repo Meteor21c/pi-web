@@ -20,13 +20,13 @@ test("keeps live run timing above the composer and shows recorded duration after
   const composer = source.slice(source.indexOf('<div className="relative shrink-0">'));
   assert.match(composer, /<AgentActivityCard[\s\S]*?startedAt=\{activeRunStartedAt\}[\s\S]*?lastActivityAt=\{runLastActivityAt\}[\s\S]*?\{chatInputElement\}/);
   assert.match(source, /message\.customType === TURN_TIMING_TYPE\) \{\s*turnDurationMs = readTurnDurationMs\(message\.details\)/);
-  assert.match(source, /if \(!isLiveTurn && turnDurationMs !== undefined\) \{[\s\S]*?t\("chat\.turnElapsed"/);
+  assert.match(source, /if \(!isLiveTurn && hasCompleteHistory && turnDurationMs !== undefined\) \{[\s\S]*?t\("chat\.turnElapsed"/);
 });
 
-test("uses one stable activity disclosure for a full user turn, including compaction", () => {
-  assert.match(source, /const isLiveTurn = \(agentRunning \|\| streamState\.isStreaming\) && userIdx === lastUserIdx/);
-  assert.match(source, /while \(endIdx < timelineMessages\.length && timelineMessages\[endIdx\]\.role !== "user"\)/);
-  assert.match(source, /textMode: messageIdx === finalAssistantIdx && \(isLiveTurn \|\| canShowFinal\) \? "final" : "activity"/);
+test("uses one stable activity disclosure across compaction and steering within a turn", () => {
+  assert.match(source, /const isLiveTurn = \(agentRunning \|\| streamState\.isStreaming\) && isLatestTurn/);
+  assert.match(source, /while \(endIdx < timelineMessages\.length && !startsUserTurn\(timelineMessages\[endIdx\]\)\)/);
+  assert.match(source, /addSectionView\(false, "steering-" \+ messageKey, renderMessage\(messageIdx\)/);
   assert.match(source, /key=\{"turn-activity-" \+ turnKey\}/);
   assert.match(source, /<TurnProcessSection[\s\S]*?open=\{live \|\| open\}/);
   assert.match(source, /inert=\{!open\} aria-hidden=\{!open\}/);

@@ -1,6 +1,6 @@
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import { isWorkMode, PROMPT_SELECTION_TYPE, readSessionPromptSelection, type WorkMode } from "./prompt-presets";
-import type { SessionEntry } from "./types";
+import type { SessionEntry, UserMessage } from "./types";
 
 const SESSION_WORK_MODE_TYPE = "meteoragent:work-mode";
 const TURN_WORK_MODE_TYPE = "meteoragent:turn-work-mode";
@@ -43,14 +43,21 @@ export function appendSessionWorkMode(manager: SessionManager, state: SessionWor
   manager.appendCustomEntry(SESSION_WORK_MODE_TYPE, state);
 }
 
-export function appendTurnWorkMode(manager: SessionManager, mode: WorkMode): void {
-  manager.appendCustomEntry(TURN_WORK_MODE_TYPE, mode);
+export function appendUserTurnMetadata(manager: SessionManager, mode: WorkMode, isSteering: boolean): void {
+  manager.appendCustomEntry(TURN_WORK_MODE_TYPE, isSteering ? { mode, isSteering: true } : mode);
 }
 
-/** Read per-turn markers, and use the saved mode at the time of older entries. */
-export function readTurnWorkModes(entries: readonly SessionEntry[], userIds: ReadonlySet<string>) {
-  const modes = new Map<string, Exclude<WorkMode, "auto">>();
-  if (userIds.size === 0) return modes;
+function readUserTurnMarker(data: unknown): { mode: WorkMode; isSteering?: true } | undefined {
+  if (isWorkMode(data)) return { mode: data };
+  if (data && typeof data === "object" && "mode" in data && isWorkMode(data.mode)) {
+    return { mode: data.mode, isSteering: "isSteering" in data && data.isSteering === true ? true : undefined };
+  }
+}
+
+/** Read per-message markers, and use the saved mode at the time of older entries. */
+export function readUserTurnMetadata(entries: readonly SessionEntry[], userIds: ReadonlySet<string>) {
+  const metadata = new Map<string, Pick<UserMessage, "turnWorkMode" | "isSteering">>();
+  if (userIds.size === 0) return metadata;
   let sessionMode: SessionWorkMode | undefined;
   let presetMode: WorkMode = "auto";
   let previous: SessionEntry | undefined;
@@ -61,15 +68,16 @@ export function readTurnWorkModes(entries: readonly SessionEntry[], userIds: Rea
     const explicitMode = readWorkModeEntry(entry);
     if (explicitMode) sessionMode = explicitMode;
     if (userIds.has(entry.id)) {
-      const mode = previous?.id === entry.parentId && previous.type === "custom"
-        && previous.customType === TURN_WORK_MODE_TYPE && isWorkMode(previous.data)
-        ? previous.data
-        : sessionMode?.workMode ?? presetMode;
-      if (mode !== "auto") modes.set(entry.id, mode);
+      const marker = previous?.id === entry.parentId && previous.type === "custom"
+        && previous.customType === TURN_WORK_MODE_TYPE ? readUserTurnMarker(previous.data) : undefined;
+      const mode = marker?.mode ?? sessionMode?.workMode ?? presetMode;
+      if (mode !== "auto" || marker?.isSteering) {
+        metadata.set(entry.id, { turnWorkMode: mode === "auto" ? undefined : mode, isSteering: marker?.isSteering });
+      }
     }
     previous = entry;
   }
-  return modes;
+  return metadata;
 }
 
 /** Forks inherit the active policy, but a pending change belongs to the original conversation. */

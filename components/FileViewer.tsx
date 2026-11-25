@@ -19,7 +19,7 @@ import {
   isImagePath,
   isVideoPath,
 } from "@/lib/file-types";
-import { encodeFilePathForApi, getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
+import { getFileApiUrl, getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import { resolveLocalFileHref, shouldOpenLocalFileInApp } from "@/lib/file-links";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import { markdownPreviewRehypePlugins, markdownPreviewRemarkPlugins, markdownUrlTransform, normalizeDisplayMath } from "@/lib/markdown";
@@ -209,21 +209,6 @@ function SourceCodeRenderer({ rows, stylesheet, useInlineStyles, wrapLines }: So
       </span>
     );
   });
-}
-
-function getFileApiUrl(
-  filePath: string,
-  type: "read" | "download" | "meta" | "preview" | "watch",
-  sourceSessionId?: string | null,
-  params: Record<string, string | number | undefined> = {},
-): string {
-  const encoded = encodeFilePathForApi(filePath);
-  const searchParams = new URLSearchParams({ type });
-  if (sourceSessionId) searchParams.set("sessionId", sourceSessionId);
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) searchParams.set(key, String(value));
-  }
-  return `/api/files/${encoded}?${searchParams.toString()}`;
 }
 
 function ViewerFileActions({

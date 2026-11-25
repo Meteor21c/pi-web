@@ -34,8 +34,24 @@ function userInputs(messages: AgentMessage[]) {
 export class AgentInputQueue {
   private readonly ids = new WeakMap<UserMessage, string>();
   private readonly imageDrafts = new WeakMap<ImageContent, { text: string; filePath?: string }>();
+  private readonly steeringInputs = new WeakSet<object>();
 
-  constructor(private readonly session: AgentSessionLike) {}
+  constructor(private readonly session: AgentSessionLike) {
+    const { agent } = session;
+    const enqueueSteering = agent.steer;
+    if (enqueueSteering) {
+      // Pi delivers the same object after expanding the prompt and resizing its images.
+      // Track its origin without relying on text, which can match a queued follow-up.
+      agent.steer = (message) => {
+        enqueueSteering.call(agent, message);
+        if (message.role === "user") this.steeringInputs.add(message);
+      };
+    }
+  }
+
+  isSteeringInput(message: unknown): boolean {
+    return typeof message === "object" && message !== null && this.steeringInputs.has(message);
+  }
 
   rememberDraft(images: ImageContent[], text: unknown, filePaths: unknown): void {
     if (typeof text !== "string" || !Array.isArray(filePaths) || filePaths.length !== images.length) return;
@@ -116,6 +132,7 @@ export class AgentInputQueue {
         }
         steering.messages.push(message);
         (steering.texts as string[]).push(text);
+        this.steeringInputs.add(message);
       }
 
       // Change one item synchronously, keeping both the core and its text mirror

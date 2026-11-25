@@ -84,7 +84,7 @@ import {
   appendSessionPromptSelection, composeSessionSystemPrompt, MODE_INSTRUCTIONS, PLAN_TOOL_NAMES,
   isWorkMode, promptSelectionFromSettings, readSessionPromptSelection, type SessionPromptSelection, type WorkMode,
 } from "./prompt-presets";
-import { appendSessionWorkMode, appendTurnWorkMode, inheritSessionWorkMode, readSessionWorkMode, type SessionWorkMode } from "./session-work-mode";
+import { appendSessionWorkMode, appendUserTurnMetadata, inheritSessionWorkMode, readSessionWorkMode, type SessionWorkMode } from "./session-work-mode";
 import {
   appendSessionToolSelection,
   readSessionToolSelection,
@@ -303,7 +303,7 @@ const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
 const SUBAGENT_CONTROL_TOOLS = new Set<string>(SUBAGENT_CONTROL_TOOL_NAMES);
 const REQUIRE_SUBAGENT_INSTRUCTIONS = "Delegation is required for this task. Call Agent at least once as soon as you can define a focused task.";
 const PROACTIVE_SUBAGENT_INSTRUCTIONS = "Look for independent work at the start of this task. Use Agent early when it can reduce completion time or provide an independent check. Handle a small or tightly sequential task yourself.";
-const PARALLEL_SUBAGENT_INSTRUCTIONS = "Give each child a concrete deliverable and a distinct scope. Use background execution for independent work and start your own part immediately. Wait for a specific result when it becomes a dependency. Choose the number of children based on the work, and verify the combined outcome.";
+const PARALLEL_SUBAGENT_INSTRUCTIONS = "Before delegating, identify the work you will do yourself and the first step that needs each child's result. Give each child a concrete deliverable and a distinct scope. Use background execution for independent work and start your own part immediately. If research or artifact retrieval is needed only for comparison or verification, start implementation in parallel with it. Wait for the specific result when you reach the dependent step and have no useful independent work left. Choose the number of children based on the work and verify the combined outcome.";
 
 function subagentStatusEvent(run: SubagentRunInfo): AgentEvent {
   return { type: "subagent_status", toolCallId: run.parentToolCallId, subagent: subagentToolDetails(run) };
@@ -941,13 +941,14 @@ export class AgentSessionWrapper {
           runActivity: this.runActivity, ...(resumedGoal ? { resumedGoal } : {}) });
       } else if (event.type === "message_end" && (event.message as { role?: string } | undefined)?.role === "user") {
         const mode = this.workModeState.workMode;
+        const isSteering = this.inputQueue.isSteeringInput(event.message);
         // Pi writes the user message directly after this callback returns.
         try {
-          appendTurnWorkMode(this.inner.sessionManager, mode);
+          appendUserTurnMetadata(this.inner.sessionManager, mode, isSteering);
         } catch (error) {
-          console.error("[meteoragent] failed to persist turn work mode:", error);
+          console.error("[meteoragent] failed to persist user turn metadata:", error);
         }
-        this.emit({ ...event, turnWorkMode: mode });
+        this.emit({ ...event, turnWorkMode: mode, ...(isSteering ? { isSteering: true } : {}) });
       } else {
         this.emit(event);
       }

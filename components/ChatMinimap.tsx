@@ -1,26 +1,27 @@
 "use client";
 
-import { memo, useEffect, useRef, useState, useCallback, useMemo, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, type RefObject } from "react";
 import ReactMarkdown, { type Options as ReactMarkdownOptions } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import {
   markdownPreviewRemarkPlugins,
   normalizeDisplayMath,
 } from "@/lib/markdown";
-import { isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { getUserMessageText, isMessageGroupAnchor, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { currentUiScale, divideByUiScale } from "@/lib/ui-scale";
 import type { AgentMessage, AssistantMessage, CustomMessage, TextContent, UserMessage } from "@/lib/types";
 import { useI18n } from "@/hooks/useI18n";
 import styles from "./ChatMinimap.module.css";
 
 interface Props {
   messages: AgentMessage[];
+  entryIds: string[];
   streamingMessage: Partial<AgentMessage> | null;
   scrollContainer: RefObject<HTMLDivElement | null>;
   messageRefs: RefObject<(HTMLDivElement | null)[]>;
-  onRevealHistory: () => void;
 }
 
-const MINIMAP_WIDTH = 36;
+export const CHAT_MINIMAP_WIDTH = 36;
 const MAX_NODE_GAP = 50;
 const MINIMAP_PADDING = 12;
 const PREVIEW_HIDE_DELAY = 250;
@@ -32,6 +33,8 @@ interface AssistantPreview {
 }
 
 interface TurnInfo {
+  id: string;
+  element: HTMLDivElement | null;
   userMessage: UserMessage | CustomMessage;
   assistantPreviews: AssistantPreview[];
   scrollTop: number | null;
@@ -44,6 +47,7 @@ interface NodeInfo {
 }
 
 function getUserPreview(message: UserMessage | CustomMessage): string {
+  if (message.role === "user") return getUserMessageText(message).trim();
   if (typeof message.content === "string") return message.content.trim();
   return message.content
     .filter((block): block is TextContent => block.type === "text")
@@ -229,15 +233,15 @@ function layoutNodes(allNodes: NodeInfo[], minimapHeight: number): NodeLayout {
 
 export function ChatMinimap({
   messages,
+  entryIds,
   streamingMessage,
   scrollContainer,
   messageRefs,
-  onRevealHistory,
 }: Props) {
   const { t } = useI18n();
   const [visible, setVisible] = useState(false);
   const [allNodes, setAllNodes] = useState<NodeInfo[]>([]);
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [minimapHeight, setMinimapHeight] = useState(600);
   const [minimapHovered, setMinimapHovered] = useState(false);
   const [mouseYRatio, setMouseYRatio] = useState<number | null>(null);
@@ -252,13 +256,9 @@ export function ChatMinimap({
   const previewBoxRef = useRef<HTMLDivElement>(null);
   const previewItemRefs = useRef(new Map<number, HTMLDivElement>());
   const previewHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeNodeLockRef = useRef<{ index: number; until: number } | null>(null);
-  const pendingNavigationRef = useRef<{
-    nodeIndex: number;
-    target: "user" | "assistant" | "heading";
-    assistantIndex?: number;
-    headingIndex?: number;
-  } | null>(null);
+  const activeNodeLockRef = useRef<{ id: string; until: number } | null>(null);
+  const measureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const measureFrameRef = useRef<number | null>(null);
 
   const allMessages = useMemo(
     () => (streamingMessage ? [...messages, streamingMessage] : messages) as (AgentMessage | Partial<AgentMessage>)[],
@@ -266,6 +266,8 @@ export function ChatMinimap({
   );
   const allMessagesRef = useRef(allMessages);
   allMessagesRef.current = allMessages;
+  const entryIdsRef = useRef(entryIds);
+  entryIdsRef.current = entryIds;
 
   const nodeLayout = useMemo(
     () => layoutNodes(allNodes, minimapHeight),
@@ -274,25 +276,25 @@ export function ChatMinimap({
   const { nodes: positionedNodes, gap: nodeGap } = nodeLayout;
   nodeLayoutRef.current = nodeLayout;
 
-  const lockActiveNode = useCallback((index: number) => {
+  const lockActiveNode = useCallback((id: string) => {
     activeNodeLockRef.current = {
-      index,
+      id,
       until: Date.now() + NAVIGATION_ACTIVE_LOCK_MS,
     };
-    setActiveIndex(index);
+    setActiveId(id);
   }, []);
 
   const syncActiveNode = useCallback((scrollEl: HTMLDivElement, nextNodes: NodeInfo[]) => {
     const activeLock = activeNodeLockRef.current;
-    if (activeLock && Date.now() < activeLock.until) {
-      setActiveIndex(activeLock.index);
+    if (activeLock && Date.now() < activeLock.until && nextNodes.some((node) => node.targetTurn.id === activeLock.id)) {
+      setActiveId(activeLock.id);
       return;
     }
     activeNodeLockRef.current = null;
 
     const measuredNodes = nextNodes.filter((node) => node.targetTurn.scrollTop !== null);
     if (measuredNodes.length === 0) {
-      setActiveIndex(null);
+      setActiveId(null);
       return;
     }
     const focusTop = scrollEl.scrollTop + scrollEl.clientHeight * 0.3;
@@ -302,181 +304,112 @@ export function ChatMinimap({
         ? node
         : bestNode
     ), measuredNodes[0]);
-    setActiveIndex(nextActiveNode.index);
+    setActiveId(nextActiveNode.targetTurn.id);
   }, []);
 
   const updateScroll = useCallback(() => {
     const scrollEl = scrollContainer.current;
-    if (!scrollEl) return;
-    const scrollable = scrollEl.scrollHeight - scrollEl.clientHeight;
-    const currentNodes = allNodesRef.current;
-    setVisible(scrollable > 20);
-    syncActiveNode(scrollEl, currentNodes);
+    if (!scrollEl || measureFrameRef.current !== null || measureTimerRef.current !== null) return;
+    syncActiveNode(scrollEl, allNodesRef.current);
   }, [scrollContainer, syncActiveNode]);
 
-  const measureThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const measureNodes = useCallback(() => {
-    if (measureThrottleRef.current) return;
-    measureThrottleRef.current = setTimeout(() => {
-      measureThrottleRef.current = null;
-      const scrollEl = scrollContainer.current;
-      const minimapEl = containerRef.current;
-      if (!scrollEl || !minimapEl) return;
+    const scrollEl = scrollContainer.current;
+    const minimapEl = containerRef.current;
+    if (!scrollEl || !minimapEl) return;
+    const refs = messageRefs.current;
+    const ids = entryIdsRef.current;
+    const containerTop = scrollEl.getBoundingClientRect().top;
+    const { scrollTop } = scrollEl;
+    const scale = currentUiScale();
+    const turns: TurnInfo[] = [];
+    let refIndex = 0;
+    let currentTurn: TurnInfo | null = null;
 
-      const refs = messageRefs.current;
-      const containerRect = scrollEl.getBoundingClientRect();
-      const turns: TurnInfo[] = [];
-      let refIndex = 0;
-      let currentTurn: TurnInfo | null = null;
-
-      for (const message of allMessagesRef.current) {
-        const isAnchor = isMessageGroupAnchor(message);
-        if (!isAnchor && message.role !== "assistant") continue;
-        const element = refs?.[refIndex];
-        refIndex++;
-
-        if (isAnchor) {
-          currentTurn = null;
-          const elementRect = element?.getBoundingClientRect();
-          currentTurn = {
-            userMessage: message as UserMessage | CustomMessage,
-            assistantPreviews: [],
-            scrollTop: elementRect
-              ? elementRect.top - containerRect.top + scrollEl.scrollTop
-              : null,
-          };
-          turns.push(currentTurn);
-          continue;
-        }
-
-        if (!currentTurn) continue;
-        const answerMarkdown = getAssistantAnswerMarkdown(message);
-        if (answerMarkdown) {
-          currentTurn.assistantPreviews.push({
-            markdown: answerMarkdown,
-            element,
-          });
-        }
+    for (const [messageIndex, message] of allMessagesRef.current.entries()) {
+      const isAnchor = isMessageGroupAnchor(message);
+      if (!isAnchor && message.role !== "assistant") continue;
+      const element = refs[refIndex++] ?? null;
+      if (isAnchor) {
+        currentTurn = {
+          id: ids[messageIndex] ?? `live-${messageIndex - ids.length}`,
+          element,
+          userMessage: message as UserMessage | CustomMessage,
+          assistantPreviews: [],
+          scrollTop: element ? (element.getBoundingClientRect().top - containerTop) / scale + scrollTop : null,
+        };
+        turns.push(currentTurn);
+        continue;
       }
+      if (!currentTurn) continue;
+      const markdown = getAssistantAnswerMarkdown(message);
+      if (markdown) currentTurn.assistantPreviews.push({ markdown, element });
+    }
+    const nextNodes = createTurnNodes(turns);
+    setMinimapHeight(minimapEl.clientHeight);
+    allNodesRef.current = nextNodes;
+    setAllNodes(nextNodes);
+    setVisible(scrollEl.scrollHeight - scrollEl.clientHeight > 20);
+    syncActiveNode(scrollEl, nextNodes);
+  }, [messageRefs, scrollContainer, syncActiveNode]);
 
-      const nextNodes = createTurnNodes(turns);
-      setMinimapHeight(minimapEl.clientHeight);
-      allNodesRef.current = nextNodes;
-      setAllNodes(nextNodes);
-      setVisible(scrollEl.scrollHeight - scrollEl.clientHeight > 20);
-      syncActiveNode(scrollEl, nextNodes);
-
-      const pendingNavigation = pendingNavigationRef.current;
-      const pendingNode = pendingNavigation
-        ? nextNodes[pendingNavigation.nodeIndex]
-        : null;
-      if (pendingNavigation && pendingNode) {
-        const assistant = pendingNavigation.assistantIndex === undefined
-          ? null
-          : pendingNode.targetTurn.assistantPreviews[pendingNavigation.assistantIndex];
-        let targetTop: number | null = pendingNode.targetTurn.scrollTop;
-        if (pendingNavigation.target === "assistant") {
-          const assistantRect = assistant?.element?.getBoundingClientRect();
-          targetTop = assistantRect
-            ? assistantRect.top - containerRect.top + scrollEl.scrollTop
-            : null;
-        } else if (pendingNavigation.target === "heading") {
-          const heading = (
-            pendingNavigation.headingIndex === undefined
-              ? null
-              : assistant?.element
-                ?.querySelectorAll<HTMLElement>("h1, h2, h3")
-                .item(pendingNavigation.headingIndex)
-          );
-          const headingRect = heading?.getBoundingClientRect();
-          targetTop = headingRect
-            ? headingRect.top - containerRect.top + scrollEl.scrollTop
-            : null;
-        }
-        if (targetTop === null) return;
-        pendingNavigationRef.current = null;
-        lockActiveNode(pendingNode.index);
-        const targetOffset = scrollEl.clientHeight * 0.3;
-        scrollEl.scrollTo({ top: Math.max(0, targetTop - targetOffset), behavior: "smooth" });
-      }
-    }, 150);
-  }, [lockActiveNode, messageRefs, scrollContainer, syncActiveNode]);
-
-  useEffect(() => {
-    const el = scrollContainer.current;
-    if (!el) return;
-    el.addEventListener("scroll", updateScroll, { passive: true });
-    return () => el.removeEventListener("scroll", updateScroll);
-  }, [scrollContainer, updateScroll]);
-
-  useEffect(() => {
-    const el = scrollContainer.current;
-    if (!el) return;
-    const syncLayout = () => {
-      measureNodes();
-      updateScroll();
+  const scheduleMeasure = useCallback((immediate = false) => {
+    if (measureFrameRef.current !== null) return;
+    if (measureTimerRef.current !== null) {
+      if (!immediate) return;
+      clearTimeout(measureTimerRef.current);
+      measureTimerRef.current = null;
+    }
+    const nextFrame = () => {
+      measureTimerRef.current = null;
+      measureFrameRef.current = requestAnimationFrame(() => {
+        measureFrameRef.current = null;
+        measureNodes();
+      });
     };
-    const ro = new ResizeObserver(syncLayout);
+    if (immediate) nextFrame();
+    else measureTimerRef.current = setTimeout(nextFrame, 150);
+  }, [measureNodes]);
+
+  useLayoutEffect(() => {
+    // History shifts offsets for every retained marker. Read the new positions
+    // after the chat restores its anchor, without highlighting a stale marker.
+    scheduleMeasure(true);
+  }, [messages, entryIds, scheduleMeasure]);
+
+  useEffect(() => {
+    const el = scrollContainer.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => scheduleMeasure());
     ro.observe(el);
     if (el.firstElementChild) ro.observe(el.firstElementChild);
-    syncLayout();
+    el.addEventListener("scroll", updateScroll, { passive: true });
     return () => {
+      el.removeEventListener("scroll", updateScroll);
       ro.disconnect();
-      if (measureThrottleRef.current) {
-        clearTimeout(measureThrottleRef.current);
-        measureThrottleRef.current = null;
+      if (measureTimerRef.current !== null) {
+        clearTimeout(measureTimerRef.current);
+        measureTimerRef.current = null;
+      }
+      if (measureFrameRef.current !== null) {
+        cancelAnimationFrame(measureFrameRef.current);
+        measureFrameRef.current = null;
       }
     };
-  }, [measureNodes, scrollContainer, updateScroll]);
+  }, [scheduleMeasure, scrollContainer, updateScroll]);
 
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      measureNodes();
-      updateScroll();
-    }, 50);
-    return () => clearTimeout(timeout);
-  }, [messages.length, measureNodes, updateScroll]);
-
-  const scrollToNode = useCallback((node: NodeInfo, behavior: ScrollBehavior) => {
+  const scrollToElement = useCallback((node: NodeInfo, element: HTMLElement | null, behavior: ScrollBehavior) => {
     const scrollEl = scrollContainer.current;
-    if (!scrollEl) return;
-    lockActiveNode(node.index);
-    if (node.targetTurn.scrollTop === null) {
-      pendingNavigationRef.current = { nodeIndex: node.index, target: "user" };
-      onRevealHistory();
-      return;
-    }
-    const targetTop = Math.max(
-      0,
-      node.targetTurn.scrollTop - scrollEl.clientHeight * 0.3,
-    );
-    scrollEl.scrollTo({ top: targetTop, behavior });
-  }, [lockActiveNode, onRevealHistory, scrollContainer]);
+    if (!scrollEl || !element?.isConnected) return;
+    const offset = divideByUiScale(element.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top);
+    const targetTop = scrollEl.scrollTop + offset - scrollEl.clientHeight * 0.3;
+    lockActiveNode(node.targetTurn.id);
+    scrollEl.scrollTo({ top: Math.max(0, targetTop), behavior });
+  }, [lockActiveNode, scrollContainer]);
 
   const scrollToAssistant = useCallback((node: NodeInfo, assistantIndex: number) => {
-    const scrollEl = scrollContainer.current;
-    if (!scrollEl) return;
-    const assistantElement = node.targetTurn.assistantPreviews[assistantIndex]?.element;
-    if (!assistantElement) {
-      pendingNavigationRef.current = {
-        nodeIndex: node.index,
-        target: "assistant",
-        assistantIndex,
-      };
-      onRevealHistory();
-      return;
-    }
-    const containerRect = scrollEl.getBoundingClientRect();
-    const assistantRect = assistantElement.getBoundingClientRect();
-    const targetTop = (
-      assistantRect.top
-      - containerRect.top
-      + scrollEl.scrollTop
-      - scrollEl.clientHeight * 0.3
-    );
-    lockActiveNode(node.index);
-    scrollEl.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
-  }, [lockActiveNode, onRevealHistory, scrollContainer]);
+    scrollToElement(node, node.targetTurn.assistantPreviews[assistantIndex]?.element ?? null, "smooth");
+  }, [scrollToElement]);
 
   const findNearestNode = useCallback((ratio: number): NodeInfo | null => {
     const { nodes, gap, fillsHeight } = nodeLayoutRef.current;
@@ -502,32 +435,10 @@ export function ChatMinimap({
     assistantIndex: number,
     headingIndex: number,
   ) => {
-    const scrollEl = scrollContainer.current;
-    if (!scrollEl) return;
     const answerElement = node.targetTurn.assistantPreviews[assistantIndex]?.element;
-    if (!answerElement) {
-      pendingNavigationRef.current = {
-        nodeIndex: node.index,
-        target: "heading",
-        assistantIndex,
-        headingIndex,
-      };
-      onRevealHistory();
-      return;
-    }
-    const heading = answerElement.querySelectorAll<HTMLElement>("h1, h2, h3").item(headingIndex);
-    if (!heading) return;
-    const containerRect = scrollEl.getBoundingClientRect();
-    const headingRect = heading.getBoundingClientRect();
-    const targetTop = (
-      headingRect.top
-      - containerRect.top
-      + scrollEl.scrollTop
-      - scrollEl.clientHeight * 0.3
-    );
-    lockActiveNode(node.index);
-    scrollEl.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
-  }, [lockActiveNode, onRevealHistory, scrollContainer]);
+    const heading = answerElement?.querySelectorAll<HTMLElement>("h1, h2, h3").item(headingIndex);
+    scrollToElement(node, heading ?? null, "smooth");
+  }, [scrollToElement]);
 
   const cancelPreviewHide = useCallback(() => {
     if (!previewHideTimerRef.current) return;
@@ -563,7 +474,7 @@ export function ChatMinimap({
       const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
       const node = findNearestNode(ratio);
       if (node) {
-        scrollToNode(node, behavior);
+        scrollToElement(node, node.targetTurn.element, behavior);
       }
     };
 
@@ -579,7 +490,7 @@ export function ChatMinimap({
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-  }, [findNearestNode, scrollToNode, showPreview, visible]);
+  }, [findNearestNode, scrollToElement, showPreview, visible]);
 
   const nearestNode = mouseYRatio === null ? null : findNearestNode(mouseYRatio);
   const nearestNodeIndex = nearestNode?.index ?? null;
@@ -594,7 +505,9 @@ export function ChatMinimap({
     previewBox.scrollTop = Math.max(0, targetTop);
   }, [allNodes, minimapHovered, nearestNodeIndex]);
 
-  if (!visible) return null;
+  if (!visible) {
+    return <div ref={containerRef} aria-hidden="true" style={{ flex: `0 0 ${CHAT_MINIMAP_WIDTH}px` }} />;
+  }
 
   const lastNodeTop = positionedNodes.length > 0
     ? positionedNodes[positionedNodes.length - 1].topRatio * minimapHeight
@@ -612,8 +525,7 @@ export function ChatMinimap({
         setMouseYRatio((event.clientY - rect.top) / rect.height);
       }}
       style={{
-        width: MINIMAP_WIDTH,
-        flexShrink: 0,
+        flex: `0 0 ${CHAT_MINIMAP_WIDTH}px`,
         position: "relative",
         cursor: "pointer",
         userSelect: "none",
@@ -637,12 +549,13 @@ export function ChatMinimap({
 
       {positionedNodes.map((node) => {
         const isNearest = minimapHovered && nearestNode?.index === node.index;
-        const isActive = activeIndex === node.index;
+        const isActive = activeId === node.targetTurn.id;
 
         return (
           <div
-            key={node.index}
+            key={node.targetTurn.id}
             data-minimap-node-index={node.index}
+            data-minimap-entry-id={node.targetTurn.id}
             data-minimap-node-active={isActive ? "" : undefined}
             style={{
               position: "absolute",
@@ -687,7 +600,7 @@ export function ChatMinimap({
             const isLocated = nearestNodeIndex === node.index;
             return (
               <div
-                key={node.index}
+                key={node.targetTurn.id}
                 ref={(element) => {
                   if (element) previewItemRefs.current.set(node.index, element);
                   else previewItemRefs.current.delete(node.index);
@@ -705,7 +618,7 @@ export function ChatMinimap({
                     className={styles.user}
                     data-minimap-preview-user={node.index}
                     onClick={() => {
-                      scrollToNode(node, "smooth");
+                      scrollToElement(node, node.targetTurn.element, "smooth");
                     }}
                   >
                     <span className={styles.userText}>

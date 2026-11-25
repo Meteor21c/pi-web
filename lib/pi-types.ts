@@ -152,6 +152,7 @@ export interface AgentSessionLike {
   readonly sessionManager: SessionManager;
   readonly settingsManager: SettingsManager;
   readonly agent: {
+    steer?: (message: PiAgentMessage) => void;
     streamFunction?: StreamFn;
     transformContext?: (messages: PiAgentMessage[], signal?: AbortSignal) => Promise<PiAgentMessage[]>;
     beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;

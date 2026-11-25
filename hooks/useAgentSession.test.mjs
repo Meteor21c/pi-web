@@ -337,19 +337,19 @@ test("uses server pagination state instead of guessing from rendered rows", () =
   assert.match(source, /const \[hasEarlierMessages, setHasEarlierMessages\] = useState\(false\)/);
   assert.match(source, /setHasEarlierMessages\(d\.context\.hasMore\)/);
   assert.match(source, /setHistoryCursor\(d\.context\.oldestEntryId\)/);
-  assert.match(loadContextSource, /setData\(\(prev\) => \{[\s\S]*messages: \[\.\.\.d\.context\.messages, \.\.\.prev\.context\.messages\]/);
+  assert.match(loadContextSource, /loaded\.context\.oldestEntryId !== before/);
+  assert.match(loadContextSource, /messages: \[\.\.\.d\.context\.messages, \.\.\.loaded\.context\.messages\]/);
   assert.match(chatWindowSource, /const oldestId = historyCursor/);
   assert.doesNotMatch(chatWindowSource, /const oldestId = entryIds\[0\]/);
-  assert.match(chatWindowSource, /if \(!hasEarlierMessages\) return/);
-  assert.match(chatWindowSource, /const hasMore = startIndex > 0 \|\| hasEarlierMessages/);
-  assert.doesNotMatch(chatWindowSource, /rendered\.length >= visibleCount/);
+  assert.match(chatWindowSource, /\{hasEarlierMessages && \([\s\S]*?ref=\{sentinelRef\}/);
+  assert.doesNotMatch(chatWindowSource, /rendered\.slice\(/);
 });
 
 test("keeps the selected session warm while idle and renews its lease", () => {
   assert.match(source, /sessionRunning\?: boolean/);
   assert.match(
     source,
-    /const sid = session\?\.id;[\s\S]*?if \(!sid\) return;[\s\S]*?maintainEventsConnected\(sid\)/,
+    /const sid = session\?\.id;\s*if \(!sid \|\| !observeSession\) return;\s*maintainEventsConnected\(sid\)/,
   );
   assert.match(source, /sessionPropIdRef\.current === sid/);
   assert.match(source, /SESSION_LEASE_RENEW_INTERVAL_MS = 30_000/);
@@ -403,6 +403,8 @@ test("restoring a running session does not clear an SSE snapshot", () => {
 
   assert.match(mountSource, /dispatch\(\{ type: "resume" \}\)/);
   assert.doesNotMatch(mountSource, /dispatch\(\{ type: "start" \}\)/);
+  assert.match(mountSource, /sessionHookMountedRef\.current = true;[\s\S]*?maintainEventsConnected\(sid\)/);
+  assert.match(mountSource, /setAgentRunning\(true\);[\s\S]*?setLoading\(false\);/);
 });
 
 test("shows the latest streamed tool execution progress in the running phase", () => {
