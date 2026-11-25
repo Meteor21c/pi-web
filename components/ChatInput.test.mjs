@@ -237,7 +237,7 @@ test("keeps the model selector visible when a model error leaves no options", ()
   assert.match(html, /title="No available models"/);
 });
 
-test("renders the read-only tool preset as the active selection", () => {
+test("puts Stop and Queue together inside the running composer", () => {
   const html = renderToStaticMarkup(
     React.createElement(
       I18nProvider,
@@ -245,18 +245,17 @@ test("renders the read-only tool preset as the active selection", () => {
       React.createElement(ChatInput, {
         onSend() {},
         onAbort() {},
-        onToolPresetChange() {},
-        isStreaming: false,
-        toolPreset: "read-only",
+        onFollowUp() {},
+        isStreaming: true,
       }),
     ),
   );
 
-  assert.match(html, /title="Change tool preset: read-only"/);
-  assert.match(html, />read-only<\/span>/);
+  assert.match(html, /class="ui-composer"[\s\S]*?class="composer-send-actions"><button[^>]*?aria-label="Stop agent"[\s\S]*?<\/button><button[^>]*?class="ui-send-btn"/);
+  assert.equal((html.match(/class="composer-stop-button"/g) ?? []).length, 1);
 });
 
-test("renders the empty tool preset as Chat only", () => {
+test("keeps reasoning in the idle composer and moves tool presets out", () => {
   const html = renderToStaticMarkup(
     React.createElement(
       I18nProvider,
@@ -264,15 +263,14 @@ test("renders the empty tool preset as Chat only", () => {
       React.createElement(ChatInput, {
         onSend() {},
         onAbort() {},
-        onToolPresetChange() {},
+        async onThinkingLevelChange() {},
         isStreaming: false,
-        toolPreset: "none",
       }),
     ),
   );
 
-  assert.match(html, /title="Change tool preset: Chat only"/);
-  assert.match(html, />Chat only<\/span>/);
+  assert.match(html, /aria-label="Change reasoning level"/);
+  assert.doesNotMatch(html, /Change tool preset|Compact context|class="composer-stop-button"/);
 });
 
 test("renders the compact composer with the standard Send button and no session controls", () => {
@@ -570,7 +568,7 @@ test("locks built-in command submission until it settles", async () => {
   callback.resolve({ handled: true });
   assert.equal(await first, true);
   assert.deepEqual(callback.pendingStates, [true, false]);
-  assert.match(sourceText, /<fieldset\s+disabled=\{builtinCommandPending\}\s+aria-busy=\{builtinCommandPending\}/);
+  assert.match(sourceText, /<fieldset\s+disabled=\{builtinCommandPending && !isStreaming\}\s+aria-busy=\{builtinCommandPending\}/);
 });
 
 test("keeps only read-only built-ins available while a run is active", () => {
@@ -580,18 +578,20 @@ test("keeps only read-only built-ins available while a run is active", () => {
   assert.equal(canRunBuiltinSlashCommandWhileStreaming("/reload"), false);
 });
 
-test("restores text and base64 images when editing a user message", () => {
+test("restores clean text and the saved original image when editing a user message", () => {
+  const filePath = "/Users/example/.pi/agent/meteoragent-attachments/image-4Y5Av1/image.png";
+  const body = "Review this image @src/example.ts";
   const message = {
     role: "user",
     content: [
-      { type: "text", text: "Review this image @src/example.ts " },
+      { type: "text", text: body + "\n\n@" + filePath },
       { type: "image", source: { type: "base64", media_type: "image/png", data: "AQID" } },
     ],
   };
 
-  assert.equal(getUserMessageText(message), "Review this image @src/example.ts ");
+  assert.equal(getUserMessageText(message), body);
   assert.deepEqual(getUserMessageDraftImages(message), [
-    { data: "AQID", mimeType: "image/png" },
+    { data: "AQID", mimeType: "image/png", filePath },
   ]);
 });
 

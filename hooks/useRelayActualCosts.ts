@@ -3,11 +3,7 @@
 import { useEffect, useState } from "react";
 import type { RelayActualCostMatch, RelayActualCostsResult, RelayImageCharge } from "@/lib/relay-actual-cost";
 
-export interface RelayActualCostState extends RelayActualCostsResult {
-  loading: boolean;
-}
-
-const EMPTY: RelayActualCostState = {
+const EMPTY: RelayActualCostsResult = {
   costs: {},
   relayTurnCount: 0,
   matchedTurnCount: 0,
@@ -20,7 +16,6 @@ const EMPTY: RelayActualCostState = {
   textChargesComplete: false,
   imageChargesComplete: true,
   complete: false,
-  loading: false,
 };
 
 function isCostMap(value: unknown): value is Record<string, RelayActualCostMatch> {
@@ -37,18 +32,14 @@ export function useRelayActualCosts(
   sessionId: string | undefined,
   revision: string,
   enabled: boolean,
-): RelayActualCostState {
-  const [state, setState] = useState<RelayActualCostState>(EMPTY);
+): RelayActualCostsResult {
+  const [snapshot, setSnapshot] = useState<{ sessionId: string; result: RelayActualCostsResult }>();
 
   useEffect(() => {
-    if (!sessionId || !enabled) {
-      setState(EMPTY);
-      return;
-    }
+    if (!sessionId || !enabled) return;
 
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    setState((current) => ({ ...current, loading: true }));
 
     const load = async (attempt: number) => {
       try {
@@ -58,8 +49,8 @@ export function useRelayActualCosts(
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json() as Partial<RelayActualCostsResult> & { status?: unknown };
-        if (payload.status !== "ready" || !isCostMap(payload.costs)) throw new Error("unavailable");
-        const next: RelayActualCostState = {
+        if (controller.signal.aborted || payload.status !== "ready" || !isCostMap(payload.costs)) return;
+        const next: RelayActualCostsResult = {
           costs: payload.costs,
           relayTurnCount: finite(payload.relayTurnCount),
           matchedTurnCount: finite(payload.matchedTurnCount),
@@ -72,15 +63,14 @@ export function useRelayActualCosts(
           textChargesComplete: payload.textChargesComplete === true,
           imageChargesComplete: payload.imageChargesComplete !== false,
           complete: payload.complete === true,
-          loading: false,
         };
-        setState(next);
+        setSnapshot({ sessionId, result: next });
         // Billing rows can commit a moment after the local assistant entry.
         if (!next.complete && attempt < 2 && !controller.signal.aborted) {
           retryTimer = setTimeout(() => void load(attempt + 1), 1_500 * (attempt + 1));
         }
       } catch {
-        if (!controller.signal.aborted) setState((current) => ({ ...current, loading: false }));
+        // Keep the last successful billing lookup through temporary failures.
       }
     };
 
@@ -91,7 +81,7 @@ export function useRelayActualCosts(
     };
   }, [sessionId, revision, enabled]);
 
-  return state;
+  return snapshot && snapshot.sessionId === sessionId ? snapshot.result : EMPTY;
 }
 
 function finite(value: unknown): number {

@@ -124,6 +124,9 @@ the capture problem if progress stalls.
 With Pi 1.6.0, the runtime acknowledges the SDK's started, handled, and queued
 prompt dispositions. Only a started run receives the requested approval policy.
 Tool restrictions also apply to nested calls made through an extension.
+Full access skips the installed computer-use package's app-launch confirmation.
+After switching back to Request approval, a launch only approved automatically
+requires explicit confirmation again.
 
 Pi now saves a session when the first user message arrives. MeteorAgent can still
 save a goal or a prepared branch before that message. Relay compaction and

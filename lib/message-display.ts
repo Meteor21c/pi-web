@@ -20,19 +20,40 @@ export function startsUserTurn(message: AgentMessage): boolean {
 
 const IMAGE_HINT_SUFFIX = /(^|\r?\n\r?\n)(\[Image[^\r\n]*\](?:\r?\n\[Image[^\r\n]*\])*)$/;
 const IMAGE_RESIZE_NOTE = /^\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by \d+\.\d{2} to map to original image\.\]$/;
+const ATTACHMENT_PARAGRAPH = /(?:^|\r?\n\r?\n)([^\r\n]+)$/;
+const FILE_MENTION = /@(?:"([^"]+)"|([^\s"]+))/g;
+const ABSOLUTE_PATH = /^(?:\/|[a-z]:[\\/]|\\\\)/i;
+const SAVED_IMAGE_PATH = /[\\/]meteoragent-attachments[\\/]image-[a-z\d]{6,}[\\/][^\\/]+$/i;
 
-export function getUserMessageText(message: UserMessage): string {
-  if (typeof message.content === "string") return message.content;
+export function getUserMessageDisplay(message: UserMessage): { text: string; imagePaths: string[] } {
+  if (typeof message.content === "string") return { text: message.content, imagePaths: [] };
   const text = message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
-  if (!message.content.some((block) => block.type === "image")) return text;
+  if (!message.content.some((block) => block.type === "image")) return { text, imagePaths: [] };
 
-  // Pi appends its image notes as a separate paragraph for the model.
-  return text.replace(IMAGE_HINT_SUFFIX, (suffix, separator: string, notes: string) => {
+  // The model-facing prompt can end with Magent's saved-image locations, then Pi's image notes.
+  const hints = IMAGE_HINT_SUFFIX.exec(text);
+  const beforeHints = hints ? text.slice(0, hints.index) : text;
+  const paragraph = ATTACHMENT_PARAGRAPH.exec(beforeHints);
+  const mentions = paragraph ? [...paragraph[1].matchAll(FILE_MENTION)] : [];
+  const paths = mentions.map((match) => match[1] ?? match[2]);
+  const hasAttachmentPaths = paragraph && paths.length > 0
+    && mentions.map((match) => match[0]).join(" ") === paragraph[1]
+    && paths.every((path) => ABSOLUTE_PATH.test(path) && SAVED_IMAGE_PATH.test(path));
+  let visibleText = hasAttachmentPaths ? beforeHints.slice(0, paragraph.index) : beforeHints;
+  if (hints) {
+    const [, separator, notes] = hints;
     const lines = notes.split(/\r?\n/);
     const visible = lines.filter((line) => !IMAGE_RESIZE_NOTE.test(line));
-    if (visible.length === lines.length) return suffix;
-    return visible.length ? separator + visible.join("\n") : "";
-  });
+    if (visible.length) {
+      if (visibleText || !hasAttachmentPaths) visibleText += separator;
+      visibleText += visible.length === lines.length ? notes : visible.join("\n");
+    }
+  }
+  return { text: visibleText, imagePaths: hasAttachmentPaths ? paths : [] };
+}
+
+export function getUserMessageText(message: UserMessage): string {
+  return getUserMessageDisplay(message).text;
 }
 
 export function isEmptyThinkingBlock(block: AssistantContentBlock, options: DisplayOptions = {}): block is ThinkingContent {

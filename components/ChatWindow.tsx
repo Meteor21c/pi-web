@@ -32,8 +32,10 @@ import { useDragDrop } from "@/hooks/useDragDrop";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useRelayActualCosts } from "@/hooks/useRelayActualCosts";
 import { isRelayProviderId } from "@/lib/relay-config";
+import { summarizeTurnRelayBilling, type TurnRelayBilling } from "@/lib/turn-relay-billing";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { ToolEntry } from "@/lib/tool-presets";
+import type { ToolPresetControl } from "./ToolDefinitionsPanel";
 import { findChatScrollAnchor, type ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { getPromptAnchorSpacerHeight, isScrollAtTail } from "@/lib/chat-lazy-load";
@@ -56,6 +58,7 @@ interface Props {
   onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => void;
   onSystemPromptChange?: (prompt: string | null) => void;
   onSystemToolsChange?: (tools: ToolEntry[] | null) => void;
+  onToolPresetControlChange?: (control: ToolPresetControl | null) => void;
   onSystemInfoLoaderChange?: (loader: (() => Promise<void>) | null) => void;
   onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
   onSessionStatsPanelOpen?: () => void;
@@ -180,30 +183,13 @@ function aggregateTurnUsage(messages: AgentMessage[], start: number, end: number
     cacheRead: usages.reduce((sum, usage) => sum + usage.cacheRead, 0),
     cacheWrite: usages.reduce((sum, usage) => sum + usage.cacheWrite, 0),
     cost: {
-      input: usages.reduce((sum, usage) => sum + usage.cost.input, 0),
-      output: usages.reduce((sum, usage) => sum + usage.cost.output, 0),
-      cacheRead: usages.reduce((sum, usage) => sum + usage.cost.cacheRead, 0),
-      cacheWrite: usages.reduce((sum, usage) => sum + usage.cost.cacheWrite, 0),
-      total: usages.reduce((sum, usage) => sum + usage.cost.total, 0),
+      input: usages.reduce((sum, usage) => sum + (usage.cost?.input ?? 0), 0),
+      output: usages.reduce((sum, usage) => sum + (usage.cost?.output ?? 0), 0),
+      cacheRead: usages.reduce((sum, usage) => sum + (usage.cost?.cacheRead ?? 0), 0),
+      cacheWrite: usages.reduce((sum, usage) => sum + (usage.cost?.cacheWrite ?? 0), 0),
+      total: usages.reduce((sum, usage) => sum + (usage.cost?.total ?? 0), 0),
     },
   };
-}
-
-function aggregateTurnActualCost(
-  messages: AgentMessage[],
-  entryIds: string[],
-  start: number,
-  end: number,
-  costs: Record<string, { actualCost: number }>,
-): number | undefined {
-  const usageEntries = messages.slice(start, end + 1).flatMap((message, index) => {
-    if (message.role !== "assistant" || !message.usage) return [];
-    const entryId = entryIds[start + index];
-    const actualCost = entryId ? costs[entryId]?.actualCost : undefined;
-    return actualCost === undefined ? [undefined] : [actualCost];
-  });
-  if (usageEntries.length === 0 || usageEntries.some((value) => value === undefined)) return undefined;
-  return usageEntries.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 }
 
 function activitySummary(blocks: AssistantContentBlock[], commandCount: number, t: (key: string, params?: Record<string, string | number>) => string): string {
@@ -336,7 +322,7 @@ function TurnLabels({ message, modelNames, modeLabel }: {
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onToolPresetControlChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const showMinimapRail = !previewOnly && !isMobile;
@@ -378,7 +364,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
   const {
     data, loading, error, messages, activeToolResults, liveSubagents, entryIds, historyCursor, hasEarlierMessages, streamState, subagentModeUnavailable,
-    agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
+    agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, toolPresetChanging, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, availableTools, queuedMessages,
@@ -391,7 +377,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     sessionIdRef, scrollContainerRef,
     lastUserMsgRef, promptAnchorActive,
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
-    handleCompact, handleFollowUp, handleAbortCompaction,
+    handleFollowUp, handleAbortCompaction,
     handleQueueAction,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, handleGoalChange, loadTools, loadSlashCommands, scrollUserMsgToTop,
@@ -467,11 +453,13 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     return (Array.isArray(details?.images) && details.images.length > 0)
       || (Array.isArray(message.content) && message.content.some((block) => block.type === "image"));
   });
-  const relayCostRevision = `${entryIds.at(-1) ?? ""}:${entryIds.length}:${messages.length}:${hasSuccessfulImageGeneration ? "image" : ""}`;
+  const relayCostRevision = agentRunning || streamState.isStreaming
+    ? "running"
+    : `${entryIds.at(-1) ?? ""}:${entryIds.length}:${messages.length}:${hasSuccessfulImageGeneration ? "image" : ""}`;
   const relayActualCosts = useRelayActualCosts(
     persistedSessionId,
     relayCostRevision,
-    (hasRelayMessages || hasSuccessfulImageGeneration) && !streamState.isStreaming,
+    hasRelayMessages || hasSuccessfulImageGeneration,
   );
   const authoritativeSessionStats = useMemo(() => {
     if (!sessionStats || !relayActualCosts.textChargesComplete || relayActualCosts.relayTurnCount === 0) return sessionStats;
@@ -500,6 +488,18 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     return byAnchor;
   }, [relayActualCosts.imageCharges]);
   const sessionBusy = agentRunning || bashRunning;
+  const composerBusy = sessionBusy || isCompacting;
+  const stoppingCompaction = isCompacting && !sessionBusy;
+  const stopRun = stoppingCompaction ? handleAbortCompaction : handleAbort;
+  const hasToolPresetControl = completionNotificationsEnabled && (isNew || Boolean(session));
+  const toolPresetDisabled = loading || Boolean(error) || composerBusy || toolPresetChanging;
+
+  useEffect(() => {
+    onToolPresetControlChange?.(hasToolPresetControl
+      ? { value: toolPreset, disabled: toolPresetDisabled, onChange: handleToolPresetChange }
+      : null);
+  }, [handleToolPresetChange, hasToolPresetControl, onToolPresetControlChange, toolPreset, toolPresetDisabled]);
+  useEffect(() => () => onToolPresetControlChange?.(null), [onToolPresetControlChange]);
   const selectedImageModel = imageGeneration.models.find((model) => model.isDefault);
   const handleImageModelChange = useCallback(async (providerId: string, modelId: string) => {
     if (imageModelSwitching || sessionBusy) return;
@@ -693,8 +693,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
   // Register the abort handler for the global Esc shortcut
   useEffect(() => {
-    registerAbortHandler(sessionBusy ? handleAbort : null);
-  }, [sessionBusy, handleAbort]);
+    if (previewOnly) return;
+    registerAbortHandler(composerBusy ? stopRun : null);
+    return () => registerAbortHandler(null);
+  }, [composerBusy, previewOnly, stopRun]);
 
   // The server bounds history to the pages requested so far.
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -1140,9 +1142,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     <ChatInput
       ref={chatInputRef}
       onSend={handleSend}
-      onAbort={handleAbort}
+      onAbort={stopRun}
+      stopLabel={stoppingCompaction ? t("chat.stopCompaction") : undefined}
       onFollowUp={agentRunning ? handleFollowUp : undefined}
-      isStreaming={sessionBusy}
+      isStreaming={composerBusy}
+      submissionDisabled={toolPresetChanging}
       model={displayModelValue}
       isAutoModelSelection={isAutoModelSelection}
       modelNames={modelNames}
@@ -1160,12 +1164,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       }))}
       onImageModelChange={handleImageModelChange}
       imageModelSwitching={imageModelSwitching}
-      onCompact={session || isNew ? handleCompact : undefined}
-      onAbortCompaction={handleAbortCompaction}
-      isCompacting={isCompacting}
       compactError={compactError}
       compactResult={compactResult}
-      toolPreset={toolPreset}
       workMode={data?.workMode ?? "auto"}
       pendingWorkMode={data?.pendingWorkMode}
       onResolvedWorkMode={setComposerWorkMode}
@@ -1189,7 +1189,6 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         const sid = sessionIdRef.current;
         if (sid) await loadTools(sid);
       } : undefined}
-      onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
       thinkingLevel={thinkingLevel}
       onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
       availableThinkingLevels={availableThinkingLevels}
@@ -1341,6 +1340,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 compactUsage?: boolean;
                 usageOverride?: AgentUsage;
                 actualCost?: number;
+                relayBilling?: TurnRelayBilling;
                 imageBilling?: ImageBillingSummary;
                 writtenFiles?: WrittenFile[];
                 canForkReply?: boolean;
@@ -1389,6 +1389,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     sessionId={session?.id ?? sessionIdRef.current ?? undefined}
                     actualCost={"actualCost" in options ? options.actualCost : (entryIds[idx] ? relayActualCosts.costs[entryIds[idx]]?.actualCost : undefined)}
                     usageOverride={options.usageOverride}
+                    relayBilling={options.relayBilling}
                     showModel={options.showModel}
                     compactUsage={options.compactUsage}
                     imageBilling={"imageBilling" in options ? options.imageBilling : (entryIds[idx] ? imageBillingByAnchor.get(entryIds[idx]) : undefined)}
@@ -1628,7 +1629,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     messageOverride: { ...finalAssistant, content: finalText, usage: hasCompleteHistory ? finalAssistant.usage : undefined },
                     showModel: false,
                     usageOverride: hasCompleteHistory ? aggregateTurnUsage(timelineMessages, userIdx + 1, finalAssistantIdx) : undefined,
-                    actualCost: hasCompleteHistory ? aggregateTurnActualCost(timelineMessages, entryIds, userIdx + 1, finalAssistantIdx, relayActualCosts.costs) : undefined,
+                    actualCost: undefined,
+                    relayBilling: hasCompleteHistory
+                      ? summarizeTurnRelayBilling(timelineMessages, entryIds, userIdx + 1, finalAssistantIdx, relayActualCosts.costs)
+                      : undefined,
                     imageBilling: turnImageBilling,
                     writtenFiles: hasCompleteHistory ? extractTurnWrittenFiles(turnContent, toolResultsMap, messageCwd) : undefined,
                   }));

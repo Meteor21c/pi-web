@@ -26,6 +26,12 @@ test("renders active tool definitions in a selectable master-detail layout", () 
   assert.match(panelSource, /grid-template-columns: clamp\(112px, 26%, 220px\) minmax\(0, 1fr\)/);
 });
 
+test("offers the current chat's tool preset in the Tools panel", () => {
+  assert.match(appShellSource, /<ToolDefinitionsPanel[\s\S]*?presetControl=\{showChat \? toolPresetControl : null\}/);
+  assert.match(panelSource, /value=\{presetControl.value\}\s+disabled=\{loading \|\| presetControl.disabled\}/);
+  assert.match(panelSource, /TOOL_PRESET_VALUES.map/);
+});
+
 test("shows schema fields and metadata in the detail form", () => {
   assert.match(panelSource, /parameters\.properties/);
   assert.match(panelSource, /parameters\.required/);

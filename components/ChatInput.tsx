@@ -4,7 +4,7 @@ import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useIm
 import type { BuiltinSlashCommandResult, CompactResultInfo, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { QueueAction, QueuedInput, QueuedMessages } from "@/lib/agent-input-queue";
 import type { SkillsResponse } from "@/lib/api-types";
-import { getUserMessageText } from "@/lib/message-display";
+import { getUserMessageDisplay, getUserMessageText } from "@/lib/message-display";
 import type { UserMessage } from "@/lib/types";
 import {
   clearDraft,
@@ -32,12 +32,13 @@ import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 import { useChatAppearance } from "@/hooks/useChatAppearance";
-import { PRESET_FULL, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
+import { PRESET_FULL, type ToolEntry } from "@/lib/tool-presets";
 import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
+import { ReasoningControl } from "./ReasoningControl";
 import { DEFAULT_SUBAGENT_MODE, SUBAGENT_MODES, type SubagentMode } from "@/lib/subagent-mode";
 import { WorkModeSelector } from "./WorkModeSelector";
 import type { WorkMode } from "@/lib/prompt-presets";
-import { MODEL_THINKING_LEVELS, resolveThinkingLevelOption, type ThinkingLevelOption } from "@/lib/model-capabilities";
+import type { ThinkingLevelOption } from "@/lib/model-capabilities";
 
 export { filterModelOptions } from "./ModelSelector";
 
@@ -50,8 +51,10 @@ interface ComposerUploadResponse {
 interface Props {
   onSend: (message: string, images?: AttachedImage[]) => void;
   onAbort: () => void;
+  stopLabel?: string;
   onFollowUp?: (message: string, images?: AttachedImage[]) => void;
   isStreaming: boolean;
+  submissionDisabled?: boolean;
   /** Text-only composer without the session controls or outer spacing. */
   compact?: boolean;
   model?: { provider: string; modelId: string } | null;
@@ -67,12 +70,8 @@ interface Props {
   imageModelList?: { id: string; name: string; provider: string; providerDisplayName?: string }[];
   onImageModelChange?: (provider: string, modelId: string) => void;
   imageModelSwitching?: boolean;
-  onCompact?: () => void;
-  onAbortCompaction?: () => void;
-  isCompacting?: boolean;
   compactError?: string | null;
   compactResult?: CompactResultInfo | null;
-  toolPreset?: ToolPreset;
   workMode?: WorkMode;
   pendingWorkMode?: WorkMode | null;
   onResolvedWorkMode?: (mode: WorkMode) => void;
@@ -85,9 +84,8 @@ interface Props {
   approvalPolicyControl?: React.ReactNode;
   onNewWorkModeChanged?: () => Promise<void>;
   onSessionWorkModeChange?: (mode: WorkMode) => Promise<void>;
-  onToolPresetChange?: (preset: ToolPreset) => void;
   thinkingLevel?: ThinkingLevelOption;
-  onThinkingLevelChange?: (level: ThinkingLevelOption) => void;
+  onThinkingLevelChange?: (level: ThinkingLevelOption) => Promise<void>;
   availableThinkingLevels?: string[] | null;
   thinkingLevelMap?: Record<string, string | null> | null;
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
@@ -116,14 +114,6 @@ export interface ChatInputHandle {
   restoreSubmission: (text: string, images?: ChatDraftImage[], targetDraftKey?: string) => void;
 }
 
-const TOOL_PRESETS = ["chat-only", "read-only", "default", "full"] as const;
-type ToolPresetLabel = typeof TOOL_PRESETS[number];
-const TOOL_PRESET_MAP: Record<ToolPresetLabel, ToolPreset> = {
-  "chat-only": "none",
-  "read-only": "read-only",
-  default: "default",
-  full: "full",
-};
 const COMPOSITION_END_ENTER_GRACE_MS = 100;
 const TEXT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const ANCHORED_MENU_GAP = 8;
@@ -216,12 +206,6 @@ function subscribeUpwardMenuMaxHeight(
     if (frameId !== null) cancelAnimationFrame(frameId);
   };
 }
-
-const THINKING_LEVELS = ["auto", ...MODEL_THINKING_LEVELS] as const;
-const THINKING_LEVEL_DESC_KEYS: Record<ThinkingLevelOption, string> = {
-  auto: "chat.thinkingUseDefault", off: "chat.thinkingOff", minimal: "chat.thinkingMinimal", low: "chat.thinkingLow",
-  medium: "chat.thinkingMedium", high: "chat.thinkingHigh", xhigh: "chat.thinkingXhigh", max: "chat.thinkingMax",
-};
 
 function formatTokenCount(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
@@ -539,18 +523,20 @@ export function canRestoreUserMessage(
 
 export { getUserMessageText };
 
-export function getUserMessageDraftImages(message: UserMessage): ChatDraftImage[] {
+export function getUserMessageDraftImages(message: UserMessage, imagePaths = getUserMessageDisplay(message).imagePaths): ChatDraftImage[] {
   if (typeof message.content === "string") return [];
-  return message.content.flatMap((block) => {
-    if (block.type !== "image") return [];
-
+  const images = message.content.filter((block) => block.type === "image");
+  // Older prompts only stored the distinct paths. Associate them when every image has a path.
+  const paths = imagePaths.length === images.length ? imagePaths : [];
+  return images.flatMap((block, index) => {
     // Support both the current nested image format and older flat pi-ai entries.
     const flat = block as unknown as { data?: unknown; mimeType?: unknown };
     const data = block.source?.type === "base64" ? block.source.data : flat.data;
     const mimeType = block.source?.type === "base64" ? block.source.media_type : flat.mimeType;
     if (typeof data !== "string" || typeof mimeType !== "string") return [];
 
-    const image = { data, mimeType };
+    const filePath = paths[index];
+    const image = { data, mimeType, ...(filePath ? { filePath } : {}) };
     return isBase64ImageWithinLimits(image) ? [image] : [];
   });
 }
@@ -702,9 +688,9 @@ export function ModelScopeWarningBanner({ warnings }: { warnings?: string[] }) {
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
-  onSend, onAbort, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
+  onSend, onAbort, stopLabel, onFollowUp, isStreaming, submissionDisabled, model, isAutoModelSelection, modelNames, modelList, modelError, modelScopeWarnings, onModelChange, modelSwitching,
   imageModel, imageModelList, onImageModelChange, imageModelSwitching,
-  onCompact, onAbortCompaction, isCompacting, compactError, compactResult, toolPreset, onToolPresetChange,
+  compactError, compactResult,
   workMode, pendingWorkMode, showWorkMode, workModeDisabled, onNewWorkModeChanged, onSessionWorkModeChange, onResolvedWorkMode,
   messagePlaceholder, approvalPolicyControl,
   subagentMode, onSubagentModeChange, subagentModeDisabled,
@@ -721,9 +707,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { fontSize } = useChatAppearance();
   const isMobile = useIsMobile();
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
-  const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
-  const [thinkingDropdownOpen, setThinkingDropdownOpen] = useState(false);
-  const [controlsMenuOpen, setControlsMenuOpen] = useState(false);
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => (
     draftKey ? draftImagesToAttachedImages(getDraft(draftKey)?.images) : []
   ));
@@ -774,9 +757,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     : {};
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const toolDropdownRef = useRef<HTMLDivElement>(null);
-  const thinkingDropdownRef = useRef<HTMLDivElement>(null);
-  const controlsMenuRef = useRef<HTMLDivElement>(null);
   const historyMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
@@ -817,8 +797,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       const current = ta ? ta.value : value;
       if (!canRestoreUserMessage(current, attachedImagesRef.current.length, pendingImageCountRef.current)) return;
 
-      const restoredText = getUserMessageText(message);
-      const restoredImages = draftImagesToAttachedImages(getUserMessageDraftImages(message));
+      const { text: restoredText, imagePaths } = getUserMessageDisplay(message);
+      const restoredImages = draftImagesToAttachedImages(getUserMessageDraftImages(message, imagePaths));
       valueRef.current = restoredText;
       attachedImagesRef.current = restoredImages;
       setValue(restoredText);
@@ -1180,7 +1160,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [attachedImages.length, clearInput, onBuiltinCommand]);
 
   const handleSend = useCallback(async () => {
-    if (pendingImageCountRef.current > 0 || fileUploadStatus.phase === "uploading" || tooManyImages) return;
+    if (submissionDisabled || builtinCommandPendingRef.current || pendingImageCountRef.current > 0 || fileUploadStatus.phase === "uploading" || tooManyImages) return;
     const msg = value.trim();
     if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
@@ -1189,7 +1169,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (isStreaming) return;
     clearInput();
     onSend(msg, attachedImages.length ? attachedImages : undefined);
-  }, [value, attachedImages, isStreaming, runBuiltinCommand, onSend, clearInput, onAudioUnlock, fileUploadStatus.phase, tooManyImages]);
+  }, [value, attachedImages, isStreaming, submissionDisabled, runBuiltinCommand, onSend, clearInput, onAudioUnlock, fileUploadStatus.phase, tooManyImages]);
 
   const slashQuery = !compact && value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -1222,7 +1202,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? t(slashQuery ? "chat.match" : "chat.command")
     : t(slashQuery ? "chat.matches" : "chat.commands", { count: filteredSlashCommands.length });
   const hasInputText = Boolean(value.trim());
-  const canSubmitMessage = !attachmentsUploading && !tooManyImages && (hasInputText || attachedImages.length > 0);
+  const canSubmitMessage = !submissionDisabled && !builtinCommandPending && !attachmentsUploading
+    && !tooManyImages && (hasInputText || attachedImages.length > 0);
   // Warn when images are attached but the selected model is known not to accept
   // image input (#584), including a resolved default. Unknown models stay silent.
   const showImageUnsupportedWarning = (
@@ -1502,7 +1483,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [updateAtQuery]);
 
   const sendQueued = useCallback(() => {
-    if (!onFollowUp || pendingImageCountRef.current > 0 || fileUploadStatus.phase === "uploading" || tooManyImages) return;
+    if (!onFollowUp || builtinCommandPendingRef.current || pendingImageCountRef.current > 0 || fileUploadStatus.phase === "uploading" || tooManyImages) return;
     const msg = value.trim();
     if (!msg && !attachedImages.length) return;
     onAudioUnlock?.();
@@ -1860,28 +1841,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const compactResultText = compactResult
     ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatTokenCount(compactSavedTokens) })})`
     : null;
-  const effectiveThinkingLevel = resolveThinkingLevelOption(thinkingLevel ?? "auto", availableThinkingLevels ?? MODEL_THINKING_LEVELS);
-  const thinkingDisplayLabel = (() => {
-    const lvl = effectiveThinkingLevel;
-    if (lvl === "auto") return t("chat.thinkingAuto");
-    if (!thinkingLevelMap) return lvl;
-    return thinkingLevelMap[lvl] ?? lvl;
-  })();
-  const rawToolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? "default"))?.[0] ?? "default";
-  const toolPresetLabel = rawToolPresetLabel === "chat-only" ? t("chat.chatOnly") : rawToolPresetLabel;
+  const reasoningModelName = model
+    ? modelOptions.find((option) => option.provider === model.provider && option.modelId === model.modelId)?.name || model.modelId
+    : undefined;
 
-  // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (toolDropdownRef.current && !toolDropdownRef.current.contains(e.target as Node)) {
-        setToolDropdownOpen(false);
-      }
-      if (thinkingDropdownRef.current && !thinkingDropdownRef.current.contains(e.target as Node)) {
-        setThinkingDropdownOpen(false);
-      }
-      if (controlsMenuRef.current && !controlsMenuRef.current.contains(e.target as Node)) {
-        setControlsMenuOpen(false);
-      }
       if (historyMenuRef.current && !historyMenuRef.current.contains(e.target as Node) && !textareaRef.current?.contains(e.target as Node)) {
         setHistoryMenuOpen(false);
       }
@@ -1890,15 +1855,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  useEffect(() => {
-    if (!isMobile) setControlsMenuOpen(false);
-  }, [isMobile]);
-
-
-
   return (
     <fieldset
-      disabled={builtinCommandPending}
+      disabled={builtinCommandPending && !isStreaming}
       aria-busy={builtinCommandPending}
       style={{
         flexShrink: 0,
@@ -2592,38 +2551,54 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             }}
           />
 
-          {isStreaming && !onFollowUp ? (
-            <span className="ui-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
-          ) : (
-            <button
-              onClick={isStreaming ? sendQueued : handleSend}
-              disabled={!canSubmitMessage}
-              title={isStreaming ? t("chat.followUpHint") : undefined}
-              aria-keyshortcuts={isMobile ? "Control+Enter Meta+Enter" : "Enter"}
-              className="ui-send-btn"
-              style={{
-                flexShrink: 0,
-                alignSelf: "flex-end",
-                display: "flex", alignItems: "center", gap: 6,
-                padding: "7px 16px",
-                background: canSubmitMessage ? "var(--accent)" : "var(--bg-panel)",
-                border: "none",
-                borderRadius: 999,
-                color: canSubmitMessage ? "var(--accent-contrast)" : "var(--text-dim)",
-                cursor: canSubmitMessage ? "pointer" : "not-allowed",
-                fontSize: 13,
-                fontWeight: 600,
-                letterSpacing: "-0.01em",
-                boxShadow: canSubmitMessage ? "0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent)" : "none",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="2" y1="7" x2="11" y2="7" />
-                <polyline points="7.5 3 12 7 7.5 11" />
-              </svg>
-              {t(isStreaming ? "chat.queueMessage" : "chat.send")}
-            </button>
-          )}
+          <div className="composer-send-actions">
+            {isStreaming && !compact && (
+              <button
+                type="button"
+                className="composer-stop-button"
+                onClick={onAbort}
+                title={stopLabel ?? t("chat.stopAgent")}
+                aria-label={stopLabel ?? t("chat.stopAgent")}
+                aria-keyshortcuts="Escape"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                  <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" />
+                </svg>
+                {t("chat.stop")}
+              </button>
+            )}
+            {isStreaming && !onFollowUp ? (
+              <span className="ui-thinking-dots" aria-hidden="true"><span /><span /><span /></span>
+            ) : (
+              <button
+                type="button"
+                onClick={isStreaming ? sendQueued : handleSend}
+                disabled={!canSubmitMessage}
+                title={isStreaming ? t("chat.followUpHint") : undefined}
+                aria-keyshortcuts={isMobile ? "Control+Enter Meta+Enter" : "Enter"}
+                className="ui-send-btn"
+                style={{
+                  flexShrink: 0,
+                  display: "flex", alignItems: "center", gap: 6,
+                  background: canSubmitMessage ? "var(--accent)" : "var(--bg-panel)",
+                  border: "none",
+                  borderRadius: 999,
+                  color: canSubmitMessage ? "var(--accent-contrast)" : "var(--text-dim)",
+                  cursor: canSubmitMessage ? "pointer" : "not-allowed",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  letterSpacing: "-0.01em",
+                  boxShadow: canSubmitMessage ? "0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent)" : "none",
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="2" y1="7" x2="11" y2="7" />
+                  <polyline points="7.5 3 12 7 7.5 11" />
+                </svg>
+                {t(isStreaming ? "chat.queueMessage" : "chat.send")}
+              </button>
+            )}
+          </div>
           </div>
         </div>
 
@@ -2634,18 +2609,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
         )}
 
-        {/* Bottom bar: left | center (context) | right */}
-        {!compact && <div style={{
-          marginTop: 8,
-          display: isMobile ? "grid" : "flex",
-          gridTemplateColumns: isMobile ? "minmax(0, 1fr) auto" : undefined,
-          flexWrap: "wrap",
-          alignItems: "center",
-          gap: 6,
-        }}>
+        {!compact && <div className="composer-controls">
 
-          {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
-          <div style={{ flex: "1 1 310px", minWidth: 0, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2 }}>
+          <div className="composer-controls-left">
             <button
               onClick={() => fileInputRef.current?.click()}
               title={t("chat.attachFiles")}
@@ -2692,6 +2658,25 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             >
               @
             </button>
+            {onSoundToggle && (
+              <button
+                type="button"
+                className="composer-sound-button"
+                onClick={onSoundToggle}
+                title={t("chat.completionSound")}
+                aria-label={t("chat.completionSound")}
+                aria-pressed={soundEnabled ?? false}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                  {soundEnabled ? (
+                    <><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></>
+                  ) : (
+                    <path d="m17 9 6 6m0-6-6 6" />
+                  )}
+                </svg>
+              </button>
+            )}
             {showWorkMode && <WorkModeSelector
               mode={workMode ?? "auto"}
               pendingMode={pendingWorkMode}
@@ -2743,408 +2728,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             )}
           </div>
 
-          {/* RIGHT: thinking + tools preset + compact + sound (idle) | Stop + sound (streaming) */}
-          <div ref={controlsMenuRef} style={{
-            flex: "0 0 auto",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            position: "relative",
-            marginLeft: isMobile ? 0 : "auto",
-          }}>
-            {isMobile && (
-              <button
-                type="button"
-                 title={controlsMenuOpen ? undefined : t("chat.moreControls")}
-                 aria-label={t("chat.moreControls")}
-                aria-expanded={controlsMenuOpen}
-                aria-hidden={controlsMenuOpen || undefined}
-                tabIndex={controlsMenuOpen ? -1 : undefined}
-                onClick={() => {
-                  setControlsMenuOpen(true);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: "100%",
-                  height: 32,
-                  padding: "8px 10px",
-                  background: "none",
-                  border: "none",
-                  borderRadius: 9,
-                  color: "var(--text-muted)",
-                  cursor: controlsMenuOpen ? "default" : "pointer",
-                  fontSize: 12,
-                  fontWeight: 500,
-                  visibility: controlsMenuOpen ? "hidden" : "visible",
-                  pointerEvents: controlsMenuOpen ? "none" : "auto",
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  if (controlsMenuOpen) return;
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text)";
-                }}
-                onMouseLeave={(e) => {
-                  if (controlsMenuOpen) return;
-                  e.currentTarget.style.background = "none";
-                  e.currentTarget.style.color = "var(--text-muted)";
-                }}
-              >
-                {t("chat.moreControls")}
-              </button>
-            )}
-            <div style={{
-              display: isMobile ? (controlsMenuOpen ? "flex" : "none") : "flex",
-              alignItems: "center",
-              gap: isMobile ? 1 : 2,
-              ...(isMobile ? {
-                position: "absolute",
-                right: 0,
-                bottom: 0,
-                zIndex: 60,
-                padding: 1,
-                width: "max-content",
-                maxWidth: "calc(100vw - 32px)",
-                flexWrap: "nowrap",
-                justifyContent: "flex-end",
-                border: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                borderRadius: 10,
-                background: "color-mix(in srgb, var(--bg-panel) 92%, var(--bg))",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
-                backdropFilter: "blur(10px)",
-              } : null),
-            }}>
-            {!isStreaming && onThinkingLevelChange && (
-              <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
-                <button
-                  onClick={() => !modelSwitching && setThinkingDropdownOpen((v) => !v)}
-                  disabled={modelSwitching}
-                   title={t("chat.changeReasoning", { level: thinkingDisplayLabel })}
-                   aria-label={t("chat.changeReasoningLabel")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: isMobile ? "0 6px" : "8px 12px",
-                    width: isMobile ? "auto" : undefined,
-                    height: 32,
-                    background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: 9,
-                    color: "var(--text-muted)",
-                    cursor: isStreaming ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = thinkingDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M9.5 2A5.5 5.5 0 0 0 4 7.5c0 1.7.78 3.21 2 4.21V14a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.29c1.22-1 2-2.51 2-4.21A5.5 5.5 0 0 0 9.5 2z" />
-                    <line x1="7" y1="18" x2="12" y2="18" />
-                    <line x1="8" y1="21" x2="11" y2="21" />
-                  </svg>
-                  {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
-                </button>
-                {thinkingDropdownOpen && (
-                  <div className="ui-glass-menu" style={{
-                    position: "absolute", bottom: "calc(100% + 6px)",
-                    ...(isMobile ? { left: 0 } : { right: 0 }),
-                    zIndex: 100,
-                    padding: 5,
-                    overflow: "hidden", minWidth: 180,
-                  }}>
-                    {THINKING_LEVELS.filter((lvl) => (lvl !== "off" && lvl !== "minimal") || availableThinkingLevels?.includes(lvl)).map((lvl) => {
-                      const isActive = effectiveThinkingLevel === lvl;
-                      const fallsBack = lvl !== "auto" && availableThinkingLevels !== null && availableThinkingLevels !== undefined
-                        && !availableThinkingLevels.includes(lvl);
-                      const desc = t(fallsBack ? "chat.thinkingFallsBack" : THINKING_LEVEL_DESC_KEYS[lvl]);
-                      const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
-                      const displayLabel = lvl === "auto" ? t("chat.thinkingAuto") : mappedVal ?? lvl;
-                      const showOriginal = mappedVal != null && mappedVal !== lvl;
-                      return (
-                        <button
-                          key={lvl}
-                          className="ui-menu-item"
-                          aria-pressed={isActive}
-                          onClick={() => { setThinkingDropdownOpen(false); if (!isActive || lvl === "auto") onThinkingLevelChange(lvl); }}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 8,
-                            width: "100%", padding: "7px 12px",
-                            background: isActive ? "var(--bg-selected)" : "none",
-                            border: "none",
-                            color: isActive ? "var(--text)" : "var(--text-muted)",
-                            cursor: "pointer", fontSize: 12, textAlign: "left",
-                            fontWeight: isActive ? 600 : 400,
-                            whiteSpace: "nowrap",
-                          }}
-                          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                        >
-                          {isActive
-                            ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                            : <span style={{ width: 10, flexShrink: 0 }} />}
-                          <span style={{ flex: 1 }}>
-                            {displayLabel}
-                            {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({lvl})</span>}
-                          </span>
-                          <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-            {!isStreaming && onToolPresetChange && (
-              <div ref={toolDropdownRef} style={{ position: "relative" }}>
-                <button
-                  onClick={() => !isStreaming && setToolDropdownOpen((v) => !v)}
-                  disabled={isStreaming}
-                  title={t("chat.changeToolPreset") + `: ${toolPresetLabel}`}
-                  aria-label={t("chat.changeToolPreset")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: isMobile ? "0 6px" : "8px 12px",
-                    width: isMobile ? "auto" : undefined,
-                    height: 32,
-                    background: toolDropdownOpen ? "var(--bg-hover)" : "none",
-                    border: "none",
-                    borderRadius: 9,
-                    color: "var(--text-muted)",
-                    cursor: isStreaming ? "not-allowed" : "pointer",
-                    fontSize: 12,
-                    opacity: isStreaming ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming) return;
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = toolDropdownOpen ? "var(--bg-hover)" : "none";
-                    e.currentTarget.style.color = "var(--text-muted)";
-                  }}
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                  </svg>
-                  {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{toolPresetLabel}</span>}
-                </button>
-                {toolDropdownOpen && (
-                  <div className="ui-glass-menu" style={{
-                    position: "absolute",
-                    bottom: "calc(100% + 6px)",
-                    right: isMobile ? undefined : 0,
-                    left: isMobile ? 0 : undefined,
-                    zIndex: 100,
-                    padding: 5,
-                    overflow: "hidden", minWidth: 120,
-                  }}>
-                    {TOOL_PRESETS.map((lvl) => {
-                      const preset = TOOL_PRESET_MAP[lvl];
-                      const isActive = (toolPreset ?? "default") === preset;
-                      let desc: string;
-                      if (lvl === "chat-only") desc = t("chat.chatOnly");
-                      else if (lvl === "read-only") desc = t("chat.readOnlyTools", { count: 4 });
-                      else if (lvl === "default") desc = t("chat.builtInTools", { count: 4 });
-                      else desc = t("chat.allBuiltInTools");
-                      return (
-                        <button
-                          key={lvl}
-                          className="ui-menu-item"
-                          onClick={() => { setToolDropdownOpen(false); if (!isActive) onToolPresetChange(preset); }}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 8,
-                            width: "100%", padding: "7px 12px",
-                            background: isActive ? "var(--bg-selected)" : "none",
-                            border: "none",
-                            color: isActive ? "var(--text)" : "var(--text-muted)",
-                            cursor: "pointer", fontSize: 12, textAlign: "left",
-                            fontWeight: isActive ? 600 : 400,
-                            whiteSpace: "nowrap",
-                          }}
-                          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
-                        >
-                          {isActive
-                            ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                            : <span style={{ width: 10, flexShrink: 0 }} />}
-                          <span style={{ flex: 1 }}>{lvl}</span>
-                          <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {!isStreaming && onCompact && (
-              <div>
-                <button
-                  onClick={isCompacting ? onAbortCompaction : onCompact}
-                  disabled={isStreaming && !isCompacting}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                    padding: isMobile ? "0 6px" : "8px 12px",
-                    width: isMobile ? "auto" : undefined,
-                    height: 32,
-                    background: isCompacting ? "rgba(239,68,68,0.08)" : "none",
-                    border: "none",
-                    borderRadius: 9,
-                    color: isCompacting ? "#ef4444" : "var(--text-muted)",
-                    cursor: (isStreaming && !isCompacting) ? "not-allowed" : "pointer",
-                    fontSize: 12, opacity: (isStreaming && !isCompacting) ? 0.5 : 1,
-                    transition: "background 0.12s, color 0.12s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (isStreaming && !isCompacting) return;
-                    e.currentTarget.style.background = isCompacting ? "rgba(239,68,68,0.16)" : "var(--bg-hover)";
-                    e.currentTarget.style.color = isCompacting ? "#ef4444" : "var(--text)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = isCompacting ? "rgba(239,68,68,0.08)" : "none";
-                    e.currentTarget.style.color = isCompacting ? "#ef4444" : "var(--text-muted)";
-                  }}
-                   title={isCompacting ? t("chat.stopCompaction") : t("chat.compactContext")}
-                   aria-label={isCompacting ? t("chat.stopCompaction") : t("chat.compactContext")}
-                >
-                  {isCompacting ? (
-                    <><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="2" y="2" width="6" height="6" rx="1" fill="currentColor" /></svg>{(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{t("chat.compacting")}</span>}</>
-                  ) : (
-                    <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
-                      <line x1="10" y1="14" x2="3" y2="21" /><line x1="21" y1="3" x2="14" y2="10" />
-                    </svg>{(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{t("chat.compact")}</span>}</>
-                  )}
-                </button>
-              </div>
-            )}
-
-            {isStreaming && (
-              <button
-                onClick={onAbort}
-                 title={t("chat.stopAgent")}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "8px 14px",
-                  height: 32,
-                  background: "rgba(239,68,68,0.08)",
-                  border: "1px solid rgba(239,68,68,0.3)",
-                  borderRadius: 9,
-                  color: "#ef4444",
-                  cursor: "pointer",
-                  fontSize: 12, fontWeight: 600,
-                  whiteSpace: "nowrap", letterSpacing: "-0.01em",
-                  transition: "background 0.12s",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.16)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
-              >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                  <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" />
-                </svg>
-                 {t("chat.stop")}
-              </button>
-            )}
-
-            {onSoundToggle !== undefined && (
-              <button
-                onClick={onSoundToggle}
-                 title={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                 aria-label={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                  width: isMobile ? 32 : 32,
-                  height: 32,
-                  padding: 0,
-                  background: "none",
-                  border: "none",
-                  borderRadius: 9,
-                  color: soundEnabled ? "var(--text-muted)" : "var(--text-dim)",
-                  cursor: "pointer",
-                  opacity: soundEnabled ? 1 : 0.55,
-                  transition: "background 0.12s, color 0.12s, opacity 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text)";
-                  e.currentTarget.style.opacity = "1";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "none";
-                  e.currentTarget.style.color = soundEnabled ? "var(--text-muted)" : "var(--text-dim)";
-                  e.currentTarget.style.opacity = soundEnabled ? "1" : "0.55";
-                }}
-              >
-                {soundEnabled ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                  </svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <line x1="23" y1="9" x2="17" y2="15" />
-                    <line x1="17" y1="9" x2="23" y2="15" />
-                  </svg>
-                )}
-              </button>
-            )}
-            {isMobile && controlsMenuOpen && (
-              <button
-                type="button"
-                 title={t("chat.collapseControls")}
-                 aria-label={t("chat.collapseControls")}
-                aria-expanded={true}
-                onClick={() => {
-                  setToolDropdownOpen(false);
-                  setThinkingDropdownOpen(false);
-                  setControlsMenuOpen(false);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 36,
-                  height: 32,
-                  padding: 0,
-                  marginLeft: 0,
-                  background: "var(--bg-hover)",
-                  border: "none",
-                  borderLeft: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                  borderRadius: "0 9px 9px 0",
-                  color: "var(--text)",
-                  cursor: "pointer",
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-selected)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                }}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            )}
-            </div>
-          </div>
-
+          {onThinkingLevelChange && (
+            <ReasoningControl
+              key={model ? `${model.provider}:${model.modelId}` : undefined}
+              modelName={reasoningModelName}
+              level={thinkingLevel ?? "auto"}
+              supportedLevels={availableThinkingLevels}
+              levelMap={thinkingLevelMap}
+              onChange={onThinkingLevelChange}
+              disabled={isStreaming || modelSwitching || submissionDisabled || builtinCommandPending}
+            />
+          )}
         </div>}
       </div>
     </fieldset>

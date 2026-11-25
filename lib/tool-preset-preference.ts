@@ -2,10 +2,7 @@ import { isToolPreset, type ToolPreset } from "./tool-presets";
 
 const STORAGE_KEY = "pi-tool-preset";
 
-/** Brand newcomers start without file/command tools; explicit choices are retained. */
-export function defaultToolPreset(brandGate = process.env.NEXT_PUBLIC_AUTH_GATE): ToolPreset {
-  return brandGate === "1" ? "none" : "default";
-}
+const DEFAULT_TOOL_PRESET: ToolPreset = "full";
 
 interface StorageLike {
   getItem(key: string): string | null;
@@ -24,12 +21,12 @@ function getBrowserStorage(): StorageLike | null {
 export function getPreferredToolPreset(
   storage: StorageLike | null = getBrowserStorage(),
 ): ToolPreset {
-  if (!storage) return defaultToolPreset();
+  if (!storage) return DEFAULT_TOOL_PRESET;
   try {
     const value = storage.getItem(STORAGE_KEY);
-    return isToolPreset(value) ? value : defaultToolPreset();
+    return isToolPreset(value) ? value : DEFAULT_TOOL_PRESET;
   } catch {
-    return defaultToolPreset();
+    return DEFAULT_TOOL_PRESET;
   }
 }
 

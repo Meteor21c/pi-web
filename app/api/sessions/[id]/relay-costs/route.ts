@@ -4,6 +4,7 @@ import { getSessionEntries, resolveSessionPath } from "@/lib/session-reader";
 import { isRelayProviderId } from "@/lib/relay-config";
 import { queryRelayActualCosts, type RelayTurnUsage } from "@/lib/relay-actual-cost";
 import { discoverRelayImageBillingEntries } from "@/lib/relay-image-billing";
+import { isAssistantFailureWithoutUsage } from "@/lib/turn-relay-billing";
 
 function finiteNonNegative(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
@@ -38,20 +39,19 @@ export async function GET(
         };
       };
       if (typeof message.provider !== "string" || !isRelayProviderId(message.provider)) continue;
-      if (typeof message.model !== "string" || !message.usage) continue;
+      if (typeof message.model !== "string" || !message.usage || isAssistantFailureWithoutUsage(message)) continue;
       const completedAt = Date.parse(entry.timestamp);
       const inputTokens = finiteNonNegative(message.usage.input);
       const outputTokens = finiteNonNegative(message.usage.output);
       const cacheReadTokens = finiteNonNegative(message.usage.cacheRead);
       const cacheWriteTokens = finiteNonNegative(message.usage.cacheWrite);
-      const estimatedCost = finiteNonNegative(message.usage.cost?.total);
+      const estimatedCost = finiteNonNegative(message.usage.cost?.total) ?? 0;
       if (
         !Number.isFinite(completedAt)
         || inputTokens === undefined
         || outputTokens === undefined
         || cacheReadTokens === undefined
         || cacheWriteTokens === undefined
-        || estimatedCost === undefined
       ) continue;
       turns.push({
         entryId: entry.id,

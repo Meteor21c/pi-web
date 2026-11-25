@@ -15,7 +15,7 @@ import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
-import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
+import { ToolDefinitionsPanel, type ToolPresetControl } from "./ToolDefinitionsPanel";
 import { SessionPluginsPanel } from "./SessionPluginsPanel";
 import { AgentSessionPanel } from "./AgentSessionPanel";
 import { TerminalPanel } from "./TerminalPanel";
@@ -385,6 +385,7 @@ export function AppShell() {
 
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
   const [systemTools, setSystemTools] = useState<ToolEntry[] | null>(null);
+  const [toolPresetControl, setToolPresetControl] = useState<ToolPresetControl | null>(null);
   const [systemInfoLoading, setSystemInfoLoading] = useState(false);
   const systemInfoLoaderRef = useRef<(() => Promise<void>) | null>(null);
   const systemInfoLoadIdRef = useRef(0);
@@ -2131,6 +2132,7 @@ export function AppShell() {
                 <ToolDefinitionsPanel
                   loading={systemInfoLoading}
                   tools={systemTools}
+                  presetControl={showChat ? toolPresetControl : null}
                   translate={translate}
                 />
               )}
@@ -2402,6 +2404,7 @@ export function AppShell() {
               onBranchDataChange={handleBranchDataChange}
               onSystemPromptChange={handleSystemPromptChange}
               onSystemToolsChange={handleSystemToolsChange}
+              onToolPresetControlChange={setToolPresetControl}
               onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
               onSessionStatsChange={handleSessionStatsChange}
               onSessionStatsPanelOpen={openSessionStatsPanel}

@@ -173,6 +173,7 @@ export interface AgentSessionLike {
   readonly resourceLoader: ResourceLoaderLike;
 
   readonly bindExtensions?: unknown;
+  getToolDefinition?: AgentSession["getToolDefinition"];
   dispose(): void;
   reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void>;
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;

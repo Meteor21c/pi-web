@@ -87,6 +87,37 @@ test("labels the final usage chips as a whole-turn summary", () => {
   assert.match(html, />2<\/span>/);
 });
 
+test("shows distinct complete, partial, estimated and pending relay fees on a settled turn", () => {
+  const usage = { input: 200, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } };
+  const message = {
+    role: "assistant",
+    provider: "meteor21c-k20",
+    model: "gpt-6.2-sol",
+    content: [{ type: "text", text: "Done" }],
+    usage,
+  };
+  const billing = (matchedCount, matchedCost, estimatedCost) => renderMessage(message, {
+    usageOverride: usage,
+    relayBilling: { requestCount: 2, matchedCount, matchedCost, estimatedCost },
+  });
+
+  const synced = billing(2, 1.033264976);
+  assert.match(synced, /ui-stat-chip-cost is-synced/);
+  assert.match(synced, /Actual relay charge \(synced\)/);
+  assert.match(synced, />\$1\.03<\/span>/);
+
+  const partial = billing(1, 0.02);
+  assert.match(partial, /ui-stat-chip-cost is-pending/);
+  assert.match(partial, /Partial cost \$0\.02/);
+  assert.match(partial, /1 of 2 requests matched/);
+  assert.match(billing(0, 0, 0.03), /Est\. \$0\.03/);
+
+  const pending = billing(0, 0);
+  assert.match(pending, /ui-stat-chip-cost is-pending/);
+  assert.match(pending, /Cost pending/);
+  assert.doesNotMatch(pending, /\$0\.01/);
+});
+
 test("shows image billing separately only on a successful generated-image turn", () => {
   const html = renderMessage({
     role: "assistant",
@@ -423,11 +454,11 @@ test("keeps attached images when restoring a compact command for editing", () =>
   ]);
 });
 
-test("renders user-message images as buttons that open a larger preview", () => {
+test("renders user-message image previews without showing the saved attachment paths", () => {
   const html = renderMessage({
     role: "user",
     content: [
-      { type: "text", text: "inspect this" },
+      { type: "text", text: "inspect this\n\n@/Users/example/.pi/agent/meteoragent-attachments/image-4Y5Av1/image.png" },
       { type: "image", data: "YWJj", mimeType: "image/png" },
     ],
     timestamp: Date.now(),
@@ -435,6 +466,8 @@ test("renders user-message images as buttons that open a larger preview", () => 
 
   assert.match(html, /<button[^>]+aria-label="Preview image"[^>]*>/);
   assert.match(html, /<img[^>]+src="data:image\/png;base64,YWJj"/);
+  assert.match(html, /inspect this/);
+  assert.doesNotMatch(html, /meteoragent-attachments/);
 });
 
 test("renders assistant images instead of dropping the image content block", () => {

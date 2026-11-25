@@ -1,15 +1,29 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { ToolEntry } from "@/lib/tool-presets";
+import { TOOL_PRESET_VALUES, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
 interface Props {
   loading: boolean;
   tools: ToolEntry[] | null;
+  presetControl?: ToolPresetControl | null;
   translate: Translate;
 }
+
+export interface ToolPresetControl {
+  value: ToolPreset;
+  disabled: boolean;
+  onChange: (preset: ToolPreset) => Promise<void>;
+}
+
+const PRESET_LABELS: Record<ToolPreset, string> = {
+  none: "chat.chatOnly",
+  "read-only": "tools.presetReadOnly",
+  default: "tools.presetDefault",
+  full: "tools.presetFull",
+};
 
 interface ParameterField {
   name: string;
@@ -95,7 +109,7 @@ function EmptyState({ children }: { children: string }) {
   return <div className="tool-definitions-empty">{children}</div>;
 }
 
-export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
+export function ToolDefinitionsPanel({ loading, tools, presetControl, translate }: Props) {
   const activeTools = useMemo(() => tools?.filter((tool) => tool.active) ?? null, [tools]);
   const [selectedToolName, setSelectedToolName] = useState<string | null>(null);
 
@@ -124,6 +138,20 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
           <strong>{translate("tools.title")}</strong>
           <small>{translate("tools.details")}</small>
         </div>
+        {presetControl && (
+          <label className="tool-preset-control">
+            <span>{translate("tools.preset")}</span>
+            <select
+              value={presetControl.value}
+              disabled={loading || presetControl.disabled}
+              onChange={(event) => void presetControl.onChange(event.currentTarget.value as ToolPreset)}
+            >
+              {TOOL_PRESET_VALUES.map((preset) => (
+                <option key={preset} value={preset}>{translate(PRESET_LABELS[preset])}</option>
+              ))}
+            </select>
+          </label>
+        )}
       </header>
       <nav className="tool-definitions-sidebar" aria-label={translate("tools.title")}>
         <div className="tool-definitions-list">
@@ -218,6 +246,29 @@ export function ToolDefinitionsPanel({ loading, tools, translate }: Props) {
       </section>
 
       <style>{`
+        .tool-preset-control {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 4px 8px;
+          color: var(--text-muted);
+          font-size: 11px;
+        }
+        .tool-preset-control select {
+          max-width: 148px;
+          padding: 5px 8px;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          background: var(--bg-panel);
+          color: var(--text);
+          font: inherit;
+          cursor: pointer;
+        }
+        .tool-preset-control select:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
         .tool-definitions-panel {
           display: grid;
           grid-template-columns: clamp(112px, 26%, 220px) minmax(0, 1fr);

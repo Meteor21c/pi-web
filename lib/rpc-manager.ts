@@ -243,6 +243,8 @@ export function resolveSessionIdleTimeoutMs(
 }
 
 const SESSION_IDLE_TIMEOUT_MS = resolveSessionIdleTimeoutMs();
+const COMPUTER_USE_LAUNCH_TOOL = "computer_use_launch_app";
+const COMPUTER_USE_LAUNCH_TITLE = "Allow computer use?";
 const AUTO_APPROVABLE_COMPUTER_ACTIONS = new Set([
   "run_script",
   "run_steps",
@@ -336,6 +338,8 @@ export class AgentSessionWrapper {
   private activeCustomUis = new Map<string, ActiveCustomUi>();
   private extensionUiAbortController = new AbortController();
   private computerUseApprovalRun?: ComputerUseApprovalRun;
+  private readonly wrappedLaunchTools = new WeakSet<object>();
+  private readonly autoApprovedLaunches = new Set<string>();
   private extensionStatuses = new Map<string, string>();
   private extensionWidgets = new Map<string, ExtensionWidgetItem>();
   private activeExtensionWidgets = new Map<string, ActiveExtensionWidget>();
@@ -1298,6 +1302,7 @@ export class AgentSessionWrapper {
     if (name === GOAL_REPORT_TOOL && (!this.goalRun || !this.goalRunIsCurrent(this.goalRun))) {
       return { block: true, reason: "No active goal is running." };
     }
+    if (name === COMPUTER_USE_LAUNCH_TOOL) this.bindComputerUseLaunchApproval();
   }
 
   getWorkMode() {
@@ -2046,6 +2051,7 @@ export class AgentSessionWrapper {
           await this.inner.settingsManager.reload?.();
           this.syncProjectTrust();
           await this.inner.reload();
+          this.autoApprovedLaunches.clear();
           this.setActiveToolSelection(activeToolNames, this.useDefaultPlanTools);
           if (typeof this.inner.bindExtensions !== "function") {
             this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
@@ -2600,6 +2606,63 @@ export class AgentSessionWrapper {
     });
   }
 
+  private computerUseToolSource(toolName: string) {
+    const source = this.inner.getAllTools().find((tool) => tool.name === toolName)?.sourceInfo;
+    if (source?.origin === "package" && source.path
+      && /^npm:@amaster\.ai\/pi-computer-use(?:@[^/\s]+)?$/.test(source.source)) return source;
+  }
+
+  private bindComputerUseLaunchApproval(): void {
+    const tool = this.inner.getToolDefinition?.(COMPUTER_USE_LAUNCH_TOOL);
+    if (!tool || this.wrappedLaunchTools.has(tool)) return;
+    const source = this.computerUseToolSource(COMPUTER_USE_LAUNCH_TOOL);
+    if (!source) return;
+
+    // Pi's registered tool wrapper reads the definition's execute method at call time.
+    // Scope the approval to this execution, even when other extension tools run alongside it.
+    const execute = tool.execute;
+    this.wrappedLaunchTools.add(tool);
+    tool.execute = async (id, args, signal, onUpdate, context) => {
+      signal?.throwIfAborted();
+      const params = args as Record<string, unknown>;
+      const target = params.bundle_id ?? params.aumid ?? params.name ?? params.app_name ?? params.path ?? params.command;
+      if (typeof target !== "string" || !target.trim()) return execute.call(tool, id, args, signal, onUpdate, context);
+
+      const run = this.computerUseApprovalRun;
+      const canAutoApprove = () => run?.policy === "full" && this.computerUseApprovalRun === run
+        && this.isRunning() && this.workModeState.workMode !== "plan"
+        && getPresetFromToolNames(this.configuredToolNames ?? this.inner.getActiveToolNames()) !== "read-only";
+      const message = `Allow pi-computer-use to launch and control ${target} for this session?`;
+      // Match the extension's session cache, which uses all validated launch arguments.
+      const sortedParams = Object.entries(params).sort(([a], [b]) => a.localeCompare(b));
+      const key = createHash("sha256").update(JSON.stringify([source.source, source.path, sortedParams])).digest("hex");
+      let launchContext = context;
+      if (canAutoApprove() && context.hasUI) {
+        const ui = context.ui;
+        const launchUi: typeof ui = {
+          ...ui,
+          confirm: (title, prompt, opts) => {
+            if (title === COMPUTER_USE_LAUNCH_TITLE && prompt === message && canAutoApprove()
+              && !opts?.signal?.aborted && !signal?.aborted && !this.extensionUiAbortController.signal.aborted) {
+              this.autoApprovedLaunches.add(key);
+              return Promise.resolve(true);
+            }
+            return ui.confirm(title, prompt, opts?.signal ? opts : { ...opts, signal });
+          },
+        };
+        launchContext = Object.create(context, { ui: { value: launchUi } });
+      } else if (this.autoApprovedLaunches.has(key)) {
+        // An automatic approval must not count as an explicit user decision in a later task.
+        if (!context.hasUI || !await this.confirmExtensionUi(COMPUTER_USE_LAUNCH_TITLE, message, { signal })) {
+          throw new Error("launch_app requires interactive user confirmation.");
+        }
+        this.autoApprovedLaunches.delete(key);
+      }
+      signal?.throwIfAborted();
+      return execute.call(tool, id, args, signal, onUpdate, launchContext);
+    };
+  }
+
   private computerUseApproval(title: string, message: string) {
     if (!this.computerUseApprovalRun || !this.isRunning() || this.suppressCompletionNotifications
       || this.workModeState.workMode === "plan" || this.activeToolEvents.size !== 1
@@ -2611,11 +2674,8 @@ export class AgentSessionWrapper {
     if (!AUTO_APPROVABLE_COMPUTER_ACTIONS.has(action)) return;
     const prefix = `Allow ${action} with arguments `;
     if (!message.startsWith(prefix) || !message.endsWith("?")) return;
-    const source = this.inner.getAllTools().find((tool) => tool.name === toolName)?.sourceInfo as {
-      origin?: string; source?: string; path?: string;
-    } | undefined;
-    if (source?.origin !== "package" || !source.path
-      || !/^npm:@amaster\.ai\/pi-computer-use(?:@[^/\s]+)?$/.test(source.source ?? "")) return;
+    const source = this.computerUseToolSource(toolName);
+    if (!source) return;
     try {
       const args: unknown = JSON.parse(message.slice(prefix.length, -1));
       if (!args || typeof args !== "object" || Array.isArray(args) || !isDeepStrictEqual(args, call.args)) return;
@@ -2797,6 +2857,7 @@ export class AgentSessionWrapper {
             this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
           },
         });
+        this.autoApprovedLaunches.clear();
         this.applyActiveToolSelection();
       },
     };

@@ -18,6 +18,7 @@ import type { SubagentToolDetails } from "@/lib/subagent-extension";
 import { getSubagentDisplayName, SUBAGENT_NOTIFICATION_TYPE } from "@/lib/subagent-display";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { isRelayProviderId } from "@/lib/relay-config";
+import type { TurnRelayBilling } from "@/lib/turn-relay-billing";
 import { resolveLocalFileHref, resolveLocalFilePath } from "@/lib/file-links";
 import { getFileApiUrl } from "@/lib/file-paths";
 import type {
@@ -214,6 +215,7 @@ interface Props {
   actualCost?: number;
   /** Aggregated usage for the whole user turn, shown on its final answer. */
   usageOverride?: AgentUsage;
+  relayBilling?: TurnRelayBilling;
   /** Hide the model label when the parent renders one shared turn header. */
   showModel?: boolean;
   /** Render an intermediate assistant step's usage as quiet inline text. */
@@ -301,12 +303,12 @@ function haveSameRelevantToolResults(
   return true;
 }
 
-export const MessageView = memo(function MessageView({ message, animateIn = true, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, blockIndices, hideMetadata, onFork, forkingEntryId, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
+export const MessageView = memo(function MessageView({ message, animateIn = true, isStreaming, toolResults, modelNames, cwd, onOpenFile, onOpenSession, entryId, searchBlock, blockIndices, hideMetadata, onFork, forkingEntryId, onNavigate, onEditContent, showTimestamp, prevTimestamp, sessionId, actualCost, usageOverride, relayBilling, showModel = true, compactUsage = false, imageBilling, writtenFiles }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} animateIn={animateIn} cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile} entryId={entryId} onNavigate={onNavigate} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} animateIn={animateIn} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} blockIndices={blockIndices} hideMetadata={hideMetadata} onFork={onFork} forkingEntryId={forkingEntryId} actualCost={actualCost} usageOverride={usageOverride} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
+    return <AssistantMessageView message={message as AssistantMessage} animateIn={animateIn} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} cwd={cwd} onOpenFile={onOpenFile} onOpenSession={onOpenSession} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} sessionId={sessionId} entryId={entryId} searchBlock={searchBlock} blockIndices={blockIndices} hideMetadata={hideMetadata} onFork={onFork} forkingEntryId={forkingEntryId} actualCost={actualCost} usageOverride={usageOverride} relayBilling={relayBilling} showModel={showModel} compactUsage={compactUsage} imageBilling={imageBilling} writtenFiles={writtenFiles} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -349,6 +351,7 @@ export const MessageView = memo(function MessageView({ message, animateIn = true
     && prev.prevTimestamp === next.prevTimestamp
     && prev.actualCost === next.actualCost
     && prev.usageOverride === next.usageOverride
+    && prev.relayBilling === next.relayBilling
     && prev.showModel === next.showModel
     && prev.compactUsage === next.compactUsage
     && prev.imageBilling === next.imageBilling
@@ -614,6 +617,7 @@ function AssistantMessageView({
   forkingEntryId,
   actualCost,
   usageOverride,
+  relayBilling,
   showModel = true,
   compactUsage = false,
   imageBilling,
@@ -638,6 +642,7 @@ function AssistantMessageView({
   forkingEntryId?: string | null;
   actualCost?: number;
   usageOverride?: AgentUsage;
+  relayBilling?: TurnRelayBilling;
   showModel?: boolean;
   compactUsage?: boolean;
   imageBilling?: ImageBillingSummary;
@@ -870,12 +875,33 @@ function AssistantMessageView({
               </div>
             );
           }
-          const costTip = actualCost !== undefined
+          let syncedCost = actualCost;
+          if (relayBilling) {
+            syncedCost = relayBilling.matchedCount === relayBilling.requestCount
+              ? relayBilling.matchedCost
+              : undefined;
+          }
+          let costTip = syncedCost !== undefined
             ? t("relay.usage.actualCharge")
             : isRelayProviderId(message.provider) ? t("relay.usage.estimatedCharge") : t("session.cost");
-          const cost = actualCost !== undefined
-            ? formatUsdPrecise(actualCost)
+          let cost = syncedCost !== undefined
+            ? formatUsdPrecise(syncedCost)
             : usage?.cost?.total ? formatUsdPrecise(usage.cost.total) : null;
+          if (relayBilling && syncedCost === undefined) {
+            if (relayBilling.matchedCount > 0) {
+              cost = t("relay.usage.partialCharge", { cost: formatUsdPrecise(relayBilling.matchedCost) });
+              costTip = t("relay.usage.partialChargeTip", {
+                matched: relayBilling.matchedCount,
+                total: relayBilling.requestCount,
+              });
+            } else if (relayBilling.estimatedCost !== undefined) {
+              cost = t("relay.usage.estimatedValue", { cost: formatUsdPrecise(relayBilling.estimatedCost) });
+              costTip = t("relay.usage.estimatedCharge");
+            } else {
+              cost = t("relay.usage.chargePending");
+              costTip = t("relay.usage.chargePendingTip");
+            }
+          }
           const summaryTip = (label: string) => usageOverride
             ? t("relay.usage.turnSummary", { label })
             : label;
@@ -907,7 +933,7 @@ function AssistantMessageView({
                 </span>
               )}
               {cost && (
-                <span className="ui-stat-chip" data-tip={summaryTip(costTip)}>
+                <span className={`ui-stat-chip ui-stat-chip-cost${syncedCost !== undefined ? " is-synced" : relayBilling ? " is-pending" : ""}`} data-tip={summaryTip(costTip)}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M14.8 9.7c-.4-1-1.5-1.7-2.8-1.7-1.6 0-2.9.9-2.9 2.1 0 1.2 1.1 1.8 2.9 2.1 1.8.3 2.9 1 2.9 2.2 0 1.2-1.3 2.1-2.9 2.1-1.4 0-2.5-.7-2.9-1.7" /><path d="M12 6.8v10.4" /></svg>
                   {cost}
                 </span>

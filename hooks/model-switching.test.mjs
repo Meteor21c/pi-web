@@ -9,7 +9,7 @@ const loadSessionSource = source.slice(
 );
 const switchSource = source.slice(
   source.indexOf("const handleModelChange = useCallback"),
-  source.indexOf("const handleCompact = useCallback"),
+  source.indexOf("const loadModels = useCallback"),
 );
 
 test("existing-session model changes are optimistic and serialized", () => {

@@ -324,6 +324,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(null);
   const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
   const [toolPreset, setToolPreset] = useState<ToolPreset>("default");
+  const [toolPresetChanging, setToolPresetChanging] = useState(false);
   const subagentModeUnavailable = toolPreset === "none" || toolPreset === "read-only"
     || (data?.pendingWorkMode ?? data?.workMode ?? composerWorkMode) === "plan";
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
@@ -385,6 +386,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const thinkingLevelOverrideRef = useRef<ThinkingLevelOption | null>(null);
   const pendingThinkingChangeRef = useRef<Promise<void> | null>(null);
+  const toolPresetChangePendingRef = useRef(false);
   const pendingWorkModeChangeRef = useRef<Promise<void> | null>(null);
   const pendingGoalChangeRef = useRef<Promise<string> | null>(null);
   const workModeRef = useRef<{ sid: string; state: SessionWorkMode } | null>(null);
@@ -453,9 +455,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [loadGoal]);
 
   useLayoutEffect(() => {
-    if (!existingSessionId && (!isNew || sessionIdRef.current)) return;
+    if (!isNew || sessionIdRef.current) return;
     setToolPresetState(getPreferredToolPreset());
-  }, [existingSessionId, isNew, setToolPresetState]);
+  }, [isNew, setToolPresetState]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const container = scrollContainerRef.current;
@@ -1931,24 +1933,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice, currentModelOverride, isNew, loadSession, modelThinkingLevels, notifyThinkingFallback, thinkingLevel]);
 
-  const handleCompact = useCallback(async () => {
-    const sid = sessionIdRef.current;
-    if (!sid || isCompacting) return;
-    setIsCompacting(true);
-    setCompactError(null);
-    setCompactResult(null);
-    try {
-      const result = await sendAgentCommand<CompactCommandResult>(sid, { type: "compact" });
-      setCompactResult(readCompactResult(result, "manual"));
-      await loadSession(sid, true);
-    } catch (e) {
-      setCompactError(e instanceof Error ? e.message : String(e));
-      setCompactResult(null);
-    } finally {
-      setIsCompacting(false);
-    }
-  }, [isCompacting, loadSession]);
-
   const loadModels = useCallback(async (signal?: AbortSignal) => {
     const modelCwd = newSessionCwd ?? session?.cwd ?? "";
     const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
@@ -2263,13 +2247,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [composerWorkMode, ensureNewSession, goalsEnabled, handleSend, handleWorkModeChange, isNew, loadSession, promoteNewSession, sessionGoal?.revision, t, updateGoalState]);
 
   const handleToolPresetChange = useCallback(async (preset: ToolPreset) => {
-    const toolNames = getToolNamesForPreset(preset);
-    setPreferredToolPreset(preset);
-    setToolPresetState(preset);
-    const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
-    if (!sid) return;
+    if (toolPresetChangePendingRef.current || agentRunningRef.current || bashRunningRef.current || isCompacting) return;
+    toolPresetChangePendingRef.current = true;
+    setToolPresetChanging(true);
     try {
-      const result = await sendAgentCommand<{ sessionId?: string; recreated?: boolean }>(sid, { type: "set_tools", toolNames });
+      const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
+      const result = sid ? await sendAgentCommand<{ sessionId?: string; recreated?: boolean }>(sid, {
+        type: "set_tools",
+        toolNames: getToolNamesForPreset(preset),
+      }) : null;
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
+      setPreferredToolPreset(preset);
+      setToolPresetState(preset);
+      if (!sid) return;
       const activeSessionId = result?.sessionId ?? sid;
       if (activeSessionId !== sid || result?.recreated) {
         cancelEventStreamGrace();
@@ -2283,17 +2274,24 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setExtensionStatuses([]);
       setExtensionWidgets([]);
       const [state] = await Promise.all([
-        sendAgentCommand<AgentStateResponse>(activeSessionId, { type: "get_state" }),
+        sendAgentCommand<AgentStateResponse>(activeSessionId, { type: "get_state" }).catch((error) => {
+          console.error("Failed to refresh state after changing tools:", error);
+          return null;
+        }),
         loadTools(activeSessionId),
       ]);
-      if (sessionHookMountedRef.current && sessionIdRef.current === activeSessionId) {
+      if (state && sessionHookMountedRef.current && sessionIdRef.current === activeSessionId) {
         setSystemPrompt(state.systemPrompt ?? "");
         syncLiveModel(state);
       }
     } catch (e) {
       console.error("Failed to set tools:", e);
+      if (sessionHookMountedRef.current) addNotice({ type: "error", message: t("tools.presetChangeFailed") });
+    } finally {
+      toolPresetChangePendingRef.current = false;
+      if (sessionHookMountedRef.current) setToolPresetChanging(false);
     }
-  }, [cancelEventStreamGrace, closeEvents, loadTools, maintainEventsConnected, setToolPresetState, syncLiveModel]);
+  }, [addNotice, cancelEventStreamGrace, closeEvents, isCompacting, loadTools, maintainEventsConnected, setToolPresetState, syncLiveModel, t]);
 
   const scrollToMessage = useCallback((element: HTMLElement, viewportOffset = 16) => {
     const container = scrollContainerRef.current;
@@ -2570,7 +2568,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   return {
     // State
     data, loading, error, activeLeafId, messages, activeToolResults, liveSubagents, entryIds, historyCursor, hasEarlierMessages, streamState,
-    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel, subagentModeUnavailable,
+    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, toolPresetChanging, thinkingLevel, subagentModeUnavailable,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, availableTools, queuedMessages,
@@ -2588,7 +2586,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     lastUserMsgRef, pendingScrollToUserRef, initialScrollDoneRef,
     // Actions
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
-    handleCompact, handleFollowUp, handleAbortCompaction,
+    handleFollowUp, handleAbortCompaction,
     handleQueueAction,
     handleBuiltinSlashCommand,
     setNoticePaused: setPausedNoticeId,
