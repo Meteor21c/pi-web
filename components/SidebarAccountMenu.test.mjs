@@ -11,8 +11,9 @@ test("places a real local-service restart action below the account trigger", () 
   assert.match(source, /window\.confirm\(t\("restart\.confirm"\)\)/);
 });
 
-test("keeps restart inside the expanded account menu", () => {
-  assert.match(source, /\{open && \([\s\S]*?className=\{styles\.popover\}[\s\S]*?RestartLocalServiceButton \/>[\s\S]*?\)\}/);
+test("keeps the restart poll mounted when the account menu closes", () => {
+  assert.match(source, /className=\{styles\.popover\} hidden=\{!open\}[\s\S]*?<RestartLocalServiceButton visible=\{open\} \/>/);
+  assert.match(source, /healthAbortRef\.current\?\.abort\(\);[\s\S]*?\}, \[\]\);/);
   const triggerTail = source.slice(source.indexOf("aria-haspopup=\"menu\""));
   assert.doesNotMatch(triggerTail.split("    </div>", 1)[0], /RestartLocalServiceButton/);
 });

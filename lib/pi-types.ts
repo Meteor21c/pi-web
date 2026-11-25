@@ -7,6 +7,7 @@ import type {
   SlashCommandInfo,
   SourceInfo,
   Theme,
+  ToolExposure,
 } from "@earendil-works/pi-coding-agent";
 import type {
   AgentLoopTurnUpdate,
@@ -40,6 +41,7 @@ export interface ToolInfo {
   parameters?: unknown;
   promptGuidelines?: string[];
   sourceInfo?: SourceInfo;
+  exposure?: ToolExposure;
 }
 
 export interface NavigateTreeResult {

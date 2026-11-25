@@ -78,6 +78,7 @@ interface Props {
   subagentMode?: SubagentMode;
   onSubagentModeChange?: (mode: SubagentMode) => void;
   subagentModeDisabled?: boolean;
+  subagentModeDialog?: React.ReactNode;
   showWorkMode?: boolean;
   workModeDisabled?: boolean;
   messagePlaceholder?: string;
@@ -693,7 +694,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   compactError, compactResult,
   workMode, pendingWorkMode, showWorkMode, workModeDisabled, onNewWorkModeChanged, onSessionWorkModeChange, onResolvedWorkMode,
   messagePlaceholder, approvalPolicyControl,
-  subagentMode, onSubagentModeChange, subagentModeDisabled,
+  subagentMode, onSubagentModeChange, subagentModeDisabled, subagentModeDialog,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap,
   retryInfo, queuedMessages, inputHistory = [], onQueueAction,
   slashCommands, slashCommandsLoading, availableTools, onLoadSlashCommands,
@@ -2689,20 +2690,22 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {onSubagentModeChange && (
               <label className="chat-subagent-mode" title={t(subagentModeDisabled
                 ? "chat.subagentModeUnavailable"
-                : `chat.subagentModeHint.${subagentMode ?? DEFAULT_SUBAGENT_MODE}`)}>
+                : subagentModeDialog ? "chat.subagentModeNeedsTools"
+                  : `chat.subagentModeHint.${subagentMode ?? DEFAULT_SUBAGENT_MODE}`)}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <rect x="5" y="7" width="14" height="11" rx="2" /><path d="M9 11h.01M15 11h.01M9 15h6M12 7V4M10 4h4" />
                 </svg>
                 <select
                   aria-label={t("chat.subagentMode")}
                   disabled={subagentModeDisabled || isStreaming}
-                  value={subagentModeDisabled ? "off" : subagentMode ?? DEFAULT_SUBAGENT_MODE}
-                  onChange={(event) => onSubagentModeChange(event.target.value as SubagentMode)}
+                  value={subagentMode ?? DEFAULT_SUBAGENT_MODE}
+                  onChange={(event) => onSubagentModeChange(event.currentTarget.value as SubagentMode)}
                 >
                   {SUBAGENT_MODES.map((mode) => <option key={mode} value={mode}>{t(`chat.subagentMode.${mode}`)}</option>)}
                 </select>
               </label>
             )}
+            {subagentModeDialog}
             {/* Model selector - visible always, disabled while the session or switch is busy */}
             {(modelOptions.length > 0 || model || modelError) && onModelChange && (
               <ModelSelector

@@ -19,14 +19,12 @@ test("uses the shared enabled status treatment", () => {
   assert.match(cssSource, /\.config-sidebar-text\.is-muted \{[\s\S]*?color: var\(--text-dim\)/);
 });
 
-test("offers a persisted built-in sub-agent switch with explicit session reload", () => {
+test("keeps the integration default and concurrency setting in sub-agent settings", () => {
   assert.match(source, /fetch\("\/api\/subagents\/settings"/);
   assert.match(source, /JSON\.stringify\(\{ enabled \}\)/);
-  assert.match(source, /<ConfigSwitch[\s\S]*?checked=\{builtInEnabled\}[\s\S]*?t\("agents\.builtInTitle"\)/);
-  assert.match(source, /sendAgentCommand\(sessionId, \{ type: "reload" \}\)/);
-  assert.match(source, /reloadNeeded && sessionId/);
+  assert.match(source, /<ConfigSwitch[\s\S]*?checked=\{builtInEnabled\}[\s\S]*?label=\{t\("agents\.builtInTitle"\)\}/);
   assert.match(source, /className="agents-concurrency-control"[\s\S]*?t\("agents\.maxConcurrent"\)/);
-  assert.equal((source.match(/className="agents-feature-setting"/g) ?? []).length, 1);
+  assert.equal((source.match(/className="agents-feature-setting"/g) ?? []).length, 2);
   assert.match(cssSource, /\.agents-feature-setting \{[\s\S]*?border-bottom: 1px solid var\(--border\)/);
   assert.match(cssSource, /\.agents-concurrency-control \{[\s\S]*?white-space: nowrap;/);
 });

@@ -10,6 +10,7 @@ import {
   type SessionPluginScope,
   type SessionPluginSelection,
 } from "./session-plugin-selection";
+import { BUILTIN_PLUGIN_DEFINITIONS, sameNpmPackageSource } from "./builtin-plugin-definitions";
 
 export type PluginActivationMode = "global" | "session";
 export type PluginPackageScope = "global" | "project";
@@ -96,7 +97,7 @@ function restoreDisabledPackage(entry: PackageSource): PackageSource {
 /**
  * Set the package's persisted activation policy. Returns false when the exact
  * source/scope is not configured. Session mode deliberately makes a package
- * available to the runtime (while the session snapshot still defaults it off)
+ * available to the runtime (while the session snapshot supplies its selection)
  * so a user can subsequently enable it for a selected conversation.
  */
 export function setPluginActivationMode(
@@ -161,21 +162,47 @@ function packageKey(source: string, scope: PluginPackageScope): string {
   return selectionKey(source, scope as SessionPluginScope);
 }
 
-function readSelectionSet(sessionManager: Pick<SessionManager, "getEntries">): Map<string, boolean> {
-  const selection = readSessionPluginSelection(sessionManager.getEntries() as never);
+export function readSessionPluginSelections(
+  sessionManager: Pick<SessionManager, "getEntries"> | null,
+): Map<string, boolean> {
+  const selection = sessionManager ? readSessionPluginSelection(sessionManager.getEntries() as never) : undefined;
   return new Map((selection ?? []).map((plugin) => [packageKey(plugin.source, plugin.scope), plugin.enabled]));
+}
+
+export function sessionPluginEnabledByDefault(source: string, scope: PluginPackageScope): boolean {
+  return scope === "global" && BUILTIN_PLUGIN_DEFINITIONS.some((definition) => (
+    "defaultSessionEnabled" in definition && definition.defaultSessionEnabled
+      && sameNpmPackageSource(definition.source, source)
+  ));
+}
+
+export function getSessionPluginEnabled(
+  selected: ReadonlyMap<string, boolean>,
+  source: string,
+  scope: PluginPackageScope,
+  useStarterDefaults = true,
+): boolean {
+  return selected.get(packageKey(source, scope))
+    ?? (useStarterDefaults && sessionPluginEnabledByDefault(source, scope));
+}
+
+interface SessionPluginSettingsOptions {
+  useStarterDefaults?: boolean;
+  onlyStarterDefaults?: boolean;
 }
 
 function filterPackageSettings(
   settings: ReturnType<SettingsManager["getGlobalSettings"]>,
   scope: PluginPackageScope,
   selected: Map<string, boolean>,
+  options: SessionPluginSettingsOptions,
 ): ReturnType<SettingsManager["getGlobalSettings"]> {
   if (!settings.packages?.length) return settings;
   const packages = settings.packages.map((entry) => {
     if (getPluginActivationMode(entry) !== "session") return entry;
     const source = getPluginPackageSource(entry);
-    return selected.get(packageKey(source, scope)) === true
+    if (options.onlyStarterDefaults && !sessionPluginEnabledByDefault(source, scope)) return entry;
+    return getSessionPluginEnabled(selected, source, scope, options.useStarterDefaults)
       ? entry
       : makePackageDisabled(entry);
   });
@@ -193,6 +220,7 @@ function filterPackageSettings(
 export function createSessionScopedSettingsManager(
   settingsManager: SettingsManager,
   sessionManager: Pick<SessionManager, "getEntries">,
+  options: SessionPluginSettingsOptions = {},
 ): SettingsManager {
   return new Proxy(settingsManager, {
     get(target, property) {
@@ -200,14 +228,16 @@ export function createSessionScopedSettingsManager(
         return () => filterPackageSettings(
           target.getGlobalSettings(),
           "global",
-          readSelectionSet(sessionManager),
+          readSessionPluginSelections(sessionManager),
+          options,
         );
       }
       if (property === "getProjectSettings") {
         return () => filterPackageSettings(
           target.getProjectSettings(),
           "project",
-          readSelectionSet(sessionManager),
+          readSessionPluginSelections(sessionManager),
+          options,
         );
       }
       const value = Reflect.get(target, property, target);
@@ -217,14 +247,6 @@ export function createSessionScopedSettingsManager(
       return typeof value === "function" ? value.bind(target) : value;
     },
   }) as SettingsManager;
-}
-
-export function getSessionPluginEnabled(
-  sessionManager: Pick<SessionManager, "getEntries">,
-  source: string,
-  scope: PluginPackageScope,
-): boolean {
-  return readSelectionSet(sessionManager).get(packageKey(source, scope)) === true;
 }
 
 export function updateSessionPluginSelection(

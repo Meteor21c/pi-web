@@ -1,6 +1,6 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, CustomMessage, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
@@ -21,6 +21,7 @@ import { divideByUiScale } from "@/lib/ui-scale";
 import { MarkdownBody } from "./MarkdownBody";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ApprovalPolicySelector } from "./ApprovalPolicySelector";
+import approvalStyles from "./ApprovalPolicySelector.module.css";
 import { SessionGoalTracker } from "./SessionGoalTracker";
 import { UserQuestionDialog } from "./UserQuestionDialog";
 import { CHAT_MINIMAP_WIDTH, ChatMinimap, useMessageRefs } from "./ChatMinimap";
@@ -59,6 +60,7 @@ interface Props {
   onSystemPromptChange?: (prompt: string | null) => void;
   onSystemToolsChange?: (tools: ToolEntry[] | null) => void;
   onToolPresetControlChange?: (control: ToolPresetControl | null) => void;
+  onSessionReloadControlChange?: (control: SessionReloadControl | null) => void;
   onSystemInfoLoaderChange?: (loader: (() => Promise<void>) | null) => void;
   onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
   onSessionStatsPanelOpen?: () => void;
@@ -77,6 +79,13 @@ interface Props {
   onSoundToggle?: () => void;
   playDoneSound?: () => void;
   unlockAudio?: () => void;
+}
+
+export interface SessionReloadControl {
+  sessionId: string;
+  busy: boolean;
+  disabled: boolean;
+  reload: () => Promise<void>;
 }
 
 function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
@@ -322,14 +331,19 @@ function TurnLabels({ message, modelNames, modeLabel }: {
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onToolPresetControlChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onToolPresetControlChange, onSessionReloadControlChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const showMinimapRail = !previewOnly && !isMobile;
   const completionNotificationsEnabled = !previewOnly && session?.relation?.kind !== "subagent";
   const [subagentMode, setSubagentMode] = useState<SubagentMode>(DEFAULT_SUBAGENT_MODE);
+  const subagentToolsDialog = useRef<HTMLDialogElement>(null);
+  const subagentToolsMessageId = useId();
+  const [subagentModeToEnable, setSubagentModeToEnable] = useState<SubagentMode>("auto");
   const [composerWorkMode, setComposerWorkMode] = useState<WorkMode>("auto");
   const [computerUseApprovalPolicy, setComputerUseApprovalPolicy] = useState<ComputerUseApprovalPolicy | null>(null);
+  const [sessionReloading, setSessionReloading] = useState(false);
+  const reloadInProgressRef = useRef(false);
   useEffect(() => {
     setComputerUseApprovalPolicy(readPreferredApprovalPolicy());
   }, []);
@@ -363,7 +377,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
   const {
-    data, loading, error, messages, activeToolResults, liveSubagents, entryIds, historyCursor, hasEarlierMessages, streamState, subagentModeUnavailable,
+    data, loading, error, messages, activeToolResults, liveSubagents, entryIds, historyCursor, hasEarlierMessages, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, toolPresetChanging, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -492,7 +506,44 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const stoppingCompaction = isCompacting && !sessionBusy;
   const stopRun = stoppingCompaction ? handleAbortCompaction : handleAbort;
   const hasToolPresetControl = completionNotificationsEnabled && (isNew || Boolean(session));
-  const toolPresetDisabled = loading || Boolean(error) || composerBusy || toolPresetChanging;
+  const limitedTools = toolPreset === "none" || toolPreset === "read-only";
+  const planMode = (data?.pendingWorkMode ?? data?.workMode ?? composerWorkMode) === "plan";
+  const toolPresetDisabled = loading || Boolean(error) || composerBusy || toolPresetChanging || sessionReloading;
+  const reloadDisabled = toolPresetDisabled || Boolean(queuedMessages?.steering.length || queuedMessages?.followUp.length);
+  const handleSubagentModeChange = (mode: SubagentMode) => {
+    if (toolPresetDisabled || planMode) return;
+    if (limitedTools && mode !== "off") {
+      setSubagentModeToEnable(mode);
+      subagentToolsDialog.current?.showModal();
+      return;
+    }
+    setSubagentMode(mode);
+  };
+
+  const enableSubagentTools = async () => {
+    subagentToolsDialog.current?.close();
+    if (toolPresetDisabled || planMode) return;
+    if (await handleToolPresetChange("full", { remember: false })) setSubagentMode(subagentModeToEnable);
+  };
+
+  const reload = useCallback(async () => {
+    if (!persistedSessionId || reloadDisabled || reloadInProgressRef.current) return;
+    reloadInProgressRef.current = true;
+    setSessionReloading(true);
+    try {
+      await handleBuiltinSlashCommand("/reload");
+    } finally {
+      reloadInProgressRef.current = false;
+      setSessionReloading(false);
+    }
+  }, [handleBuiltinSlashCommand, persistedSessionId, reloadDisabled]);
+
+  useEffect(() => {
+    onSessionReloadControlChange?.(completionNotificationsEnabled && persistedSessionId
+      ? { sessionId: persistedSessionId, busy: sessionReloading, disabled: reloadDisabled, reload }
+      : null);
+  }, [completionNotificationsEnabled, onSessionReloadControlChange, persistedSessionId, reload, reloadDisabled, sessionReloading]);
+  useEffect(() => () => onSessionReloadControlChange?.(null), [onSessionReloadControlChange]);
 
   useEffect(() => {
     onToolPresetControlChange?.(hasToolPresetControl
@@ -1146,7 +1197,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       stopLabel={stoppingCompaction ? t("chat.stopCompaction") : undefined}
       onFollowUp={agentRunning ? handleFollowUp : undefined}
       isStreaming={composerBusy}
-      submissionDisabled={toolPresetChanging}
+      submissionDisabled={toolPresetChanging || sessionReloading}
       model={displayModelValue}
       isAutoModelSelection={isAutoModelSelection}
       modelNames={modelNames}
@@ -1173,17 +1224,33 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       workModeDisabled={previewOnly || session?.relation?.kind === "subagent"}
       messagePlaceholder={goalFollowUp ? t("chat.goal.followUpPlaceholder") : undefined}
       approvalPolicyControl={completionNotificationsEnabled && <ApprovalPolicySelector
-        policy={subagentModeUnavailable ? "ask" : computerUseApprovalPolicy ?? "ask"}
+        policy={computerUseApprovalPolicy ?? "ask"}
         currentRunPolicy={sessionBusy ? activeComputerUseApprovalPolicy ?? "ask" : undefined}
         onChange={(policy) => {
           savePreferredApprovalPolicy(policy);
           setComputerUseApprovalPolicy(policy);
         }}
-        disabled={subagentModeUnavailable || computerUseApprovalPolicy === null}
+        disabled={computerUseApprovalPolicy === null}
+        limited={limitedTools || planMode}
       />}
-      subagentMode={subagentMode}
-      onSubagentModeChange={session?.relation?.kind === "subagent" ? undefined : setSubagentMode}
-      subagentModeDisabled={subagentModeUnavailable}
+      subagentMode={limitedTools || planMode ? "off" : subagentMode}
+      onSubagentModeChange={completionNotificationsEnabled ? handleSubagentModeChange : undefined}
+      subagentModeDisabled={planMode || toolPresetDisabled}
+      subagentModeDialog={completionNotificationsEnabled && limitedTools && (
+        <dialog
+          ref={subagentToolsDialog}
+          className={approvalStyles.warning}
+          aria-label={t("chat.subagentMode")}
+          aria-describedby={subagentToolsMessageId}
+          onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}
+        >
+          <p id={subagentToolsMessageId} className={approvalStyles.warningText}>{t("chat.subagentEnableTools")}</p>
+          <div className={approvalStyles.actions}>
+            <button type="button" autoFocus onClick={() => subagentToolsDialog.current?.close()}>{t("chat.cancel")}</button>
+            <button type="button" disabled={toolPresetDisabled || planMode} onClick={() => void enableSubagentTools()}>{t("chat.confirm")}</button>
+          </div>
+        </dialog>
+      )}
       onSessionWorkModeChange={!isNew ? handleWorkModeChange : undefined}
       onNewWorkModeChanged={isNew ? async () => {
         const sid = sessionIdRef.current;

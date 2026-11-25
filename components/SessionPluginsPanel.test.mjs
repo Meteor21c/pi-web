@@ -18,8 +18,8 @@ test("persists a session selection and requires an explicit reload", () => {
   assert.match(source, /重载会话后才会生效/);
 });
 
-test("explains that a new conversation starts with local plugins off", () => {
-  assert.match(source, /局部插件在新会话中默认关闭/);
-  assert.match(source, /Per-session plugins start off in new sessions/);
+test("explains the Computer Use default while keeping per-session choices editable", () => {
+  assert.match(source, /电脑操作默认开启/);
+  assert.match(source, /Computer Use starts on by default/);
   assert.match(source, /disabled=\{!sessionId \|\| busy\}/);
 });

@@ -47,7 +47,7 @@ The final `customer-release.<version>.*` directory must contain only:
 - `README-client.txt`
 - `SHA256SUMS`
 
-The `.tgz` is portable. The launchers are separated because Windows uses BAT/PowerShell/VBS/ICO while macOS uses an app bundle/ICNS and has different unsigned-app instructions. Both support x64 and ARM64 through the customer's installed Node.js runtime.
+The `.tgz` is portable. The Windows archive exposes the `【点我启动】MeteorAgent.bat` entrypoint and the guide, with its install scripts and icon under `launcher-files/`. Successful startup creates a branded desktop shortcut. macOS uses an app bundle and an ICNS icon. Both launchers support x64 and ARM64 through the customer's installed Node.js runtime.
 
 Starting with v0.1.6, a launcher/global-CLI installation also enables the in-app updater. MeteorAgent reads release notes and integrity metadata from `latest.json`, downloads the exact versioned tarball, verifies its declared size and SHA-256, creates a local rollback package, then replaces and restarts the service. Account credentials, sessions, plugin settings, project files, and browser drafts live outside the application package and are not replaced.
 

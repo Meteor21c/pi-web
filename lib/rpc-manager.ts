@@ -315,11 +315,18 @@ function withExtensionTools(session: AgentSessionLike, toolNames: string[]): str
   if (toolNames.length === 0) return [];
 
   const codingToolNames = new Set(CODING_TOOL_NAMES);
+  const readOnly = getPresetFromToolNames(toolNames) === "read-only";
+  const activeTools = new Set(session.getActiveToolNames());
   const selectedToolNames = resolveShellTools(toolNames, session.settingsManager.getDefaultTools());
   const extensionToolNames = session
     .getAllTools()
-    .map((t) => t.name)
-    .filter((name) => !codingToolNames.has(name));
+    .filter(({ name, exposure }) => {
+      if (codingToolNames.has(name)) return false;
+      if (!name.startsWith("computer_use_")) return true;
+      // Preserve the plugin's deferred groups when we reapply a tool preset.
+      return !readOnly && (exposure !== "deferred" || activeTools.has(name));
+    })
+    .map(({ name }) => name);
 
   return [...new Set([...selectedToolNames, ...extensionToolNames])];
 }
@@ -346,6 +353,7 @@ export class AgentSessionWrapper {
   private extensionWidgetGenerations = new Map<string, number>();
   private extensionWidgetsResetting = false;
   private pendingPromptCount = 0;
+  private reloadingResources = false;
   private activeMutatingCommands = 0;
   private sessionReplacement: "fork" | "clone" | null = null;
   private agentRunNeedsCompletion = false;
@@ -428,7 +436,8 @@ export class AgentSessionWrapper {
   }
 
   isRunning(): boolean {
-    return this._alive && (this.pendingPromptCount > 0 || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning);
+    return this._alive && (this.reloadingResources || this.pendingPromptCount > 0
+      || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning);
   }
 
   isChatOnly(): boolean {
@@ -1296,6 +1305,10 @@ export class AgentSessionWrapper {
     if (this.workModeState.workMode === "plan" && !this.allowedPlanTools().has(name)) {
       return { block: true, reason: "计划模式只允许读取、搜索和向用户提问。要执行操作，请切换到自动或目标模式后再发送新消息。" };
     }
+    if (name.startsWith("computer_use_")
+      && getPresetFromToolNames(this.configuredToolNames ?? this.inner.getActiveToolNames?.() ?? []) === "read-only") {
+      return { block: true, reason: "只读工具预设不允许电脑操作。" };
+    }
     if (SUBAGENT_CONTROL_TOOLS.has(name) && this.effectiveSubagentMode() === "off") {
       return { block: true, reason: "Subagents are disabled for this task." };
     }
@@ -1506,6 +1519,9 @@ export class AgentSessionWrapper {
   async send(command: Record<string, unknown>): Promise<unknown> {
     const type = command.type as string;
     const allowedDuringReplacement = COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT.has(type);
+    if (this.reloadingResources && !allowedDuringReplacement) {
+      throw new Error("会话正在重新加载，请稍后再试。");
+    }
     if (this.sessionReplacement && !allowedDuringReplacement) {
       throw new Error("Session is being copied to a new session");
     }
@@ -2036,29 +2052,36 @@ export class AgentSessionWrapper {
       }
 
       case "reload": {
-        return withRelayImageGenerationSession(this.inner.sessionManager, async () => {
-          this.computerUseApprovalRun = undefined;
-          if (this.extensionUiAbortController.signal.aborted) {
-            this.extensionUiAbortController = new AbortController();
-          }
-          const activeToolNames = [...(this.configuredToolNames ?? this.inner.getActiveToolNames())];
-          await this.waitForExtensionsBound();
-          this.extensionStatuses.clear();
-          this.resetExtensionWidgetsForReload();
-          // Plugin mode changes are persisted outside this runtime. Refresh the
-          // settings snapshot before ResourceLoader resolves packages so the
-          // session-local filter sees the latest mode and package list.
-          await this.inner.settingsManager.reload?.();
-          this.syncProjectTrust();
-          await this.inner.reload();
-          this.autoApprovedLaunches.clear();
-          this.setActiveToolSelection(activeToolNames, this.useDefaultPlanTools);
-          if (typeof this.inner.bindExtensions !== "function") {
-            this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
-          }
-          invalidateModelsCache();
-          return { success: true };
-        });
+        if (this.isSessionRunningForReplacement() || this.activeMutatingCommands > 1 || this.hasQueuedUserMessages()) {
+          throw new Error("请等当前任务和排队消息处理完毕后再重新加载会话。");
+        }
+        this.reloadingResources = true;
+        try {
+          return await withRelayImageGenerationSession(this.inner.sessionManager, async () => {
+            this.computerUseApprovalRun = undefined;
+            if (this.extensionUiAbortController.signal.aborted) {
+              this.extensionUiAbortController = new AbortController();
+            }
+            await this.waitForExtensionsBound();
+            const activeToolNames = [...(this.configuredToolNames ?? this.inner.getActiveToolNames())];
+            this.extensionStatuses.clear();
+            this.resetExtensionWidgetsForReload();
+            // Refresh the package settings before ResourceLoader resolves packages.
+            await this.inner.settingsManager.reload?.();
+            this.syncProjectTrust();
+            await this.inner.reload();
+            this.autoApprovedLaunches.clear();
+            this.setActiveToolSelection(activeToolNames, this.useDefaultPlanTools);
+            if (typeof this.inner.bindExtensions !== "function") {
+              this.inner.extensionRunner.setUIContext?.(this.createExtensionUiContext(), "rpc");
+            }
+            invalidateModelsCache();
+            return { success: true };
+          });
+        } finally {
+          this.reloadingResources = false;
+          this.resetIdleTimer();
+        }
       }
 
       case "abort_compaction": {
@@ -3243,7 +3266,9 @@ export async function startRpcSession(
     // Session-mode packages must be excluded before the SDK evaluates any
     // extension module. A dynamic settings view lets a normal reload observe
     // the latest session snapshot without hot-unloading the live runner.
-    const settingsManager = createSessionScopedSettingsManager(baseSettingsManager, sessionManager);
+    const settingsManager = createSessionScopedSettingsManager(baseSettingsManager, sessionManager, {
+      useStarterDefaults: !subagentResources,
+    });
     const services = await createAgentSessionServices({
       cwd: sessionCwd,
       agentDir,

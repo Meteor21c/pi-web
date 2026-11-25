@@ -13,6 +13,12 @@ read-only mode, and child sessions cannot delegate. Requests without a mode
 use the legacy `builtInEnabled` setting in `~/.pi/agent/agents/settings.json` to
 determine whether Auto delegation is available.
 
+In an existing Chat-only or read-only conversation, choosing Auto or On in the
+composer asks whether to enable Full tools for that conversation. The user's
+default for new conversations is retained. Plan mode continues to restrict
+delegation. The approval selector records its own preference, which the runtime
+applies only on eligible tasks.
+
 An ordinary delegation can omit its profile. Built-in profiles default to
 background execution, use the parent's model by default, and have access only
 to tools the parent can use. The parent can work on another part of the task

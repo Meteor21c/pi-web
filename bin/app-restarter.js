@@ -93,31 +93,19 @@ function unloadLaunchAgent() {
   return result.status === 0;
 }
 
-function stopProcessTree(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 1) return;
-  if (process.platform === "win32") {
-    const result = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    log(`taskkill ${pid}: ${result.status}`);
-    return;
-  }
-  try {
-    process.kill(pid, "SIGTERM");
-    log(`sent SIGTERM to ${pid}`);
-  } catch (error) {
-    log(`process ${pid} already stopped: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
 function stopOldService() {
   const launchdWasUnloaded = unloadLaunchAgent();
-  // The launcher forwards SIGTERM to its Next child on POSIX. The explicit
-  // server PID is still included for crash/partial-start cases. On Windows a
-  // taskkill tree handles both the launcher and its child reliably.
-  const pids = [...new Set([payload.launcherPid, payload.serverPid])];
-  for (const pid of pids) stopProcessTree(pid);
+  // The detached helper still belongs to the old launcher tree on Windows.
+  // Signal the two validated PIDs individually so the helper survives.
+  for (const pid of new Set([payload.launcherPid, payload.serverPid])) {
+    try {
+      process.kill(pid, "SIGTERM");
+      log(`sent SIGTERM to ${pid}`);
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+      log(`process ${pid} already stopped`);
+    }
+  }
   return launchdWasUnloaded;
 }
 

@@ -15,7 +15,7 @@ interface Props {
 export interface ToolPresetControl {
   value: ToolPreset;
   disabled: boolean;
-  onChange: (preset: ToolPreset) => Promise<void>;
+  onChange: (preset: ToolPreset) => Promise<boolean>;
 }
 
 const PRESET_LABELS: Record<ToolPreset, string> = {

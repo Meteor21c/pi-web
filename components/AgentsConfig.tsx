@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { SubagentProfilesResponse, SubagentSettingsResponse } from "@/lib/api-types";
-import { sendAgentCommand } from "@/lib/agent-client";
 import type { ModelsData } from "@/lib/models-cache";
 import { isSubagentProfileOverridden } from "@/lib/subagent-profile-precedence";
 import { DEFAULT_SUBAGENT_MAX_CONCURRENT, MAX_SUBAGENT_MAX_CONCURRENT } from "@/lib/subagent-mode";
@@ -141,15 +140,11 @@ function Toggle({ checked, disabled, label, onChange }: { checked: boolean; disa
 
 export function AgentsConfig({
   cwd,
-  sessionId = null,
   onClose,
-  onReloaded,
   embedded = false,
 }: {
   cwd: string;
-  sessionId?: string | null;
   onClose: () => void;
-  onReloaded?: () => void;
   embedded?: boolean;
 }) {
   const isMobile = useIsMobile();
@@ -174,8 +169,6 @@ export function AgentsConfig({
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [reloadNeeded, setReloadNeeded] = useState(false);
-  const [reloading, setReloading] = useState(false);
 
   const selected = useMemo(
     () => profiles.find((profile) => profileKey(profile) === selectedKey) ?? null,
@@ -422,7 +415,6 @@ export function AgentsConfig({
         throw new Error(data.error ?? `HTTP ${response.status}`);
       }
       setBuiltInEnabled(data.enabled);
-      setReloadNeeded(Boolean(sessionId));
     } catch (cause) {
       setSettingsError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -453,21 +445,6 @@ export function AgentsConfig({
       setSettingsError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSettingsSaving(false);
-    }
-  };
-
-  const reloadSession = async () => {
-    if (!sessionId) return;
-    setReloading(true);
-    setSettingsError(null);
-    try {
-      await sendAgentCommand(sessionId, { type: "reload" });
-      setReloadNeeded(false);
-      onReloaded?.();
-    } catch (cause) {
-      setSettingsError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setReloading(false);
     }
   };
 
@@ -502,17 +479,11 @@ export function AgentsConfig({
         <div className="agents-feature-copy">
           <strong>{t("agents.builtInTitle")}</strong>
           <span>{t("agents.builtInDescription")}</span>
-          {reloadNeeded && <span role="status" className="agents-feature-reload-notice">{t("agents.reloadRequired")}</span>}
         </div>
         <div className="agents-feature-actions">
-          {reloadNeeded && sessionId && (
-            <ConfigButton size="small" onClick={() => void reloadSession()} disabled={reloading || settingsSaving}>
-              {reloading ? t("agents.reloading") : t("agents.reloadSession")}
-            </ConfigButton>
-          )}
           <ConfigSwitch
             checked={builtInEnabled}
-            disabled={settingsLoading || reloading}
+            disabled={settingsLoading}
             loading={settingsSaving}
             label={t("agents.builtInTitle")}
             onChange={(enabled) => void toggleBuiltInSubagents(enabled)}

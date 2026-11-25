@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createJiti } from "jiti";
 
 const root = await mkdtemp(join(tmpdir(), "pi-web-plugin-route-"));
@@ -16,6 +17,8 @@ await writeFile(join(agentDir, "extensions", "rtk.ts"), "export default () => {}
 
 const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
 const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
+const { cacheSessionPath, persistPreparedSession } = await jiti.import("../../../lib/session-reader.ts");
+const { updateSessionPluginSelection } = await jiti.import("../../../lib/plugin-activation.ts");
 const { GET } = await jiti.import("./route.ts");
 const { POST: CHECK_POST } = await jiti.import("./check/route.ts");
 allowFileRoot(cwd);
@@ -55,7 +58,7 @@ test("plugin activation/session routes expose the reload-boundary contract", asy
   assert.match(sessionRoute, /Session cwd mismatch/);
   assert.match(sessionRoute, /updateSessionPluginSelection/);
   assert.match(sessionRoute, /plugins: pluginState/);
-  assert.match(rpcSource, /createSessionScopedSettingsManager\(baseSettingsManager, sessionManager\)/);
+  assert.match(rpcSource, /createSessionScopedSettingsManager\(baseSettingsManager, sessionManager, \{\s*useStarterDefaults: !subagentResources,/);
   assert.match(rpcSource, /await this\.inner\.settingsManager\.reload\?\.\(\)/);
   assert.match(rpcSource, /await this\.inner\.reload\(\)/);
 });
@@ -90,4 +93,44 @@ test("plugin update checks require a trusted JSON API request", async () => {
   }));
   assert.equal(wrongType.status, 415);
   assert.deepEqual(await wrongType.json(), { error: "Content-Type must be application/json" });
+});
+
+test("plugin listing shows the Computer Use default, a saved opt-out, and a child session's restricted default", async () => {
+  const source = "npm:@amaster.ai/pi-computer-use";
+  const packageDir = join(agentDir, "npm", "node_modules", "@amaster.ai", "pi-computer-use");
+  const sessionsDir = join(agentDir, "sessions");
+  await mkdir(packageDir, { recursive: true });
+  await mkdir(sessionsDir);
+  await writeFile(join(packageDir, "package.json"), JSON.stringify({ name: "@amaster.ai/pi-computer-use", version: "0.1.17" }));
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [{ source, activationMode: "session" }] }));
+
+  const normal = SessionManager.create(cwd, sessionsDir);
+  const normalFile = persistPreparedSession(normal);
+  assert.ok(normalFile);
+  cacheSessionPath(normal.getSessionId(), normalFile);
+  const child = SessionManager.create(cwd, sessionsDir);
+  child.appendCustomEntry("pi-web:subagent", {
+    version: 1, parentSessionId: normal.getSessionId(), parentSessionPath: normalFile,
+    resourceSnapshot: { version: 1, appendSystemPrompt: [], tools: ["read"], loadSkills: false, loadExtensions: true },
+  });
+  const childFile = persistPreparedSession(child);
+  assert.ok(childFile);
+  cacheSessionPath(child.getSessionId(), childFile);
+
+  async function getComputerUse(session) {
+    const query = new URLSearchParams({ cwd, sessionId: session.getSessionId() });
+    const response = await GET(new Request(`http://localhost/api/plugins?${query}`));
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    const pkg = body.packages.find((item) => item.source === source);
+    assert.ok(pkg);
+    assert.equal(pkg.activationMode, "session");
+    assert.equal(pkg.sessionDefaultEnabled, true);
+    return pkg;
+  }
+
+  assert.equal((await getComputerUse(normal)).effectiveEnabled, true);
+  assert.equal((await getComputerUse(child)).effectiveEnabled, false);
+  updateSessionPluginSelection(normal, source, "global", false);
+  assert.equal((await getComputerUse(normal)).effectiveEnabled, false);
 });

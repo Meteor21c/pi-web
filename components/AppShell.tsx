@@ -4,7 +4,7 @@ import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } fr
 import { useRouter, useSearchParams } from "next/navigation";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
-import { ChatWindow } from "./ChatWindow";
+import { ChatWindow, type SessionReloadControl } from "./ChatWindow";
 import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { FileViewer } from "./FileViewer";
 import { FileContextMenuProvider } from "./FileActions";
@@ -386,6 +386,7 @@ export function AppShell() {
   const [systemPrompt, setSystemPrompt] = useState<string | null>(null);
   const [systemTools, setSystemTools] = useState<ToolEntry[] | null>(null);
   const [toolPresetControl, setToolPresetControl] = useState<ToolPresetControl | null>(null);
+  const [sessionReloadControl, setSessionReloadControl] = useState<SessionReloadControl | null>(null);
   const [systemInfoLoading, setSystemInfoLoading] = useState(false);
   const systemInfoLoaderRef = useRef<(() => Promise<void>) | null>(null);
   const systemInfoLoadIdRef = useRef(0);
@@ -1385,6 +1386,8 @@ export function AppShell() {
 
   const renderChatToolbarActions = (mobile: boolean) => {
     if (!mobile && !showChat) return null;
+    const reloadControl = showChat && sessionReloadControl?.sessionId === selectedSession?.id ? sessionReloadControl : null;
+    const reloadLabel = translate(reloadControl?.busy ? "i18n.reloading" : "i18n.reloadSession");
     return (
       <div style={{ display: "flex", alignItems: "stretch", height: "100%" }}>
         {(() => {
@@ -1621,6 +1624,24 @@ export function AppShell() {
           </svg>
           {!mobile && <span>{translate("common.plugins")}</span>}
         </button>
+        {reloadControl && (
+          <button
+            type="button"
+            className="topbar-ios-button"
+            disabled={reloadControl.disabled || Boolean(selectedSession && runningSessionIds.has(selectedSession.id))}
+            aria-busy={reloadControl.busy}
+            aria-label={reloadLabel}
+            title={translate("chat.reloadSessionHint")}
+            onClick={() => void reloadControl.reload()}
+            style={mobile ? { width: TOP_BAR_ICON_BUTTON_SIZE, height: "100%", margin: 0, padding: 0, borderRadius: 0 } : undefined}
+            data-mobile-toolbar-action={mobile ? "reload" : undefined}
+          >
+            <svg className={reloadControl.busy ? "animate-spin" : undefined} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20 7v5h-5M4 17v-5h5m10.5 3a8 8 0 0 1-13.2 3.4L4 16m.5-7a8 8 0 0 1 13.2-3.4L20 8" />
+            </svg>
+            {!mobile && <span>{reloadLabel}</span>}
+          </button>
+        )}
       </div>
     );
   };
@@ -2405,6 +2426,7 @@ export function AppShell() {
               onSystemPromptChange={handleSystemPromptChange}
               onSystemToolsChange={handleSystemToolsChange}
               onToolPresetControlChange={setToolPresetControl}
+              onSessionReloadControlChange={setSessionReloadControl}
               onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
               onSessionStatsChange={handleSessionStatsChange}
               onSessionStatsPanelOpen={openSessionStatsPanel}

@@ -484,7 +484,7 @@ export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessi
             }}
           />)}
           {cwd && sectionHost("skills", <SkillsConfig embedded key={cwd} cwd={cwd} onClose={onClose} />)}
-          {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} sessionId={sessionId} onClose={onClose} onReloaded={onSessionReloaded} />)}
+          {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} onClose={onClose} />)}
           {cwd && sectionHost("plugins", <PluginsConfig embedded
             key={cwd}
             cwd={cwd}

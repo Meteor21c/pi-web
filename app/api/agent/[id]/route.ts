@@ -17,7 +17,7 @@ export async function POST(
   try {
     const body = await req.json() as { type: string; [key: string]: unknown };
     commandType = typeof body.type === "string" ? body.type : undefined;
-    if (commandType === "set_work_mode" || commandType === "extension_ui_response" || commandType === "extension_ui_input"
+    if (commandType === "set_work_mode" || commandType === "reload" || commandType === "extension_ui_response" || commandType === "extension_ui_input"
       || body.computerUseApprovalPolicy !== undefined) {
       if (!isApiRequestAllowed(req)) return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
       if (!hasJsonContentType(req)) return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });

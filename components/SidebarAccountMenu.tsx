@@ -79,15 +79,17 @@ function CheckForUpdatesButton() {
 
 type RestartUiPhase = "checking" | "ready" | "unsupported" | "restarting" | "error";
 
-function RestartLocalServiceButton() {
+function RestartLocalServiceButton({ visible }: { visible: boolean }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<AppRestartStatus | null>(null);
   const [phase, setPhase] = useState<RestartUiPhase>("checking");
   const [error, setError] = useState<string | null>(null);
   const healthTimerRef = useRef<number | null>(null);
+  const healthAbortRef = useRef<AbortController | null>(null);
   const baselineInstanceRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!visible) return;
     let disposed = false;
     let controller: AbortController | null = null;
 
@@ -120,33 +122,41 @@ function RestartLocalServiceButton() {
       disposed = true;
       controller?.abort();
       window.clearInterval(interval);
-      if (healthTimerRef.current !== null) window.clearTimeout(healthTimerRef.current);
     };
+  }, [visible]);
+
+  useEffect(() => () => {
+    healthAbortRef.current?.abort();
+    if (healthTimerRef.current !== null) window.clearTimeout(healthTimerRef.current);
   }, []);
 
   const pollUntilHealthy = () => {
+    const controller = new AbortController();
+    healthAbortRef.current = controller;
     let attempts = 0;
     let sawDisconnect = false;
     const check = async () => {
       attempts += 1;
       try {
-        const response = await fetch(`/api/relay-health?restart=${Date.now()}`, { cache: "no-store" });
+        const response = await fetch(`/api/relay-health?restart=${Date.now()}`, {
+          cache: "no-store", signal: controller.signal,
+        });
         if (!response.ok) throw new Error("offline");
         const health = await response.json() as { product?: string; status?: string; instanceId?: string };
-        const instanceChanged = Boolean(
-          baselineInstanceRef.current
-          && health.instanceId
-          && health.instanceId !== baselineInstanceRef.current,
-        );
+        if (controller.signal.aborted) return;
+        const recovered = baselineInstanceRef.current && health.instanceId
+          ? health.instanceId !== baselineInstanceRef.current
+          : sawDisconnect;
         if (
           health.product === "MeteorAgent"
           && health.status === "ok"
-          && (sawDisconnect || instanceChanged)
+          && recovered
         ) {
           window.location.reload();
           return;
         }
       } catch {
+        if (controller.signal.aborted) return;
         sawDisconnect = true;
       }
 
@@ -274,35 +284,33 @@ export function SidebarAccountMenu({
 
   return (
     <div ref={rootRef} className={styles.root}>
-      {open && (
-        <div role="menu" aria-label={t("settings.title")} className={styles.popover}>
-          {MENU_SECTIONS.map((item) => {
-            const disabled = item.requiresProject && !cwd;
-            const label = t(item.labelKey);
-            return (
-              <button
-                key={item.id}
-                type="button"
-                role="menuitem"
-                disabled={disabled}
-                title={disabled ? t("settings.projectRequired") : label}
-                className={styles.menuItem}
-                onClick={() => {
-                  setOpen(false);
-                  onSelectSection(item.id);
-                }}
-              >
-                <SettingsSectionIcon section={item.id} size={16} strokeWidth={1.8} />
-                <span>{label}</span>
-                {disabled && <span className={styles.menuHint}>{t("settings.projectRequired")}</span>}
-              </button>
-            );
-          })}
-          <div className={styles.menuDivider} role="separator" />
-          <CheckForUpdatesButton />
-          <RestartLocalServiceButton />
-        </div>
-      )}
+      <div role="menu" aria-label={t("settings.title")} className={styles.popover} hidden={!open}>
+        {MENU_SECTIONS.map((item) => {
+          const disabled = item.requiresProject && !cwd;
+          const label = t(item.labelKey);
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="menuitem"
+              disabled={disabled}
+              title={disabled ? t("settings.projectRequired") : label}
+              className={styles.menuItem}
+              onClick={() => {
+                setOpen(false);
+                onSelectSection(item.id);
+              }}
+            >
+              <SettingsSectionIcon section={item.id} size={16} strokeWidth={1.8} />
+              <span>{label}</span>
+              {disabled && <span className={styles.menuHint}>{t("settings.projectRequired")}</span>}
+            </button>
+          );
+        })}
+        <div className={styles.menuDivider} role="separator" />
+        {open && <CheckForUpdatesButton />}
+        <RestartLocalServiceButton visible={open} />
+      </div>
 
       <button
         type="button"

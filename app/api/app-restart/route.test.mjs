@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 
 const route = await readFile(new URL("./route.ts", import.meta.url), "utf8");
@@ -18,8 +19,22 @@ test("protects restart requests and derives targets from the current process", (
 test("hands restart to a detached cross-platform helper", () => {
   assert.match(manager, /detached: true/);
   assert.match(manager, /app-restarter\.js/);
-  assert.match(helper, /taskkill\.exe/);
   assert.match(helper, /launchctl/);
   assert.match(helper, /bin\", \"pi-web\.js/);
   assert.match(helper, /api\/relay-health/);
+});
+
+test("stops the old Windows launcher and server without killing their detached restarter", () => {
+  const stop = helper.slice(helper.indexOf("function stopOldService()"), helper.indexOf("function directStart()"));
+  const kills = [];
+  runInNewContext(`${stop}\nstopOldService();`, {
+    process: {
+      platform: "win32",
+      kill: (pid, signal) => kills.push([pid, signal]),
+    },
+    payload: { launcherPid: 123, serverPid: 456 },
+    unloadLaunchAgent: () => false,
+    log: () => {},
+  });
+  assert.deepEqual(kills, [[123, "SIGTERM"], [456, "SIGTERM"]]);
 });

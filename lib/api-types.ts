@@ -171,7 +171,9 @@ export interface PluginPackageInfo {
   activationMode: PluginActivationMode;
   /** Persisted package availability (the settings-level enable/disable state). */
   globalEnabled: boolean;
-  /** Selection for the requested session; local-mode packages default to false. */
+  /** Whether an ordinary new conversation selects this package in per-session mode. */
+  sessionDefaultEnabled?: boolean;
+  /** Effective selection for the requested conversation. */
   sessionEnabled: boolean;
   /** Whether the package will be loaded by the requested session after reload. */
   effectiveEnabled: boolean;

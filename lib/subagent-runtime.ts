@@ -39,6 +39,7 @@ import type { SessionEntry } from "./types";
 import { buildSubagentPromptPlan } from "./subagent-prompt";
 import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-input";
 import { projectTrustReloadOptions } from "./project-trust";
+import { createSessionScopedSettingsManager } from "./plugin-activation";
 import { resolveShellTools } from "./powershell-settings";
 import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
 import { MAX_SUBAGENT_MAX_CONCURRENT, type SubagentMode } from "./subagent-mode";
@@ -242,7 +243,11 @@ export function createSubagentController(
 
       const agentDir = getAgentDir();
       const parentModelRuntime = (parent.inner as unknown as { modelRuntime: ModelRuntime }).modelRuntime;
-      const settingsManager = SettingsManager.create(childCwd, agentDir);
+      const settingsManager = createSessionScopedSettingsManager(
+        SettingsManager.create(childCwd, agentDir),
+        parent.inner.sessionManager,
+        { useStarterDefaults: false, onlyStarterDefaults: true },
+      );
       const inheritedParentContext = inheritContext
         ? `The following is the active conversation context from the parent session. Use it only as background for the delegated task:\n${parentContextText(parent)}`
         : undefined;

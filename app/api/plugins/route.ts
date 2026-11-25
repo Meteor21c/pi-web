@@ -16,13 +16,14 @@ import { isPluginSourceCheckable } from "@/lib/plugin-updates";
 import { BUILTIN_PLUGIN_DEFINITIONS, sameNpmPackageSource } from "@/lib/builtin-plugin-definitions";
 import { getPluginSessionManager } from "@/lib/plugin-session-manager";
 import { withPluginOperationLock } from "@/lib/plugin-operation-lock";
-import {
-  readSessionPluginSelection,
-} from "@/lib/session-plugin-selection";
+import { readSubagentSessionResources } from "@/lib/subagents";
 import {
   getPluginActivationMode,
   getPluginPackageSource,
+  getSessionPluginEnabled,
   isDisabledPackage,
+  readSessionPluginSelections,
+  sessionPluginEnabledByDefault,
   setPluginPackageDisabled,
 } from "@/lib/plugin-activation";
 import type {
@@ -206,12 +207,8 @@ async function readPlugins(cwd: string, sessionId?: string): Promise<PluginsResp
   const sessionSelection = sessionId
     ? (await getPluginSessionManager(sessionId))
     : null;
-  const selectedSessionPlugins = sessionSelection
-    ? readSessionPluginSelection(sessionSelection.getEntries() as never)
-    : undefined;
-  const selectedSessionPluginKeys = new Set(
-    (selectedSessionPlugins ?? []).filter((plugin) => plugin.enabled).map((plugin) => keyFor(plugin.source, plugin.scope)),
-  );
+  const selectedSessionPlugins = readSessionPluginSelections(sessionSelection);
+  const useStarterDefaults = !sessionSelection || !readSubagentSessionResources(sessionSelection.getEntries() as never);
 
   try {
     const resolved = await packageManager.resolve(async (source) => {
@@ -240,8 +237,9 @@ async function readPlugins(cwd: string, sessionId?: string): Promise<PluginsResp
         : settingsManager.getGlobalSettings().packages?.find((entry) => getPluginPackageSource(entry) === pkg.source) ?? pkg.source,
     );
     const globalEnabled = !disabled;
+    const sessionDefaultEnabled = sessionPluginEnabledByDefault(pkg.source, scope);
     const sessionEnabled = activationMode === "session"
-      ? selectedSessionPluginKeys.has(key)
+      ? getSessionPluginEnabled(selectedSessionPlugins, pkg.source, scope, useStarterDefaults)
       : globalEnabled;
     const effectiveEnabled = globalEnabled && (activationMode === "global" || sessionEnabled);
     const counts = countsByPackage.get(key) ?? emptyCounts();
@@ -274,6 +272,7 @@ async function readPlugins(cwd: string, sessionId?: string): Promise<PluginsResp
       counts,
       resources,
       activationMode,
+      sessionDefaultEnabled,
       globalEnabled,
       sessionEnabled,
       effectiveEnabled,

@@ -2380,15 +2380,19 @@ button.turn-files-row:focus-visible { outline: 2px solid var(--accent); outline-
   font-size: 12px;
 }
 .reasoning-scale {
-  --reasoning-thumb-size: 22px;
+  --reasoning-thumb-size: 20px;
+  --reasoning-position: var(--reasoning-drag-progress, var(--reasoning-progress));
+  --reasoning-offset: calc((100% - var(--reasoning-thumb-size)) * var(--reasoning-position) + var(--reasoning-thumb-size) / 2);
   position: relative;
   display: flex;
   height: 32px;
   margin-top: 7px;
+  overflow: clip;
+  border-radius: 999px;
 }
 .reasoning-scale-track {
   position: absolute;
-  inset: 6px 0;
+  inset: 9px 0;
   overflow: hidden;
   border-radius: 999px;
   background: var(--bg-hover);
@@ -2398,10 +2402,53 @@ button.turn-files-row:focus-visible { outline: 2px solid var(--accent); outline-
 .reasoning-scale-fill {
   position: absolute;
   inset: 0;
-  background: var(--accent);
-  transform: scaleX(var(--reasoning-progress));
-  transform-origin: left;
-  transition: transform 220ms var(--ease-out-soft);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 80%, white), var(--accent));
+  transform: translateX(calc(var(--reasoning-offset) - 100%));
+}
+.reasoning-scale-cursor {
+  position: absolute;
+  inset: 0;
+  transform: translateX(var(--reasoning-offset));
+  pointer-events: none;
+}
+.reasoning-scale-fill,
+.reasoning-scale-cursor {
+  transition: transform 210ms var(--ease-out-soft);
+}
+.reasoning-scale[data-dragging] :is(.reasoning-scale-fill, .reasoning-scale-cursor) {
+  transition: none;
+}
+.reasoning-scale-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  box-sizing: border-box;
+  width: var(--reasoning-thumb-size);
+  height: var(--reasoning-thumb-size);
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: 50%;
+  background: var(--assistant-bg);
+  box-shadow: 0 1px 5px rgb(0 0 0 / 20%);
+  transform: translate(-50%, -50%);
+  transition: box-shadow var(--motion-fast) ease;
+}
+.reasoning-scale[data-dragging] .reasoning-scale-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent), 0 1px 5px rgb(0 0 0 / 20%);
+}
+.reasoning-scale-sparks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.reasoning-scale-sparks i {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 78%, white);
+  box-shadow: 0 0 5px var(--accent);
+  opacity: 0;
 }
 .reasoning-scale-ticks {
   position: absolute;
@@ -2421,48 +2468,44 @@ button.turn-files-row:focus-visible { outline: 2px solid var(--accent); outline-
 }
 .reasoning-scale-ticks i[data-filled="true"] { background: var(--accent-contrast); }
 .reasoning-scale input {
-  appearance: none;
   position: relative;
   width: 100%;
   height: 100%;
   margin: 0;
-  border-radius: 999px;
-  background: transparent;
+  opacity: 0;
   cursor: grab;
   touch-action: none;
 }
 .reasoning-scale input:active { cursor: grabbing; }
-.reasoning-scale input::-webkit-slider-runnable-track { background: transparent; }
-.reasoning-scale input::-moz-range-track { background: transparent; }
-.reasoning-scale input::-webkit-slider-thumb {
-  appearance: none;
-  width: var(--reasoning-thumb-size);
-  height: var(--reasoning-thumb-size);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--assistant-bg);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
-}
-.reasoning-scale input::-moz-range-thumb {
-  box-sizing: border-box;
-  width: var(--reasoning-thumb-size);
-  height: var(--reasoning-thumb-size);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--assistant-bg);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+.reasoning-scale:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 @media (max-width: 480px) {
   .composer-send-actions { gap: 4px; }
   .composer-send-actions .ui-send-btn,
   .composer-stop-button { padding-inline: 9px; }
   .reasoning-scale { height: 40px; }
-  .reasoning-scale-track { inset-block: 10px; }
+  .reasoning-scale-track { inset-block: 13px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .reasoning-popover { animation: none !important; }
   .reasoning-scale-fill,
+  .reasoning-scale-cursor,
+  .reasoning-scale-thumb,
   .reasoning-scale-ticks i { transition: none; }
+  .reasoning-scale-sparks { display: none; }
+}
+@media (forced-colors: active) {
+  .reasoning-scale-track,
+  .reasoning-scale-thumb { forced-color-adjust: none; background: Canvas; }
+  .reasoning-scale-track { box-shadow: inset 0 0 0 1px CanvasText; }
+  .reasoning-scale-fill { background: Highlight; }
+  .reasoning-scale-thumb { border-color: CanvasText; box-shadow: none; }
+  .reasoning-scale[data-dragging] .reasoning-scale-thumb { box-shadow: none; }
+  .reasoning-scale-ticks i { background: CanvasText; opacity: 1; }
+  .reasoning-scale-ticks i[data-filled="true"] { background: HighlightText; }
+  .reasoning-scale-sparks { display: none; }
 }
 
 /* 思考中：三点呼吸（错相） */

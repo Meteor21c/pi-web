@@ -10,9 +10,10 @@ interface Props {
   currentRunPolicy?: ComputerUseApprovalPolicy;
   onChange: (policy: ComputerUseApprovalPolicy) => void;
   disabled?: boolean;
+  limited?: boolean;
 }
 
-export function ApprovalPolicySelector({ policy, currentRunPolicy, onChange, disabled }: Props) {
+export function ApprovalPolicySelector({ policy, currentRunPolicy, onChange, disabled, limited }: Props) {
   const { t } = useI18n();
   const titleId = useId();
   const descriptionId = useId();
@@ -21,7 +22,9 @@ export function ApprovalPolicySelector({ policy, currentRunPolicy, onChange, dis
   const dialogRef = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const queuedChange = currentRunPolicy !== undefined && currentRunPolicy !== policy && !disabled;
-  const runNote = currentRunPolicy && t("chat.approvalPolicy.runNote", { policy: t(`chat.approvalPolicy.${currentRunPolicy}`) });
+  const runNote = currentRunPolicy
+    ? t("chat.approvalPolicy.runNote", { policy: t(`chat.approvalPolicy.${currentRunPolicy}`) })
+    : limited ? t("chat.approvalPolicy.limited") : undefined;
 
   const choosePolicy = (next: string) => {
     if (disabled || next === policy) return;
@@ -70,7 +73,9 @@ export function ApprovalPolicySelector({ policy, currentRunPolicy, onChange, dis
           </svg>
           {t("chat.approvalPolicy.warningTitle")}
         </h2>
-        <p className={styles.warningText} id={descriptionId}>{t("chat.approvalPolicy.warning")}</p>
+        <p className={styles.warningText} id={descriptionId}>
+          {t("chat.approvalPolicy.warning")}{limited && ` ${t("chat.approvalPolicy.limited")}`}
+        </p>
         <div className={styles.actions}>
           <button ref={cancelRef} type="button" onClick={() => dialogRef.current?.close()}>
             {t("chat.cancel")}

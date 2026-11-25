@@ -59,8 +59,8 @@ export const BUILTIN_PLUGIN_DEFINITIONS = [
     id: "computer-use",
     name: "电脑操作",
     source: "npm:@amaster.ai/pi-computer-use",
-    purpose: "在明确启用的会话中查看并操作本机桌面",
-    purposeEn: "Inspect and control the local desktop in sessions where you enable it",
+    purpose: "查看和操作本机桌面，可按会话关闭",
+    purposeEn: "Inspect and control the local desktop, with a per-conversation switch",
     category: "tool",
     risk: "review",
     recommendedVersion: "0.1.17",
@@ -68,9 +68,8 @@ export const BUILTIN_PLUGIN_DEFINITIONS = [
     officialUrl: "https://pi.dev/packages/@amaster.ai/pi-computer-use?name=computer",
     repositoryUrl: "https://github.com/TGYD-helige/pi/tree/master/packages/pi-computer-use",
     requiresNetwork: false,
-    // Desktop control should be opt-in per conversation. It remains visible
-    // in the session plugin picker but starts disabled for every new session.
     activationMode: "session",
+    defaultSessionEnabled: true,
   },
 ] as const;
 

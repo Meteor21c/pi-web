@@ -207,7 +207,7 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
 
       {!sessionId && (
         <footer className="session-plugins-new-note">
-          {zh ? "局部插件在新会话中默认关闭；会话创建后可在这里开启。" : "Per-session plugins start off in new sessions and can be enabled here after the session is created."}
+          {zh ? "电脑操作默认开启。会话创建后，可在这里调整按会话启用的插件。" : "Computer Use starts on by default. You can adjust per-session plugins here after the conversation is created."}
         </footer>
       )}
 

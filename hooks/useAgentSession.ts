@@ -325,8 +325,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
   const [toolPreset, setToolPreset] = useState<ToolPreset>("default");
   const [toolPresetChanging, setToolPresetChanging] = useState(false);
-  const subagentModeUnavailable = toolPreset === "none" || toolPreset === "read-only"
-    || (data?.pendingWorkMode ?? data?.workMode ?? composerWorkMode) === "plan";
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
@@ -1642,7 +1640,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     promptRunIdRef.current = promptRunId;
     agentRunningRef.current = true;
     setAgentRunning(true);
-    setActiveComputerUseApprovalPolicy(!isSlashCommandPrompt ? computerUseApprovalPolicy ?? "ask" : "ask");
+    setActiveComputerUseApprovalPolicy(!isSlashCommandPrompt && optimisticMode !== "plan"
+      && toolPreset !== "none" && toolPreset !== "read-only" ? computerUseApprovalPolicy ?? "ask" : "ask");
     syncRunActivity(undefined, isSlashCommandPrompt ? "running_command" : "waiting_model");
     dispatch({ type: "start" });
     pendingScrollToUserRef.current = true;
@@ -2027,7 +2026,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             loadSlashCommands(),
             loadModels(),
           ]);
-          return complete({ handled: true, message: "Reloaded session resources" });
+          return complete({ handled: true, message: t("i18n.sessionReloaded") });
         }
 
         case "name": {
@@ -2082,7 +2081,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       if (commandName === "compact") setIsCompacting(false);
     }
-  }, [activeLeafId, addNotice, ensureNewSession, isCompacting, loadModels, loadSession, loadSlashCommands, loadTools, promoteNewSession, onSessionForked, onSessionStatsPanelOpen]);
+  }, [activeLeafId, addNotice, ensureNewSession, isCompacting, loadModels, loadSession, loadSlashCommands, loadTools, promoteNewSession, onSessionForked, onSessionStatsPanelOpen, t]);
 
   // Let AgentSession.prompt decide atomically whether to queue against the
   // current run or start a new turn if it settled while the request was in
@@ -2246,21 +2245,21 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [composerWorkMode, ensureNewSession, goalsEnabled, handleSend, handleWorkModeChange, isNew, loadSession, promoteNewSession, sessionGoal?.revision, t, updateGoalState]);
 
-  const handleToolPresetChange = useCallback(async (preset: ToolPreset) => {
-    if (toolPresetChangePendingRef.current || agentRunningRef.current || bashRunningRef.current || isCompacting) return;
+  const handleToolPresetChange = useCallback(async (preset: ToolPreset, { remember = true } = {}) => {
+    if (toolPresetChangePendingRef.current || agentRunningRef.current || bashRunningRef.current || isCompacting) return false;
     toolPresetChangePendingRef.current = true;
     setToolPresetChanging(true);
     try {
       const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
-      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return false;
       const result = sid ? await sendAgentCommand<{ sessionId?: string; recreated?: boolean }>(sid, {
         type: "set_tools",
         toolNames: getToolNamesForPreset(preset),
       }) : null;
-      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
-      setPreferredToolPreset(preset);
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return false;
+      if (remember) setPreferredToolPreset(preset);
       setToolPresetState(preset);
-      if (!sid) return;
+      if (!sid) return true;
       const activeSessionId = result?.sessionId ?? sid;
       if (activeSessionId !== sid || result?.recreated) {
         cancelEventStreamGrace();
@@ -2284,9 +2283,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setSystemPrompt(state.systemPrompt ?? "");
         syncLiveModel(state);
       }
+      return sessionHookMountedRef.current && sessionIdRef.current === activeSessionId;
     } catch (e) {
       console.error("Failed to set tools:", e);
       if (sessionHookMountedRef.current) addNotice({ type: "error", message: t("tools.presetChangeFailed") });
+      return false;
     } finally {
       toolPresetChangePendingRef.current = false;
       if (sessionHookMountedRef.current) setToolPresetChanging(false);
@@ -2568,7 +2569,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   return {
     // State
     data, loading, error, activeLeafId, messages, activeToolResults, liveSubagents, entryIds, historyCursor, hasEarlierMessages, streamState,
-    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, toolPresetChanging, thinkingLevel, subagentModeUnavailable,
+    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, toolPresetChanging, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, availableTools, queuedMessages,

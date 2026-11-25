@@ -167,6 +167,9 @@
     0 3px 12px rgba(0, 0, 0, 0.08);
   animation: popover-in var(--motion-fast) var(--ease-out-soft) both;
 }
+.popover[hidden] {
+  display: none;
+}
 
 @keyframes popover-in {
   from { opacity: 0; transform: translateY(5px) scale(0.98); }

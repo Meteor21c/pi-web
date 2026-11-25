@@ -310,7 +310,7 @@ function BuiltinPluginsPanel({ cwd, sessionId }: { cwd: string; sessionId: strin
       <p className="builtin-plugins-footnote">
         {t("i18n.builtinPluginsDisclaimer", { registry: data?.registry ?? "registry.npmmirror.com" })}
       </p>
-      {data?.state === "ready" && sessionId && (
+      {data?.plugins.some((plugin) => plugin.state === "ready") && sessionId && (
         <p className="builtin-plugins-footnote">{t("i18n.builtinPluginsReloadHint")}</p>
       )}
     </section>
@@ -1169,7 +1169,7 @@ function PackageDetail({
         <span className="plugin-activation-mode-help">
           {pkg.activationMode === "global"
             ? t("i18n.pluginActivationGlobalDescription")
-            : t("i18n.pluginActivationSessionDescription")}
+            : t(pkg.sessionDefaultEnabled ? "i18n.pluginActivationSessionDefaultOnDescription" : "i18n.pluginActivationSessionDescription")}
         </span>
         {activationBusy && <span className="plugin-activation-mode-saving">{t("i18n.pluginActivationSaving")}</span>}
       </ConfigField>
