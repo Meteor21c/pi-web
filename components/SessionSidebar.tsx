@@ -8,11 +8,13 @@ import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import { getProjectActivity, getRecentProjects, sessionsForProject } from "@/lib/project-groups";
+import type { NamedProject, ProjectSnapshot } from "@/lib/projects";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
 import { formatRelativeTime } from "@/lib/i18n/format";
 import { useI18n } from "@/hooks/useI18n";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
+import { ProjectEditor, ProjectMoveDialog, ProjectNavigation } from "./ProjectNavigation";
 import { SessionSearch } from "./SessionSearch";
 
 // Fixed row height for the session list. SessionItem renders at exactly this
@@ -102,6 +104,11 @@ interface Props {
   selectedSessionId: string | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean, entryId?: string, blockIndex?: number) => void;
   onNewSession?: (sessionId: string, cwd: string) => void;
+  projectSnapshot: ProjectSnapshot;
+  activeProjectId?: string | null;
+  onProjectScopeChange: (projectId: string | null | undefined, cwd: string | null) => void;
+  onNewManagedSession: (projectId: string | null, cwd: string | null) => void;
+  onProjectSnapshotChange: (snapshot: ProjectSnapshot) => void;
   initialSessionId?: string | null;
   skipInitialProjectSelection?: boolean;
   onInitialRestoreDone?: () => void;
@@ -113,7 +120,7 @@ interface Props {
     projectRoot?: string | null,
     projectKey?: string | null,
   ) => void;
-  onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff" }) => void;
+  onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff"; projectId?: string }) => void;
   onOpenTerminal?: (cwd: string) => void;
   explorerRefreshKey?: number;
   onExplorerRefresh?: () => void;
@@ -373,9 +380,22 @@ function MeteorAgentTitle() {
   );
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange, projectSnapshot, activeProjectId, onProjectScopeChange, onNewManagedSession, onProjectSnapshotChange }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
+  const [projectEditor, setProjectEditor] = useState<NamedProject | null | undefined>(undefined);
+  const [movingSessionIds, setMovingSessionIds] = useState<string[] | null>(null);
+  const [organizing, setOrganizing] = useState(false);
+  const [batchSelection, setBatchSelection] = useState<Set<string>>(() => new Set());
+  const [explorerFolder, setExplorerFolder] = useState<{ id: string; path: string } | null>(null);
+  const legacyScope = activeProjectId === undefined;
+  const managedProject = projectSnapshot.projects.find(({ id }) => id === activeProjectId);
+  const projectOfSession = useCallback((s: SessionInfo): string | null | undefined => {
+    const assignments = projectSnapshot.assignments;
+    const id = s.relation?.kind === "subagent" ? s.relation.parentSessionId : s.id;
+    return Object.hasOwn(assignments, id) ? assignments[id] : s.projectId;
+  }, [projectSnapshot.assignments]);
+  const legacySessions = useMemo(() => allSessions.filter((session) => projectOfSession(session) === undefined), [allSessions, projectOfSession]);
   const [sessionListVersion, setSessionListVersion] = useState<number | null>(null);
   const sessionListVersionRef = useRef<number | null>(null);
   const sessionLoadIdRef = useRef(0);
@@ -690,6 +710,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // as identity hydration rather than a workspace switch.
   const lastNotifiedProjectRef = useRef<{ cwd: string | null; key: string | null } | null>(null);
   useEffect(() => {
+    if (!legacyScope) return;
     const project = projectFor(selectedCwd);
     const previous = lastNotifiedProjectRef.current;
     if (previous?.cwd === selectedCwd && previous.key === (project?.key ?? null)) return;
@@ -699,7 +720,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       project?.root ?? null,
       project?.key ?? null,
     );
-  }, [selectedCwd, onCwdChange, projectFor]);
+  }, [selectedCwd, onCwdChange, projectFor, legacyScope]);
 
   // Sync the worktree switcher to the selected session's cwd. Sessions of all
   // worktrees in a project share one list, so clicking a session from another
@@ -707,16 +728,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // value changes, so a manual switcher change is not snapped back.
   const lastSyncedCwdPropRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!legacyScope) return;
     if (selectedCwdProp && selectedCwdProp !== lastSyncedCwdPropRef.current) {
       lastSyncedCwdPropRef.current = selectedCwdProp;
       setSelectedCwd(selectedCwdProp);
     }
-  }, [selectedCwdProp]);
+  }, [selectedCwdProp, legacyScope]);
 
   // Load worktrees for the current effective cwd
   const [wtRefreshKey, setWtRefreshKey] = useState(0);
   useLayoutEffect(() => {
-    if (!selectedCwd) {
+    if (!legacyScope || !selectedCwd) {
       setWorktreeState(null);
       setWorktreeLoadingCwd(null);
       return;
@@ -749,11 +771,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }
       });
     return () => { cancelled = true; };
-  }, [selectedCwd, wtRefreshKey, refreshKey]);
+  }, [selectedCwd, wtRefreshKey, refreshKey, legacyScope]);
 
   // Auto-select cwd and restore session from URL on first load
   useEffect(() => {
-    if (allSessions.length === 0 || skipInitialProjectSelection) return;
+    if (!legacyScope || allSessions.length === 0 || skipInitialProjectSelection) return;
 
     if (selectedCwd === null) {
       // If restoring a session, set cwd to match that session
@@ -761,17 +783,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         restoredRef.current = true;
         const target = allSessions.find((s) => s.id === initialSessionId);
         if (target) {
-          setSelectedCwd(target.cwd);
+          if (projectOfSession(target) === undefined) setSelectedCwd(target.cwd);
           onSelectSession(target, true);
           return;
         }
         // Session not found — notify parent so it can show the placeholder
         onInitialRestoreDone?.();
       }
-      const projects = getRecentProjects(allSessions);
+      const projects = getRecentProjects(legacySessions);
       if (projects.length > 0) setSelectedCwd(projects[0].root);
     }
-  }, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone]);
+  }, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone, legacyScope, legacySessions, projectOfSession]);
 
   // Prefer an exact UI selection while a refetch is in flight. Once the
   // response catches up, the server-resolved path handles Windows case and
@@ -937,21 +959,28 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // open session after manually switching worktrees.
   const handleSelectSessionFromList = useCallback((s: SessionInfo, entryId?: string, blockIndex?: number) => {
     setAllSessions((current) => current.some((session) => session.id === s.id) ? current : [s, ...current]);
-    if (s.cwd) setSelectedCwd(s.cwd);
+    if (s.cwd && projectOfSession(s) === undefined) setSelectedCwd(s.cwd);
     onSelectSession(s, false, entryId, blockIndex);
-  }, [onSelectSession]);
+  }, [onSelectSession, projectOfSession]);
 
   const handleNewSession = useCallback(() => {
-    if (!selectedCwd) return;
+    if (managedProject) {
+      onNewManagedSession(managedProject.id, managedProject.defaultDirectory);
+      return;
+    }
+    if (!legacyScope || !selectedCwd) {
+      onNewManagedSession(null, null);
+      return;
+    }
     // Generate a temporary UUID client-side — no backend call needed.
     // Pi will be spawned lazily when the user sends the first message.
     const tempId = typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
     onNewSession?.(tempId, selectedCwd);
-  }, [selectedCwd, onNewSession]);
+  }, [selectedCwd, onNewSession, legacyScope, managedProject, onNewManagedSession]);
 
-  const recentProjects = getRecentProjects(allSessions);
+  const recentProjects = getRecentProjects(legacySessions);
   const showProjectFilter = recentProjects.length > 8;
   const visibleProjects = projectFilter.trim()
     ? recentProjects.filter((project) => project.root.toLowerCase().includes(projectFilter.trim().toLowerCase()))
@@ -959,13 +988,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   // Sessions of every worktree in the selected project are shown together
   const selectedProject = projectFor(selectedCwd);
-  const nativeDirectoryPath = selectedProject?.root ?? selectedCwd;
+  const managedExplorerCwd = managedProject && explorerFolder?.id === managedProject.id && managedProject.directories.includes(explorerFolder.path)
+    ? explorerFolder.path
+    : managedProject?.defaultDirectory;
+  const explorerCwd = legacyScope ? selectedCwd ?? selectedCwdProp : managedExplorerCwd;
+  const nativeDirectoryPath = legacyScope ? selectedProject?.root ?? selectedCwd : managedExplorerCwd;
   const handleOpenNativeDirectory = useCallback(async () => {
     if (!nativeDirectoryPath || nativeDirectoryBusy) return;
     setNativeDirectoryBusy(true);
     setNativeDirectoryError(null);
     try {
-      const response = await fetch("/api/open-directory", {
+      const projectQuery = managedProject ? `?projectId=${encodeURIComponent(managedProject.id)}` : "";
+      const response = await fetch(`/api/open-directory${projectQuery}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: nativeDirectoryPath }),
@@ -976,14 +1010,34 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     } finally {
       setNativeDirectoryBusy(false);
     }
-  }, [nativeDirectoryBusy, nativeDirectoryPath, t]);
+  }, [managedProject, nativeDirectoryBusy, nativeDirectoryPath, t]);
 
   // Per-project activity counts (running / unread) for the workspace selector.
   // Uses the same stable server key as the project list and filtering.
   const projectActivity = useMemo(
-    () => getProjectActivity(allSessions, runningSessionIds, unreadSessionIds),
-    [allSessions, runningSessionIds, unreadSessionIds],
+    () => getProjectActivity(legacySessions, runningSessionIds, unreadSessionIds),
+    [legacySessions, runningSessionIds, unreadSessionIds],
   );
+  const managedActivity = useMemo(() => {
+    const counts = new Map<string | null, { running: number; unread: number }>();
+    for (const session of allSessions) {
+      const id = projectOfSession(session);
+      if (id === undefined) continue;
+      const count = counts.get(id) ?? { running: 0, unread: 0 };
+      if (runningSessionIds.has(session.id)) count.running++;
+      if (unreadSessionIds.has(session.id)) count.unread++;
+      counts.set(id, count);
+    }
+    return counts;
+  }, [allSessions, projectOfSession, runningSessionIds, unreadSessionIds]);
+
+  const selectProjectScope = (id: string | null | undefined) => {
+    if (id === activeProjectId) return;
+    const cwd = id === undefined ? selectedCwd ?? recentProjects[0]?.root ?? null
+      : id === null ? null : projectSnapshot.projects.find((project) => project.id === id)?.defaultDirectory ?? null;
+    if (id === undefined) setSelectedCwd(cwd);
+    onProjectScopeChange(id, cwd);
+  };
 
   // Any activity in a project other than the one currently selected — shown as
   // a dot on the (collapsed) selector button so it is visible without opening
@@ -995,16 +1049,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     [projectActivity, selectedProject],
   );
 
-  const filteredSessions = selectedProject
-    ? sessionsForProject(allSessions, selectedProject.key)
-    : allSessions;
+  const filteredSessions = legacyScope
+    ? selectedProject ? sessionsForProject(legacySessions, selectedProject.key) : legacySessions
+    : allSessions.filter((session) => projectOfSession(session) === activeProjectId);
   const showWorktreeSwitcher = Boolean(
-    worktreeState?.isGit
+    legacyScope && worktreeState?.isGit
     && worktreeState.isTopLevel
     && selectedCwd
     && selectedProject?.key === worktreeState.projectKey
   );
-  const worktreeGuide = selectedCwd
+  const worktreeGuide = legacyScope && selectedCwd
     && worktreeState
     && selectedProject?.key === worktreeState.projectKey
     && !showWorktreeSwitcher
@@ -1018,7 +1072,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
              title: t("sidebar.gitRepoRootOnlyTitle"),
           })
     : null;
-  const worktreeLoading = Boolean(selectedCwd && worktreeLoadingCwd === selectedCwd);
+  const worktreeLoading = Boolean(legacyScope && selectedCwd && worktreeLoadingCwd === selectedCwd);
   const inactiveWorktreeSelector = worktreeGuide
     ?? (worktreeLoading && !showWorktreeSwitcher
       ? {
@@ -1028,6 +1082,24 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       : null);
 
   const sessionFamilies = listSessionFamilies(filteredSessions);
+  const newSessionDirectory = managedProject?.defaultDirectory ?? (legacyScope ? selectedCwd : null);
+  const selectedFamilyIds = sessionFamilies.filter((family) => batchSelection.has(family.root.id)
+    && !family.root.transient && ![family.root, ...family.subagents].some((session) => runningSessionIds.has(session.id)))
+    .map((family) => family.root.id);
+
+  const toggleBatchSession = (id: string) => {
+    setBatchSelection((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    setOrganizing(false);
+    setBatchSelection(new Set());
+  }, [activeProjectId, selectedProject?.key]);
 
   const virtualIndices = getSessionListIndices(
     sessionFamilies.length,
@@ -1038,6 +1110,31 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   return (
     <div className="session-sidebar-shell" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {projectEditor !== undefined && (
+        <ProjectEditor
+          project={projectEditor}
+          initialPath={selectedCwd ?? undefined}
+          onClose={() => setProjectEditor(undefined)}
+          onSaved={(snapshot, created) => {
+            onProjectSnapshotChange(snapshot);
+            setProjectEditor(undefined);
+            if (created) onProjectScopeChange(created.id, created.defaultDirectory);
+          }}
+        />
+      )}
+      {movingSessionIds && (
+        <ProjectMoveDialog
+          sessionIds={movingSessionIds}
+          projects={projectSnapshot.projects}
+          onClose={() => setMovingSessionIds(null)}
+          onSaved={(snapshot) => {
+            onProjectSnapshotChange(snapshot);
+            setMovingSessionIds(null);
+            setOrganizing(false);
+            setBatchSelection(new Set());
+          }}
+        />
+      )}
       {customPathOpen && (
         <DirectoryPicker
           initialPath={customPathValue}
@@ -1076,15 +1173,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
           <button
             onClick={handleNewSession}
-            disabled={!selectedCwd}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
               flex: 1,
               minWidth: 0,
               background: "var(--bg-hover)",
               border: "1px solid var(--border)",
-              color: selectedCwd ? "var(--text-muted)" : "var(--text-dim)",
-              cursor: selectedCwd ? "pointer" : "not-allowed",
+              color: "var(--text-muted)",
+              cursor: "pointer",
               height: 32,
               paddingLeft: 10,
               paddingRight: 12,
@@ -1094,16 +1190,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               letterSpacing: "-0.01em",
               transition: "background 0.12s, color 0.12s, border-color 0.12s",
             }}
-           title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
+            title={newSessionDirectory ? t("sidebar.newSessionTitle", { path: newSessionDirectory }) : t("projects.newStandalone")}
             onMouseEnter={(e) => {
-              if (!selectedCwd) return;
               e.currentTarget.style.background = "var(--bg-selected)";
               e.currentTarget.style.color = "var(--accent)";
               e.currentTarget.style.borderColor = "rgba(37,99,235,0.35)";
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "var(--bg-hover)";
-              e.currentTarget.style.color = selectedCwd ? "var(--text-muted)" : "var(--text-dim)";
+              e.currentTarget.style.color = "var(--text-muted)";
               e.currentTarget.style.borderColor = "var(--border)";
             }}
           >
@@ -1131,7 +1226,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           </button>
         </div>
 
+        <ProjectNavigation
+          projects={projectSnapshot.projects}
+          activeId={activeProjectId}
+          activity={(id) => showProjectActivity(managedActivity.get(id), t)}
+          onSelect={selectProjectScope}
+          onNewProject={() => setProjectEditor(null)}
+          onEditProject={setProjectEditor}
+          onNewChat={() => onNewManagedSession(null, null)}
+        />
+
         {/* CWD picker */}
+        {legacyScope && (
         <div ref={dropdownRef} style={{ position: "relative" }}>
           <div style={{ marginBottom: 5, paddingLeft: 2 }}>
             <div style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 600, lineHeight: 1.35, letterSpacing: "0.01em" }}>
@@ -1381,6 +1487,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               </button>
           </AnimatedDropdown>
         </div>
+        )}
 
         {sessionSearchOpen && (
           <input
@@ -1755,12 +1862,25 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       </div>
 
       {/* Session list */}
+      {!sessionSearchActive && (!legacyScope || sessionFamilies.length > 0) && (
+        <div className="flex min-h-7 shrink-0 items-center gap-1 px-3 text-[11px] text-text-muted">
+          <span className="min-w-0 flex-1 truncate font-medium" title={managedProject?.name}>{managedProject?.name ?? (activeProjectId === null ? t("projects.standalone") : null)}</span>
+          {sessionFamilies.length > 0 && (organizing ? (
+            <>
+              <button type="button" className="rounded px-2 py-1 hover:bg-bg-hover" onClick={() => { setOrganizing(false); setBatchSelection(new Set()); }}>{t("i18n.cancel")}</button>
+              <button type="button" className="rounded px-2 py-1 text-accent hover:bg-bg-hover disabled:opacity-45" disabled={selectedFamilyIds.length === 0} onClick={() => setMovingSessionIds(selectedFamilyIds)}>{t("projects.moveCount", { count: selectedFamilyIds.length })}</button>
+            </>
+          ) : (
+            <button type="button" className="rounded px-2 py-1 hover:bg-bg-hover" onClick={() => setOrganizing(true)}>{t("projects.organize")}</button>
+          ))}
+        </div>
+      )}
       <SessionSearch open={sessionSearchOpen} query={sessionSearchQuery} refreshKey={sessionListVersion} selectedSessionId={selectedSessionId} onSelectSession={handleSelectSessionFromList}>
       <div
         ref={listScrollRef}
         onScroll={handleListScroll}
         className="session-sidebar-list"
-        style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "2px 0 6px", minHeight: 80 }}
+        style={{ flex: explorerOpen && explorerCwd ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "2px 0 6px", minHeight: 80 }}
       >
         {loading && (
           <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
@@ -1787,6 +1907,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             {virtualIndices.map((index) => {
               const family = sessionFamilies[index];
               const familySessions = [family.root, ...family.subagents];
+              const familyRunning = familySessions.some((session) => runningSessionIds.has(session.id));
+              const canMove = !family.root.transient && !familyRunning;
               const displaySession = family.latestModified === family.root.modified
                 ? family.root
                 : { ...family.root, modified: family.latestModified };
@@ -1798,12 +1920,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   onBlur={() => setFocusedSessionId(null)}
                   style={{ position: "absolute", top: index * SESSION_LIST_ITEM_HEIGHT, left: 0, right: 0 }}
                 >
+                  {organizing && (
+                    <label className="absolute inset-y-0 left-3 z-10 flex items-center">
+                      <input type="checkbox" checked={canMove && batchSelection.has(family.root.id)} disabled={!canMove} aria-label={t("projects.selectChat", { name: family.root.name || family.root.firstMessage.slice(0, 50) || family.root.id })} onChange={() => toggleBatchSession(family.root.id)} />
+                    </label>
+                  )}
                   <SessionItem
                     session={displaySession}
                     isSelected={familySessions.some((session) => session.id === selectedSessionId)}
-                    isRunning={familySessions.some((session) => runningSessionIds.has(session.id))}
+                    isRunning={familyRunning}
                     isUnread={familySessions.some((session) => unreadSessionIds.has(session.id))}
-                    onClick={() => handleSelectSessionFromList(family.root)}
+                    onClick={() => {
+                      if (!organizing) handleSelectSessionFromList(family.root);
+                      else if (canMove) toggleBatchSession(family.root.id);
+                    }}
+                    organizing={organizing}
+                    onMove={canMove ? () => setMovingSessionIds([family.root.id]) : undefined}
                     onRenamed={loadSessions}
                     onDeleted={(id) => {
                       onSessionDeleted?.(id);
@@ -1819,7 +1951,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       </SessionSearch>
 
       {/* File Explorer section */}
-      {(selectedCwdProp || selectedCwd) && (
+      {explorerCwd && (
         <div
           className="session-sidebar-explorer"
           style={{
@@ -1867,9 +1999,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               </svg>
               {t("files.explorer")}
             </button>
-            {onOpenTerminal && (
+            {onOpenTerminal && legacyScope && (
               <ToolbarIconButton
-                onClick={() => onOpenTerminal(selectedCwd ?? selectedCwdProp!)}
+                onClick={() => onOpenTerminal(explorerCwd)}
                 title={t("terminal.open")}
                 color="var(--text-dim)"
               >
@@ -1948,11 +2080,35 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               )}
             </ToolbarIconButton>
           </div>
+          {explorerOpen && managedProject && (
+            <div className="shrink-0 px-2 pb-1">
+              <div className="flex min-w-0 items-center gap-1">
+                <select
+                  className="min-w-0 flex-1 truncate rounded-md border border-border bg-bg-panel px-2 py-1.5 text-[11px] text-text-muted focus-visible:outline-2 focus-visible:outline-accent"
+                  aria-label={t("projects.browseFolder")}
+                  title={explorerCwd}
+                  value={explorerCwd}
+                  onChange={(event) => {
+                    setExplorerFolder({ id: managedProject.id, path: event.target.value });
+                    setNativeDirectoryError(null);
+                  }}
+                >
+                  {managedProject.directories.map((path) => <option key={path} value={path}>{displayCwd(path, homeDir)}</option>)}
+                </select>
+                <ToolbarIconButton title={t("sidebar.openInFileManager")} disabled={nativeDirectoryBusy} color="var(--text-muted)" onClick={() => void handleOpenNativeDirectory()}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3Z" /><path d="M12 5h8m-3-3 3 3-3 3" /></svg>
+                </ToolbarIconButton>
+              </div>
+              {nativeDirectoryError && <p role="alert" className="mt-1 text-[11px] text-red-500">{nativeDirectoryError}</p>}
+            </div>
+          )}
           {explorerOpen && (
             <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
               <FileExplorer
+                key={managedProject ? `${managedProject.id}:${explorerCwd}` : undefined}
                 ref={fileExplorerRef}
-                cwd={selectedCwd ?? selectedCwdProp!}
+                cwd={explorerCwd}
+                projectId={managedProject?.id}
                 onOpenFile={onOpenFile ?? (() => {})}
                 refreshKey={explorerKey}
                 onAtMention={onAtMention}
@@ -2086,6 +2242,8 @@ function SessionItem({
   onClick,
   onRenamed,
   onDeleted,
+  organizing = false,
+  onMove,
   depth = 0,
   hasChildren = false,
   collapsed = false,
@@ -2098,6 +2256,8 @@ function SessionItem({
   onClick: () => void;
   onRenamed?: () => void;
   onDeleted?: (id: string) => void;
+  organizing?: boolean;
+  onMove?: () => void;
   depth?: number;
   hasChildren?: boolean;
   collapsed?: boolean;
@@ -2185,6 +2345,7 @@ function SessionItem({
   }, []);
 
   const handleContextMenu = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (organizing) return;
     const handled = dispatchSessionRowContextMenu({
       id: session.id,
       path: session.path,
@@ -2197,7 +2358,7 @@ function SessionItem({
     if (!handled) return;
     e.preventDefault();
     e.stopPropagation();
-  }, [onRenamed, session.cwd, session.id, session.name, session.path]);
+  }, [onRenamed, organizing, session.cwd, session.id, session.name, session.path]);
 
   // Fixed-height outer wrapper — content swaps in place so the list never reflows
   return (
@@ -2211,7 +2372,7 @@ function SessionItem({
         display: "flex",
         alignItems: "center",
         margin: "0 8px",
-        paddingLeft: depth > 0 ? depth * 12 + 10 : 10,
+        paddingLeft: organizing ? 26 : depth > 0 ? depth * 12 + 10 : 10,
         paddingRight: 8,
         borderRadius: 10,
         border: isSelected
@@ -2371,7 +2532,15 @@ function SessionItem({
 
           {/* Action buttons — shown on hover */}
           {hovered && !session.transient && (
+            !organizing && (
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              {onMove && (
+                <span onClick={(event) => event.stopPropagation()}>
+                  <ToolbarIconButton title={t("projects.move")} color="var(--text-muted)" onClick={onMove}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3Z" /><path d="M9 14h6m-2-2 2 2-2 2" /></svg>
+                  </ToolbarIconButton>
+                </span>
+              )}
               <button
                 onClick={startRename}
                 title={t("sidebar.rename")}
@@ -2428,6 +2597,7 @@ function SessionItem({
                 </svg>
               </button>
             </div>
+            )
           )}
         </>
       )}

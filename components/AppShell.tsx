@@ -30,7 +30,7 @@ import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { useAudio } from "@/hooks/useAudio";
 import { copyText } from "@/lib/clipboard";
 import { sendAgentCommand } from "@/lib/agent-client";
-import { getFileName } from "@/lib/file-paths";
+import { getFileName, withProjectQuery } from "@/lib/file-paths";
 import { buildAtMentionText, buildFileAtMentionsText, buildFileLineMentionText } from "@/lib/file-fuzzy";
 import {
   claimExtensionAttentionNotification,
@@ -68,6 +68,7 @@ import { getSubagentDisplayName } from "@/lib/subagent-display";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { AppUpdatePrompt } from "./AppUpdatePrompt";
+import { projectContainsDirectory, type ProjectSnapshot } from "@/lib/projects";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
@@ -86,6 +87,20 @@ const TOP_PANEL_WIDTHS = {
   session: 520,
 } as const;
 const BUILTIN_SETUP_NOTICE_KEY = "meteoragent-builtins-notice-v1";
+const EMPTY_PROJECT_SNAPSHOT: ProjectSnapshot = { projects: [], assignments: {} };
+
+function assignedProjectId(session: SessionInfo, snapshot: ProjectSnapshot): string | null | undefined {
+  if (Object.hasOwn(snapshot.assignments, session.id)) return snapshot.assignments[session.id];
+  return session.projectId;
+}
+
+function managedWorkspaceKey(projectId: string | null): string {
+  return projectId === null ? "standalone-chats" : `named-project:${projectId}`;
+}
+
+function createProjectDraftId(): string {
+  return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+}
 
 /**
  * A non-blocking disclosure for the first-run starter packages.
@@ -98,9 +113,11 @@ const BUILTIN_SETUP_NOTICE_KEY = "meteoragent-builtins-notice-v1";
  */
 function BuiltinSetupNotice({
   cwd,
+  projectId,
   onOpenPlugins,
 }: {
   cwd: string;
+  projectId?: string;
   onOpenPlugins: () => void;
 }) {
   const { t } = useI18n();
@@ -133,7 +150,7 @@ function BuiltinSetupNotice({
     let timer: number | undefined;
     const load = async () => {
       try {
-        const response = await fetch(`/api/plugins/builtins?cwd=${encodeURIComponent(cwd)}`, {
+        const response = await fetch(withProjectQuery(`/api/plugins/builtins?cwd=${encodeURIComponent(cwd)}`, projectId), {
           cache: "no-store",
           signal: controller.signal,
         });
@@ -157,7 +174,7 @@ function BuiltinSetupNotice({
       controller.abort();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [cwd]);
+  }, [cwd, projectId]);
 
   if (dismissed || !visible) return null;
   const progress = status && status.totalCount > 0
@@ -184,7 +201,9 @@ function BuiltinSetupNotice({
   );
 }
 
-function parkedNewSessionDraftKey(cwd: string): string {
+function parkedNewSessionDraftKey(cwd: string | null, projectId?: string | null): string {
+  if (projectId === null) return "parked-new:standalone";
+  if (projectId !== undefined) return `parked-new:project:${projectId}:${cwd ?? ""}`;
   return `parked-new:${cwd}`;
 }
 
@@ -267,6 +286,34 @@ export function AppShell() {
   }, []);
   // The temporary id distinguishes consecutive fresh composers in one cwd.
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
+  const [newSessionProjectId, setNewSessionProjectId] = useState<string | null | undefined>(undefined);
+  const [projectSnapshot, setProjectSnapshot] = useState<ProjectSnapshot>(EMPTY_PROJECT_SNAPSHOT);
+  const projectFetchRevision = useRef(0);
+  const activeProjectId = selectedSession ? assignedProjectId(selectedSession, projectSnapshot) : newSessionProjectId;
+  const activeProject = projectSnapshot.projects.find((project) => project.id === activeProjectId);
+  const projectDirectoriesKey = activeProject ? JSON.stringify(activeProject.directories.toSorted()) : null;
+  const savedCwdOutsideProject = Boolean(
+    activeProject && selectedSession?.cwd && !projectContainsDirectory(activeProject, selectedSession.cwd),
+  );
+  const refreshProjectSnapshot = useCallback(async () => {
+    const revision = ++projectFetchRevision.current;
+    try {
+      const response = await fetch("/api/projects", { cache: "no-store" });
+      if (!response.ok) return;
+      const next = await response.json() as ProjectSnapshot;
+      if (revision === projectFetchRevision.current) setProjectSnapshot(next);
+    } catch { /* Existing chat history remains available. */ }
+  }, []);
+  const handleProjectSnapshotChange = useCallback((snapshot: ProjectSnapshot) => {
+    projectFetchRevision.current += 1;
+    setProjectSnapshot(snapshot);
+  }, []);
+  useEffect(() => {
+    void refreshProjectSnapshot();
+    const reload = () => void refreshProjectSnapshot();
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, [refreshProjectSnapshot]);
   const [newSessionDraftId, setNewSessionDraftId] = useState("initial");
   const activeNewSessionDraftKeyRef = useRef<string | null>(null);
   const [initialCwdStatus, setInitialCwdStatus] = useState<"idle" | "validating" | "ready" | "error">(
@@ -579,9 +626,25 @@ export function AppShell() {
 
   // Files unmount when inactive; workspace terminals stay mounted until closed.
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
+  const projectBindingRef = useRef({ sessionId: selectedSession?.id, projectId: activeProjectId, projectDirectoriesKey });
   const [subagentPreview, setSubagentPreview] = useState<{ id: string; session?: SessionInfo; error?: string } | null>(null);
   const subagentPreviewId = subagentPreview ? `agent-preview:${subagentPreview.id}` : null;
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
+  useEffect(() => {
+    const previous = projectBindingRef.current;
+    const sessionId = selectedSession?.id;
+    projectBindingRef.current = { sessionId, projectId: activeProjectId, projectDirectoriesKey };
+    // Moving the chat that's open invalidates its idle server runtime and the
+    // browser panels that were bound to the previous project.
+    if (!sessionId || previous.sessionId !== sessionId) return;
+    if (previous.projectId === activeProjectId && previous.projectDirectoriesKey === projectDirectoriesKey) return;
+    setSessionKey((key) => key + 1);
+    setFileTabs([]);
+    setActiveFileTabId(null);
+    setRightPanelOpen(false);
+    setActiveTopPanel(null);
+    setSearchTarget(null);
+  }, [activeProjectId, projectDirectoriesKey, selectedSession?.id]);
   const subagentPreviewOpen = rightPanelOpen && subagentPreviewId !== null && activeFileTabId === subagentPreviewId;
   const previewSession = subagentPreview?.session;
   const previewRelation = previewSession?.relation?.kind === "subagent" ? previewSession.relation : null;
@@ -656,6 +719,10 @@ export function AppShell() {
 
   const initialSessionId = initialNavigation.sessionId;
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeProjectId === null) setActiveCwd(null);
+    else if (activeProjectId !== undefined) setActiveCwd(savedCwdOutsideProject ? null : selectedSession?.cwd ?? newSessionCwd);
+  }, [activeProjectId, newSessionCwd, savedCwdOutsideProject, selectedSession?.cwd]);
   const activeProjectKeyRef = useRef<string | null>(null);
 
   // First-run starter capabilities are installed into Pi's global package
@@ -663,15 +730,15 @@ export function AppShell() {
   // the no-login development mode covered as well as the branded login flow;
   // the server-side bootstrap is idempotent and never blocks the workspace.
   useEffect(() => {
-    if (!activeCwd) return;
-    void fetch("/api/plugins/builtins", {
+    if (!activeCwd || activeProjectId === null || savedCwdOutsideProject) return;
+    void fetch(withProjectQuery("/api/plugins/builtins", activeProjectId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cwd: activeCwd }),
     }).catch(() => {
       // Optional starter packages must not make the workspace unavailable.
     });
-  }, [activeCwd]);
+  }, [activeCwd, activeProjectId, savedCwdOutsideProject]);
 
   // True once the initial ?session= URL param has been resolved (or confirmed absent)
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !initialSessionId);
@@ -690,11 +757,11 @@ export function AppShell() {
   // carry projectKey, so use the active project identity until hydration.
   useEffect(() => {
     if (!selectedSession) return;
-    const projectKey = selectedSession.projectKey
+    const projectKey = activeProjectId !== undefined ? managedWorkspaceKey(activeProjectId) : selectedSession.projectKey
       ?? activeProjectKeyRef.current
       ?? workspaceKeyOf(selectedSession);
     setLastOpenSession(projectKey, selectedSession.id);
-  }, [selectedSession]);
+  }, [activeProjectId, selectedSession]);
 
   useEffect(() => {
     const requestedCwd = initialNavigation.requestedCwd;
@@ -786,6 +853,7 @@ export function AppShell() {
     projectRoot?: string | null,
     projectKey?: string | null,
   ) => {
+    if (activeProjectId !== undefined) return;
     invalidateWorkspaceRestore();
     const currentFreshCwd = newSessionCwd ?? activeCwd;
     setActiveCwd(cwd);
@@ -852,19 +920,20 @@ export function AppShell() {
       restoreWorkspaceContext(newProject, cwd);
     }
     router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
-  }, [activeCwd, activeFileTabId, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
+  }, [activeCwd, activeFileTabId, activeProjectId, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false, entryId?: string, blockIndex?: number) => {
     setSearchTarget(entryId ? { sessionId: session.id, entryId, blockIndex } : null);
     invalidateWorkspaceRestore();
     const activeDraftKey = activeNewSessionDraftKeyRef.current;
     const activeDraftCwd = newSessionCwd ?? (selectedSession === null ? activeCwd : null);
-    if (activeDraftKey && activeDraftCwd) {
-      rekeyDraft(activeDraftKey, parkedNewSessionDraftKey(activeDraftCwd));
+    if (activeDraftKey && (activeDraftCwd || activeProjectId === null)) {
+      rekeyDraft(activeDraftKey, parkedNewSessionDraftKey(activeDraftCwd, activeProjectId));
     }
     activeNewSessionDraftKeyRef.current = null;
     // Adopt an explicitly selected session before the sidebar reports its cwd.
-    const projectKey = workspaceKeyOf(session);
+    const sessionScope = assignedProjectId(session, projectSnapshot);
+    const projectKey = sessionScope === undefined ? workspaceKeyOf(session) : managedWorkspaceKey(sessionScope);
     if (activeProjectKeyRef.current !== projectKey) {
       setFileTabs([]);
       if (!activeFileTabId || activeFileTabId.startsWith("file:")) {
@@ -887,6 +956,8 @@ export function AppShell() {
       }
     }
     setNewSessionCwd(null);
+    setNewSessionProjectId(undefined);
+    if (sessionScope !== undefined) setActiveCwd(sessionScope === null ? null : session.cwd);
     setSelectedSession(session);
     setSessionKey((k) => k + 1);
     setBranchTree([]);
@@ -908,16 +979,32 @@ export function AppShell() {
     if (!isRestore) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
-  }, [activeCwd, activeFileTabId, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, selectedSession]);
+  }, [activeCwd, activeFileTabId, activeProjectId, invalidateWorkspaceRestore, router, isMobile, newSessionCwd, projectSnapshot, selectedSession]);
 
-  const handleNewSession = useCallback((sessionId: string, cwd: string) => {
+  const handleNewSession = useCallback((sessionId: string, cwd: string | null, projectId?: string | null) => {
     invalidateWorkspaceRestore();
-    const draftKey = `new:${sessionId}:${cwd}`;
-    rekeyDraft(parkedNewSessionDraftKey(cwd), draftKey);
+    const draftKey = `new:${sessionId}:${cwd ?? "standalone"}`;
+    const nextWorkspace = projectId !== undefined ? managedWorkspaceKey(projectId) : null;
+    if (activeProjectId !== projectId) {
+      const activeDraftKey = activeNewSessionDraftKeyRef.current;
+      const activeDraftCwd = newSessionCwd ?? (selectedSession === null ? activeCwd : null);
+      if (activeDraftKey && (activeDraftCwd || activeProjectId === null)) {
+        rekeyDraft(activeDraftKey, parkedNewSessionDraftKey(activeDraftCwd, activeProjectId));
+      }
+      setFileTabs([]);
+      if (!activeFileTabId || activeFileTabId.startsWith("file:")) {
+        setActiveFileTabId(null);
+        setRightPanelOpen(false);
+      }
+    }
+    if (cwd || projectId === null) rekeyDraft(parkedNewSessionDraftKey(cwd, projectId), draftKey);
+    if (activeProjectId !== projectId || nextWorkspace) activeProjectKeyRef.current = nextWorkspace;
     activeNewSessionDraftKeyRef.current = draftKey;
     setNewSessionDraftId(sessionId);
     setSelectedSession(null);
     setNewSessionCwd(cwd);
+    setNewSessionProjectId(projectId);
+    if (projectId !== undefined || activeProjectId !== undefined) setActiveCwd(cwd);
     setSessionKey((k) => k + 1);
     setBranchTree([]);
     setBranchActiveLeafId(null);
@@ -927,11 +1014,28 @@ export function AppShell() {
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
     router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
-  }, [invalidateWorkspaceRestore, router, isMobile]);
+  }, [activeCwd, activeFileTabId, activeProjectId, invalidateWorkspaceRestore, newSessionCwd, router, isMobile, selectedSession]);
+
+  const handleNewManagedSession = useCallback((projectId: string | null, cwd: string | null) => {
+    handleNewSession(createProjectDraftId(), cwd, projectId);
+  }, [handleNewSession]);
+
+  const handleProjectScopeChange = useCallback((projectId: string | null | undefined, cwd: string | null) => {
+    if (projectId === activeProjectId) return;
+    if (projectId !== undefined) {
+      const lastId = getLastOpenSession(managedWorkspaceKey(projectId));
+      const remembered = sessionCatalog.find((session) => session.id === lastId && assignedProjectId(session, projectSnapshot) === projectId);
+      if (remembered) {
+        handleSelectSession(remembered);
+        return;
+      }
+    }
+    handleNewSession(createProjectDraftId(), cwd, projectId);
+  }, [activeProjectId, handleNewSession, handleSelectSession, projectSnapshot, sessionCatalog]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N etc.)
   useGlobalKeyboardShortcuts({
-    onNewSession: (cwd: string) => handleNewSession(`kb-${Date.now()}`, cwd),
+    onNewSession: (cwd: string) => handleNewSession(`kb-${Date.now()}`, cwd, activeProjectId),
     activeCwd,
   });
 
@@ -986,10 +1090,16 @@ export function AppShell() {
   // Called by ChatWindow when a new session gets its real id from pi
   const handleSessionCreated = useCallback((session: SessionInfo, sourceDraftKey: string) => {
     setRefreshKey((k) => k + 1);
+    if (session.projectId !== undefined) {
+      const projectId = session.projectId;
+      projectFetchRevision.current += 1;
+      setProjectSnapshot((snapshot) => ({ ...snapshot, assignments: { ...snapshot.assignments, [session.id]: projectId } }));
+    }
     if (activeNewSessionDraftKeyRef.current !== sourceDraftKey) return;
     invalidateWorkspaceRestore();
     activeNewSessionDraftKeyRef.current = null;
     setNewSessionCwd(null);
+    setNewSessionProjectId(undefined);
     setSelectedSession(session);
     hydrateSelectedSession(session.id);
     router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
@@ -1111,14 +1221,17 @@ export function AppShell() {
     setRefreshKey((k) => k + 1);
     setSessionKey((k) => k + 1);
     setNewSessionCwd(null);
+    setNewSessionProjectId(undefined);
     setSelectedSession((prev) => ({
       ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
       id: newSessionId,
+      projectId: activeProjectId,
       transient: false,
     }));
+    void refreshProjectSnapshot();
     hydrateSelectedSession(newSessionId);
     router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
-  }, [invalidateWorkspaceRestore, router, hydrateSelectedSession]);
+  }, [activeProjectId, invalidateWorkspaceRestore, router, hydrateSelectedSession, refreshProjectSnapshot]);
 
   const handleAskInNewChat = useCallback(async (
     prompt: string,
@@ -1142,7 +1255,7 @@ export function AppShell() {
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
     if (selectedSession?.id === sessionId) {
-      const cwd = selectedSession.cwd;
+      const cwd = activeProjectId === null ? null : activeProject?.defaultDirectory ?? selectedSession.cwd;
       const draftId = typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -1150,6 +1263,7 @@ export function AppShell() {
       activeNewSessionDraftKeyRef.current = cwd ? `new:${draftId}:${cwd}` : null;
       setSelectedSession(null);
       setNewSessionCwd(cwd ?? null);
+      setNewSessionProjectId(activeProjectId);
       setSessionKey((k) => k + 1);
       setBranchTree([]);
       setBranchActiveLeafId(null);
@@ -1159,21 +1273,23 @@ export function AppShell() {
       setActiveTopPanel(null);
       router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
     }
-  }, [invalidateWorkspaceRestore, selectedSession, router]);
+  }, [activeProject, activeProjectId, invalidateWorkspaceRestore, selectedSession, router]);
 
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
-    options?: { sourceSessionId?: string | null; modeHint?: "diff" },
+    options?: { sourceSessionId?: string | null; projectId?: string; modeHint?: "diff" },
   ) => {
     const sourceSessionId = options?.sourceSessionId;
+    const projectId = options?.projectId;
     const modeHint = options?.modeHint;
-    const tabId = `file:${filePath}`;
+    const tabId = projectId ? `file:${projectId}:${filePath}` : `file:${filePath}`;
     setFileTabs((prev) => openFileTab(prev, {
       fileName,
       filePath,
       modeHint,
       sourceSessionId,
+      projectId,
       tabId,
     }));
     setActiveFileTabId(tabId);
@@ -1183,8 +1299,11 @@ export function AppShell() {
   }, [isMobile]);
 
   const handleOpenLinkedFile = useCallback((filePath: string) => {
-    handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null });
-  }, [handleOpenFile, selectedSession?.id]);
+    handleOpenFile(filePath, getFileName(filePath), {
+      sourceSessionId: selectedSession?.id ?? null,
+      projectId: activeProjectId ?? undefined,
+    });
+  }, [activeProjectId, handleOpenFile, selectedSession?.id]);
 
   const handleOpenTerminal = useCallback((cwd: string) => {
     const existing = terminalTabs.find((tab) => tab.cwd === cwd);
@@ -1228,15 +1347,16 @@ export function AppShell() {
   }, [fileTabs, subagentPreviewId, terminalTabs]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
-  const effectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
-  const newSessionDraftKey = selectedSession === null && effectiveNewSessionCwd
-    ? `new:${newSessionDraftId}:${effectiveNewSessionCwd}`
+  const effectiveNewSessionCwd = activeProjectId === null ? null : newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
+  const isFreshChat = selectedSession === null && (effectiveNewSessionCwd !== null || activeProjectId === null);
+  const newSessionDraftKey = isFreshChat
+    ? `new:${newSessionDraftId}:${effectiveNewSessionCwd ?? "standalone"}`
     : null;
   useLayoutEffect(() => {
     activeNewSessionDraftKeyRef.current = newSessionDraftKey;
   }, [newSessionDraftKey]);
-  const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
-  const projectTrustCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
+  const showChat = selectedSession !== null || isFreshChat;
+  const projectTrustCwd = activeProjectId === null || savedCwdOutsideProject ? null : selectedSession?.cwd ?? effectiveNewSessionCwd;
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
 
@@ -1247,7 +1367,7 @@ export function AppShell() {
     if (!projectTrustCwd) return;
 
     const controller = new AbortController();
-    fetch(`/api/project-trust?cwd=${encodeURIComponent(projectTrustCwd)}`, {
+    fetch(withProjectQuery(`/api/project-trust?cwd=${encodeURIComponent(projectTrustCwd)}`, activeProjectId ?? undefined), {
       signal: controller.signal,
     })
       .then(async (response) => {
@@ -1260,14 +1380,14 @@ export function AppShell() {
         console.error("Failed to load project trust:", error);
       });
     return () => controller.abort();
-  }, [projectTrustCwd]);
+  }, [activeProjectId, projectTrustCwd]);
 
   const handleTrustProject = useCallback(async () => {
     if (!projectTrustCwd || projectTrustBusy) return;
     setProjectTrustBusy(true);
     setProjectTrustError(null);
     try {
-      const response = await fetch("/api/project-trust", {
+      const response = await fetch(withProjectQuery("/api/project-trust", activeProjectId ?? undefined), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd: projectTrustCwd }),
@@ -1283,7 +1403,7 @@ export function AppShell() {
     } finally {
       setProjectTrustBusy(false);
     }
-  }, [projectTrustBusy, projectTrustCwd]);
+  }, [activeProjectId, projectTrustBusy, projectTrustCwd]);
 
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
@@ -1306,12 +1426,17 @@ export function AppShell() {
         selectedSessionId={selectedSession?.id ?? null}
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
+        projectSnapshot={projectSnapshot}
+        activeProjectId={activeProjectId}
+        onProjectScopeChange={handleProjectScopeChange}
+        onNewManagedSession={handleNewManagedSession}
+        onProjectSnapshotChange={handleProjectSnapshotChange}
         initialSessionId={initialSessionId}
         skipInitialProjectSelection={initialNavigation.requestedCwd !== null}
         onInitialRestoreDone={handleInitialRestoreDone}
         refreshKey={refreshKey}
         onSessionDeleted={handleSessionDeleted}
-        selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
+        selectedCwd={activeProjectId === null ? null : selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
         onOpenFile={handleOpenFile}
         onOpenTerminal={handleOpenTerminal}
@@ -2393,14 +2518,21 @@ export function AppShell() {
         </div>
         {isMobile && renderProjectTrustWarning(true)}
         </div>
-        {activeCwd && (
+        {activeCwd && activeProjectId !== null && !savedCwdOutsideProject && (
           <BuiltinSetupNotice
             cwd={activeCwd}
+            projectId={activeProjectId}
             onOpenPlugins={() => {
               setActiveTopPanel(null);
               setSettingsSection("plugins");
             }}
           />
+        )}
+
+        {savedCwdOutsideProject && (
+          <p className="px-4 py-2 text-sm text-[var(--text-muted)]" role="status">
+            {translate("projects.originalFolderUnavailable")}
+          </p>
         )}
 
         {/* Chat content */}
@@ -2415,6 +2547,9 @@ export function AppShell() {
               onScrollPositionChange={handleSessionScrollPositionChange}
               sessionRunning={Boolean(selectedSession && runningSessionIds.has(selectedSession.id))}
               newSessionCwd={effectiveNewSessionCwd}
+              projectId={activeProjectId}
+              savedCwdOutsideProject={savedCwdOutsideProject}
+              uploadCwd={savedCwdOutsideProject ? null : activeProject?.defaultDirectory}
               newSessionDraftKey={newSessionDraftKey}
               onAgentEnd={handleAgentEnd}
               onAttentionNeeded={handleAttentionNeeded}
@@ -2571,11 +2706,15 @@ export function AppShell() {
                         key={previewSession.id}
                         session={previewSession}
                         newSessionCwd={null}
+                        projectId={previewSession.projectId ?? activeProjectId}
                         newSessionDraftKey={null}
                         sessionRunning={previewStatus === "queued" || previewStatus === "starting" || previewStatus === "running"}
                         previewOnly
                         soundEnabled={false}
-                        onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: previewSession.id })}
+                        onOpenFile={(filePath) => handleOpenFile(filePath, getFileName(filePath), {
+                          sourceSessionId: previewSession.id,
+                          projectId: activeProjectId ?? undefined,
+                        })}
                       />
                     </div>
                   </>
@@ -2592,6 +2731,7 @@ export function AppShell() {
               filePath={activeFileTab.filePath}
               cwd={activeCwd ?? undefined}
               sourceSessionId={activeFileTab.sourceSessionId}
+              projectId={activeFileTab.projectId}
               gitRefreshKey={explorerRefreshKey}
               initialDisplayMode={activeFileTab.initialDisplayMode}
               initialState={activeFileTab.viewerState}
@@ -2606,7 +2746,7 @@ export function AppShell() {
               onOpenFile={(filePath) => handleOpenFile(
                 filePath,
                 getFileName(filePath),
-                { sourceSessionId: activeFileTab.sourceSessionId },
+                { sourceSessionId: activeFileTab.sourceSessionId, projectId: activeFileTab.projectId },
               )}
             />
           ) : !terminalTabs.some((tab) => tab.id === activeFileTabId) ? (
@@ -2631,6 +2771,7 @@ export function AppShell() {
     {settingsSection && (
       <SettingsPanel
         cwd={projectTrustCwd}
+        projectId={activeProjectId ?? undefined}
         sessionId={selectedSession?.id ?? null}
         initialSection={settingsSection}
         quoteSelectionEnabled={quoteSelectionEnabled}

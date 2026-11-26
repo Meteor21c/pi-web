@@ -38,6 +38,7 @@ const UI_SCALE_CHOICES: Array<{ id: UiScaleOption }> = [
 ];
 
 interface Props {
+  projectId?: string;
   cwd: string | null;
   sessionId: string | null;
   initialSection: SettingsSection;
@@ -376,7 +377,7 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
   );
 }
 
-export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Props) {
+export function SettingsPanel({ cwd, projectId, sessionId, initialSection, onClose, onSessionReloaded, quoteSelectionEnabled, onQuoteSelectionChange }: Props) {
   const { t } = useI18n();
   const [section, setSection] = useState<SettingsSection>(initialSection);
   const [mountedSections, setMountedSections] = useState<ReadonlySet<SettingsSection>>(
@@ -484,10 +485,11 @@ export function SettingsPanel({ cwd, sessionId, initialSection, onClose, onSessi
             }}
           />)}
           {cwd && sectionHost("skills", <SkillsConfig embedded key={cwd} cwd={cwd} onClose={onClose} />)}
-          {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} onClose={onClose} />)}
+          {cwd && sectionHost("agents", <AgentsConfig embedded key={cwd} cwd={cwd} projectId={projectId} onClose={onClose} />)}
           {cwd && sectionHost("plugins", <PluginsConfig embedded
             key={cwd}
             cwd={cwd}
+            projectId={projectId}
             sessionId={sessionId}
             initialCommunityQuery={pluginSearchQuery}
             onClose={onClose}

@@ -149,16 +149,18 @@ test("fresh sessions use the preference while persisted and live sessions restor
 
   assert.match(
     preferenceSource,
-    /const existingSessionId = session\?\.id;[\s\S]*?useLayoutEffect\(\(\) => \{\s*if \(!isNew \|\| sessionIdRef\.current\) return;\s*setToolPresetState\(getPreferredToolPreset\(\)\)/,
+    /useLayoutEffect\(\(\) => \{\s*if \(!isNew \|\| sessionIdRef\.current\) return;\s*setToolPresetState\(standalone \? "none" : getPreferredToolPreset\(\)\);\s*\}, \[isNew, standalone, setToolPresetState\]\)/,
   );
   assert.match(source, /if \(agentState\?\.running\) \{\s*if \(!previewOnly\) loadTools\(session\.id\)/);
   assert.match(source, /d\.toolNames !== undefined \? getPresetFromToolNames\(d\.toolNames\) : "default"/);
-  assert.match(changeSource, /setPreferredToolPreset\(preset\)/);
+  assert.match(changeSource, /if \(standalone\) return preset === "none";[\s\S]*?if \(remember\) setPreferredToolPreset\(preset\)/);
   assert.match(changeSource, /\(sid, \{\s*type: "set_tools",\s*toolNames: getToolNamesForPreset\(preset\)/);
   assert.match(changeSource, /activeSessionId !== sid \|\| result\?\.recreated/);
   assert.match(changeSource, /result\?\.recreated[\s\S]*?maintainEventsConnected\(activeSessionId\)/);
   assert.match(changeSource, /sessionIdRef\.current = activeSessionId/);
+  assert.match(loadToolsSource, /setToolPresetState\(getPresetFromTools\(tools\)\)/);
   assert.doesNotMatch(loadToolsSource, /setPreferredToolPreset/);
+  assert.match(chatWindowSource, /const limitedTools = projectId === null \|\| Boolean\(savedCwdOutsideProject\) \|\| toolPreset === "none" \|\| toolPreset === "read-only"/);
 });
 
 test("forks from a final assistant reply and edits before the original user message", () => {
@@ -238,7 +240,8 @@ test("stale fresh-session completion cannot replace the active composer", () => 
     appShellSource.indexOf("  const handleAgentEnd = useCallback"),
   );
 
-  assert.match(newSessionSource, /const draftKey = `new:\$\{sessionId\}:\$\{cwd\}`/);
+  assert.match(newSessionSource, /const draftKey = `new:\$\{sessionId\}:\$\{cwd \?\? "standalone"\}`/);
+  assert.match(appShellSource, /const newSessionDraftKey = isFreshChat\s+\? `new:\$\{newSessionDraftId\}:\$\{effectiveNewSessionCwd \?\? "standalone"\}`/);
   assert.match(newSessionSource, /activeNewSessionDraftKeyRef\.current = draftKey/);
   assert.match(createdSource, /activeNewSessionDraftKeyRef\.current !== sourceDraftKey/);
   assert.match(cwdChangeSource, /const currentFreshCwd = newSessionCwd \?\? activeCwd/);

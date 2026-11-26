@@ -3,6 +3,7 @@ import { homedir } from "os";
 import path from "path";
 import { getAdditionalAllowedRoots, normalizeSlashes } from "./allowed-roots";
 import { isExistingPathWithinRoots, isPathWithinRoots } from "./path-security";
+import { getActiveProjectRoots, getNamedProject, getProjectSnapshot } from "./project-store";
 import { listAllSessions } from "./session-reader";
 export { allowFileRoot, normalizeSlashes } from "./allowed-roots";
 export { isWindowsAbsolutePath } from "./paths";
@@ -17,14 +18,24 @@ declare global {
 
 const ALLOWED_ROOTS_TTL_MS = 5_000;
 
-export async function getAllowedFileRoots(): Promise<Set<string>> {
+export function getProjectFileRoots(projectId: string): Set<string> {
+  const project = getNamedProject(projectId);
+  return project ? getActiveProjectRoots(project) : new Set();
+}
+
+export async function getAllowedFileRoots(projectId?: string | null): Promise<Set<string>> {
+  if (projectId === null) return new Set();
+  if (projectId !== undefined) return getProjectFileRoots(projectId);
+
   const now = Date.now();
   const cached = globalThis.__piAllowedRootsCache;
   if (cached && cached.expiresAt > now) return cached.roots;
 
   const sessions = await listAllSessions();
+  const { assignments } = getProjectSnapshot();
   const roots = new Set<string>();
   for (const s of sessions) {
+    if (Object.hasOwn(assignments, s.id)) continue;
     if (s.cwd) roots.add(normalizeSlashes(s.cwd));
     // The project root (main repo shared by all worktrees) is browsable too —
     // the project dropdown lists it even when only worktrees have sessions.
@@ -56,4 +67,13 @@ export function isFilePathAllowed(target: string, allowedRoots: Set<string>): bo
 /** Authorize an existing path after resolving symbolic links. */
 export function isExistingFilePathAllowed(target: string, allowedRoots: Set<string>): boolean {
   return isExistingPathWithinRoots(target, allowedRoots);
+}
+
+/** Settings pickers may target any folder the user added to a local project. */
+export async function getWorkspaceConfigurationRoots(): Promise<Set<string>> {
+  const roots = new Set(await getAllowedFileRoots());
+  for (const project of getProjectSnapshot().projects) {
+    for (const directory of getActiveProjectRoots(project)) roots.add(directory);
+  }
+  return roots;
 }

@@ -13,6 +13,7 @@ import type { WorkMode } from "@/lib/prompt-presets";
 import { USER_QUESTION_TOOL } from "@/lib/user-questions";
 import { readPreferredApprovalPolicy, savePreferredApprovalPolicy, type ComputerUseApprovalPolicy } from "@/lib/computer-use-approval-policy";
 import { GOAL_CONTINUATION_TYPE, GOAL_OUTCOME_TYPE } from "@/lib/session-goal-types";
+import { isSessionForkDivider } from "@/lib/session-fork-origin";
 import { AUTOMATIC_SUBAGENT_RETRY_TYPE, DEFAULT_SUBAGENT_MODE, SUBAGENT_RESULTS_TYPE, type SubagentMode } from "@/lib/subagent-mode";
 import { readTurnDurationMs, TURN_TIMING_TYPE } from "@/lib/session-timing";
 import { SUBAGENT_NOTIFICATION_TYPE } from "@/lib/subagent-display";
@@ -49,6 +50,9 @@ interface Props {
   onScrollPositionChange?: (sessionId: string, position: ChatScrollPosition) => void;
   sessionRunning?: boolean;
   newSessionCwd: string | null;
+  projectId?: string | null;
+  savedCwdOutsideProject?: boolean;
+  uploadCwd?: string | null;
   newSessionDraftKey: string | null;
   onAgentEnd?: () => void;
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
@@ -331,7 +335,7 @@ function TurnLabels({ message, modelNames, modeLabel }: {
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onToolPresetControlChange, onSessionReloadControlChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, projectId, savedCwdOutsideProject, uploadCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onToolPresetControlChange, onSessionReloadControlChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const showMinimapRail = !previewOnly && !isMobile;
@@ -397,7 +401,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     handleToolPresetChange, handleThinkingLevelChange, handleWorkModeChange, handleGoalChange, loadTools, loadSlashCommands, scrollUserMsgToTop,
     loadContext, activeLeafId, scrollToBottom, scrollToMessage,
   } = useAgentSession({
-    session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    session, sessionRunning, newSessionCwd, projectId, savedCwdOutsideProject, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
     deferInitialScroll: Boolean(pendingScrollRestore),
     subagentMode: previewOnly || session?.relation?.kind === "subagent" ? undefined : subagentMode,
@@ -505,8 +509,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const composerBusy = sessionBusy || isCompacting;
   const stoppingCompaction = isCompacting && !sessionBusy;
   const stopRun = stoppingCompaction ? handleAbortCompaction : handleAbort;
-  const hasToolPresetControl = completionNotificationsEnabled && (isNew || Boolean(session));
-  const limitedTools = toolPreset === "none" || toolPreset === "read-only";
+  const hasToolPresetControl = projectId !== null && !savedCwdOutsideProject && completionNotificationsEnabled && (isNew || Boolean(session));
+  const limitedTools = projectId === null || Boolean(savedCwdOutsideProject) || toolPreset === "none" || toolPreset === "read-only";
   const planMode = (data?.pendingWorkMode ?? data?.workMode ?? composerWorkMode) === "plan";
   const toolPresetDisabled = loading || Boolean(error) || composerBusy || toolPresetChanging || sessionReloading;
   const reloadDisabled = toolPresetDisabled || Boolean(queuedMessages?.steering.length || queuedMessages?.followUp.length);
@@ -1082,7 +1086,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
   const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
   const hasStreamingContent = Boolean(streamState.streamingMessage?.content.length);
-  const messageCwd = session?.cwd ?? newSessionCwd ?? undefined;
+  const messageCwd = projectId === null ? undefined : session?.cwd ?? newSessionCwd ?? undefined;
   const promptAnchorSpacerRef = useRef<HTMLDivElement | null>(null);
   const promptAnchorSpacerHeightRef = useRef(0);
   const promptAnchorMeasureFrameRef = useRef<number | null>(null);
@@ -1191,6 +1195,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
 
   const chatInputElement = (
     <ChatInput
+      projectId={projectId ?? undefined}
+      uploadCwd={uploadCwd}
       ref={chatInputRef}
       onSend={handleSend}
       onAbort={stopRun}
@@ -1234,7 +1240,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         limited={limitedTools || planMode}
       />}
       subagentMode={limitedTools || planMode ? "off" : subagentMode}
-      onSubagentModeChange={completionNotificationsEnabled ? handleSubagentModeChange : undefined}
+      onSubagentModeChange={projectId !== null && !savedCwdOutsideProject && completionNotificationsEnabled ? handleSubagentModeChange : undefined}
       subagentModeDisabled={planMode || toolPresetDisabled}
       subagentModeDialog={completionNotificationsEnabled && limitedTools && (
         <dialog
@@ -1273,7 +1279,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       onSoundToggle={onSoundToggle}
       onAudioUnlock={unlockAudio}
       draftKey={session?.id ?? newSessionDraftKey ?? undefined}
-      cwd={session?.cwd ?? newSessionCwd}
+      cwd={messageCwd ?? null}
     />
   );
 
@@ -1474,13 +1480,27 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               const rendered: ReactNode[] = [];
               const goalUnavailable = goalsEnabled && (goalLoading || goalLoadError);
               for (let idx = 0; idx < timelineMessages.length;) {
+                if (isSessionForkDivider(timelineMessages[idx])) {
+                  const label = t("chat.forkOriginDivider");
+                  rendered.push(
+                    <div key={getMessageKey(idx)} role="separator" aria-label={label} className="my-6 flex items-center gap-3 text-xs text-text-muted">
+                      <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                      {label}
+                      <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                    </div>,
+                  );
+                  idx += 1;
+                  continue;
+                }
                 // A lazily loaded history page may start halfway through a turn.
                 const hasTurnStart = startsUserTurn(timelineMessages[idx]);
                 const userIdx = hasTurnStart ? idx : idx - 1;
                 let endIdx = userIdx + 1;
-                while (endIdx < timelineMessages.length && !startsUserTurn(timelineMessages[endIdx])) endIdx += 1;
+                while (endIdx < timelineMessages.length
+                  && !startsUserTurn(timelineMessages[endIdx]) && !isSessionForkDivider(timelineMessages[endIdx])) endIdx += 1;
+                const endsAtFork = endIdx < timelineMessages.length && isSessionForkDivider(timelineMessages[endIdx]);
                 const isLatestTurn = userIdx === lastTurnStartIdx;
-                const isLiveTurn = (agentRunning || streamState.isStreaming) && isLatestTurn;
+                const isLiveTurn = !endsAtFork && (agentRunning || streamState.isStreaming) && isLatestTurn;
                 const hasCompleteHistory = hasTurnStart || !hasEarlierMessages;
                 const turnKey = getMessageKey(hasTurnStart ? userIdx : idx);
                 if (hasTurnStart) rendered.push(renderMessage(userIdx));
@@ -1498,7 +1518,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 const goalOutcome = goalOutcomeByAssistant.get(finalAssistantIdx);
                 const isGoalTurn = turnWorkMode === "goal" || turnMessages.some(isGoalOutcomeMessage)
                   || (!hasTurnStart && isLatestTurn && data?.workMode === "goal" && (sessionGoal !== null || goalUnavailable));
-                const canShowFinal = repliedToLastInput && (!isGoalTurn || shouldShowSettledGoalFinal({
+                const canShowFinal = repliedToLastInput && (endsAtFork || !isGoalTurn || shouldShowSettledGoalFinal({
                   outcome: goalOutcome,
                   latest: isLatestTurn,
                   goalUnavailable,

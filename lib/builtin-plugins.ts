@@ -14,7 +14,6 @@ import type {
   PluginScope,
 } from "./api-types";
 import { writePrivateFileAtomicSync } from "./atomic-file";
-import { setPluginActivationMode } from "./plugin-activation";
 import { getProjectTrustStatus } from "./project-trust";
 import { withPluginOperationLock } from "./plugin-operation-lock";
 import {
@@ -476,9 +475,6 @@ async function runBuiltinBootstrap(cwd: string, force = false): Promise<BuiltinP
         // Unpinned official source: the user can update it later from the same
         // Installed view, and a future release does not need to vendor files.
         await inspected.manager!.installAndPersist(definition.source);
-      }
-      if (!configured && "activationMode" in definition && definition.activationMode === "session") {
-        setPluginActivationMode(inspected.settings!, definition.source, "global", "session");
       }
       await inspected.settings!.flush();
       const refreshed = userPackageForDefinition(inspected.manager!.listConfiguredPackages(), definition);

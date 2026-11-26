@@ -16,6 +16,7 @@ import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
 import { listSessionsIncremental } from "./session-list-scanner";
 import { readSessionThinkingSelection } from "./session-thinking";
 import { readUserTurnMetadata } from "./session-work-mode";
+import { readSessionForkOrigin, SESSION_FORK_ORIGIN_TYPE } from "./session-fork-origin";
 
 export { getAgentDir };
 
@@ -671,6 +672,17 @@ function entryToUiMessage(
         details: entry.details,
         timestamp: parseEntryTimestamp(entry.timestamp),
       };
+    case "custom": {
+      const origin = readSessionForkOrigin(entry);
+      if (!origin || origin.sessionId !== options.sessionId) return null;
+      return {
+        role: "custom",
+        customType: SESSION_FORK_ORIGIN_TYPE,
+        content: "",
+        display: false,
+        timestamp: parseEntryTimestamp(entry.timestamp),
+      };
+    }
     default:
       return null;
   }

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { realpathSync } from "fs";
 import { resolve } from "path";
-import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getWorkspaceConfigurationRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { samePath } from "@/lib/paths";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
@@ -67,7 +67,7 @@ export async function PATCH(req: Request) {
     const sessionId = body.sessionId.trim();
     const source = body.source.trim();
     const scope = readScope(body.scope);
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getWorkspaceConfigurationRoots();
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -94,7 +94,7 @@ export async function PATCH(req: Request) {
     });
     const entry = findPluginPackageEntry(settingsManager, source, scope);
     if (!entry) return NextResponse.json({ error: "Plugin package not found" }, { status: 404 });
-    if (getPluginActivationMode(entry) !== "session") {
+    if (getPluginActivationMode(entry, scope) !== "session") {
       return NextResponse.json(
         { error: "Only session-mode plugins can be toggled for an individual session" },
         { status: 409 },

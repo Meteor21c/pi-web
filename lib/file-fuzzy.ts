@@ -12,9 +12,11 @@ export interface AtQueryMatch {
 }
 
 export interface FileIndexEntry {
-  /** Path relative to the session cwd, "/"-separated, no trailing slash */
+  /** Display path relative to a session or to the named project. */
   path: string;
   isDir: boolean;
+  /** In multi-folder projects a displayed path may be outside the session cwd. */
+  absolutePath?: string;
 }
 
 /**
@@ -95,7 +97,8 @@ function isSubsequence(needle: string, haystack: string): boolean {
  * src directory itself, since "src" does not start with "src/").
  */
 function scoreEntry(entry: FileIndexEntry, lowerQuery: string): number {
-  const lowerPath = entry.path.toLowerCase();
+  const absoluteQuery = lowerQuery.startsWith("/") || /^[a-z]:\//.test(lowerQuery);
+  const lowerPath = (absoluteQuery && entry.absolutePath ? entry.absolutePath : entry.path).toLowerCase();
   let score = 0;
   if (lowerQuery.includes("/")) {
     if (lowerPath === lowerQuery) score = 100;
@@ -155,7 +158,7 @@ export interface AtInsertion {
  *   completion keep the token well-formed.
  */
 export function buildAtInsertText(entryPath: string, isDir: boolean, forceQuotes = false): AtInsertion {
-  const p = isDir ? `${entryPath}/` : entryPath;
+  const p = isDir && !entryPath.endsWith("/") ? `${entryPath}/` : entryPath;
   const needsQuotes = forceQuotes || p.includes(" ");
   if (isDir) {
     const text = needsQuotes ? `@"${p}"` : `@${p}`;

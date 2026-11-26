@@ -13,7 +13,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "path must be an absolute path" }, { status: 400 });
     }
 
-    const allowedRoots = await getAllowedFileRoots();
+    const projectId = request.nextUrl.searchParams.get("projectId");
+    const allowedRoots = await getAllowedFileRoots(projectId ?? undefined);
     if (!isFilePathAllowed(cwd, allowedRoots) || !isFilePathAllowed(filePath, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    return NextResponse.json(await getGitFileDiff(cwd, filePath));
+    return NextResponse.json(await getGitFileDiff(cwd, filePath, projectId === null ? undefined : allowedRoots));
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }

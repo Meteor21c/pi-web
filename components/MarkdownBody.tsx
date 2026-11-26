@@ -75,7 +75,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, sessionId,
             title={filePath}
             aria-label={t("chat.openFile", { file: filePath })}
             onClick={() => onOpenFile(filePath)}
-            onContextMenu={(event) => openFileMenu(event, { filePath, onPreview: () => onOpenFile(filePath) })}
+            onContextMenu={(event) => openFileMenu(event, { filePath, sessionId, onPreview: () => onOpenFile(filePath) })}
           >
             <code className="markdown-inline-code">{children}</code>
             <span className="markdown-file-reference-icon" aria-hidden="true">↗</span>
@@ -120,7 +120,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, sessionId,
 
       return (
         <a href={href} {...props} onClick={handleClick}
-          onContextMenu={(event) => openFileMenu(event, { filePath, onPreview: () => openFile(filePath) })}
+          onContextMenu={(event) => openFileMenu(event, { filePath, sessionId, onPreview: () => openFile(filePath) })}
         >
           {label}
         </a>
@@ -142,7 +142,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, sessionId,
           loading="lazy"
           decoding="async"
           onContextMenu={!insideLink && filePath ? (event) => openFileMenu(event, {
-            filePath, onPreview: onOpenFile ? () => onOpenFile(filePath) : undefined,
+            filePath, sessionId, onPreview: onOpenFile ? () => onOpenFile(filePath) : undefined,
           }) : undefined}
           style={{
             display: "block",

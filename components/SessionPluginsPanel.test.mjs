@@ -18,8 +18,9 @@ test("persists a session selection and requires an explicit reload", () => {
   assert.match(source, /重载会话后才会生效/);
 });
 
-test("explains the Computer Use default while keeping per-session choices editable", () => {
-  assert.match(source, /电脑操作默认开启/);
-  assert.match(source, /Computer Use starts on by default/);
+test("shows the effective session state of a globally managed package", () => {
+  assert.match(source, /pkg\.effectiveEnabled/);
+  assert.match(source, /本会话未启用/);
+  assert.match(source, /全局开启/);
   assert.match(source, /disabled=\{!sessionId \|\| busy\}/);
 });

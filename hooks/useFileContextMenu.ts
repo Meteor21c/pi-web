@@ -4,6 +4,8 @@ import { createContext, useContext, type MouseEvent } from "react";
 
 export interface FileContextMenuTarget {
   filePath: string;
+  projectId?: string;
+  sessionId?: string;
   isDirectory?: boolean;
   nativeAvailable?: boolean;
   onPreview?: () => void;

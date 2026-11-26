@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { withProjectQuery } from "@/lib/file-paths";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { SubagentProfilesResponse, SubagentSettingsResponse } from "@/lib/api-types";
 import type { ModelsData } from "@/lib/models-cache";
@@ -140,10 +141,12 @@ function Toggle({ checked, disabled, label, onChange }: { checked: boolean; disa
 
 export function AgentsConfig({
   cwd,
+  projectId,
   onClose,
   embedded = false,
 }: {
   cwd: string;
+  projectId?: string;
   onClose: () => void;
   embedded?: boolean;
 }) {
@@ -253,7 +256,7 @@ export function AgentsConfig({
     setModelsError(null);
     void (async () => {
       try {
-        const response = await fetch(`/api/models?cwd=${encodeURIComponent(cwd)}`, { signal: controller.signal });
+        const response = await fetch(withProjectQuery(`/api/models?cwd=${encodeURIComponent(cwd)}`, projectId), { signal: controller.signal });
         const data = await response.json() as Partial<ModelsData> & { error?: string };
         if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
         setModelOptions(data.modelList ?? []);
@@ -266,7 +269,7 @@ export function AgentsConfig({
       }
     })();
     return () => controller.abort();
-  }, [cwd, showProfiles]);
+  }, [cwd, projectId, showProfiles]);
 
   const selectProfile = (profile: SubagentProfile) => {
     setSelectedKey(profileKey(profile));

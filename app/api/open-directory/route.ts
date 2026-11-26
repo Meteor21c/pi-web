@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const roots = await getAllowedFileRoots();
+    const roots = await getAllowedFileRoots(new URL(request.url).searchParams.get("projectId") ?? undefined);
     if (!isFilePathAllowed(requestedPath, roots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

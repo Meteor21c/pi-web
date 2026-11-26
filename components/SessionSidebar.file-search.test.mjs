@@ -11,7 +11,7 @@ test("provides a debounced file search UI and opens selected results", () => {
   assert.match(source, /searchQuery/);
   assert.match(source, /\/api\/file-index\?cwd=\$\{encodeURIComponent\(cwd\)\}&q=\$\{encodeURIComponent\(query\)\}/);
   assert.match(source, /setTimeout\(\(\) =>/);
-  assert.match(source, /onOpenFile\(node\.fullPath, node\.name\)/);
+  assert.match(source, /onOpenFile\(node\.fullPath, node\.name, projectId \? \{ projectId \} : undefined\)/);
 });
 
 test("renders search results with the existing expandable file tree", () => {
@@ -22,7 +22,7 @@ test("renders search results with the existing expandable file tree", () => {
 });
 
 test("search result rows use the same file actions as the file tree", () => {
-  assert.match(source, /onAtMention\(getRelativeFilePath\(node\.fullPath, cwd\), node\.isDir\)/);
+  assert.match(source, /onAtMention\(projectId \? node\.fullPath : getRelativeFilePath\(node\.fullPath, cwd\), node\.isDir\)/);
   assert.match(source, /<FileActionsMenu\s+filePath=\{node\.fullPath\}/);
   assert.match(source, /encodeFilePathForApi\(node\.fullPath\)\}\?type=download/);
   assert.match(source, /window\.confirm\(t\("files\.confirmDelete"/);
@@ -31,7 +31,7 @@ test("search result rows use the same file actions as the file tree", () => {
 });
 
 test("project address can open its authorized directory in the native file manager", () => {
-  assert.match(sidebarSource, /fetch\("\/api\/open-directory"/);
+  assert.match(sidebarSource, /fetch\(`\/api\/open-directory\$\{projectQuery\}`/);
   assert.match(sidebarSource, /sidebar\.openInFileManager/);
   assert.match(openDirectorySource, /isExistingFilePathAllowed\(requestedPath, roots\)/);
   assert.match(openDirectorySource, /nativeDirectoryCommand\(directory\)/);

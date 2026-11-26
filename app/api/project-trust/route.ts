@@ -9,7 +9,7 @@ import { destroyRpcSessionsForCwd, hasBusyRpcSessionForCwd } from "@/lib/rpc-man
 
 export const dynamic = "force-dynamic";
 
-async function validateCwd(value: unknown): Promise<
+async function validateCwd(value: unknown, projectId: string | undefined): Promise<
   { cwd: string } | { response: NextResponse }
 > {
   if (typeof value !== "string" || !value.trim()) {
@@ -17,6 +17,9 @@ async function validateCwd(value: unknown): Promise<
   }
 
   const cwd = resolve(value);
+  if (projectId !== undefined && !isExistingFilePathAllowed(cwd, await getAllowedFileRoots(projectId))) {
+    return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+  }
   try {
     if (!(await stat(cwd)).isDirectory()) {
       return { response: NextResponse.json({ error: "cwd must be a directory" }, { status: 400 }) };
@@ -25,15 +28,15 @@ async function validateCwd(value: unknown): Promise<
     return { response: NextResponse.json({ error: "Directory does not exist" }, { status: 400 }) };
   }
 
-  const allowedRoots = await getAllowedFileRoots();
-  if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
+  if (projectId === undefined && !isExistingFilePathAllowed(cwd, await getAllowedFileRoots())) {
     return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
   }
   return { cwd };
 }
 
 export async function GET(req: Request) {
-  const result = await validateCwd(new URL(req.url).searchParams.get("cwd"));
+  const query = new URL(req.url).searchParams;
+  const result = await validateCwd(query.get("cwd"), query.get("projectId") ?? undefined);
   if ("response" in result) return result.response;
   return NextResponse.json(getProjectTrustStatus(result.cwd, getAgentDir()));
 }
@@ -41,7 +44,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json() as { cwd?: unknown };
-    const result = await validateCwd(body.cwd);
+    const result = await validateCwd(body.cwd, new URL(req.url).searchParams.get("projectId") ?? undefined);
     if ("response" in result) return result.response;
 
     const agentDir = getAgentDir();

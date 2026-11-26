@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sendAgentCommand } from "@/lib/agent-client";
+import { withProjectQuery } from "@/lib/file-paths";
 import type {
   BuiltinPluginInfo,
   BuiltinPluginsResponse,
@@ -200,7 +201,7 @@ function builtinStateLabel(
   return t("i18n.builtinPluginPending");
 }
 
-function BuiltinPluginsPanel({ cwd, sessionId }: { cwd: string; sessionId: string | null }) {
+function BuiltinPluginsPanel({ cwd, projectId, sessionId }: { cwd: string; projectId?: string; sessionId: string | null }) {
   const { locale, t } = useI18n();
   const [data, setData] = useState<BuiltinPluginsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -208,7 +209,7 @@ function BuiltinPluginsPanel({ cwd, sessionId }: { cwd: string; sessionId: strin
 
   const load = useCallback(async () => {
     try {
-      const response = await fetch(`/api/plugins/builtins?cwd=${encodeURIComponent(cwd)}`, { cache: "no-store" });
+      const response = await fetch(withProjectQuery(`/api/plugins/builtins?cwd=${encodeURIComponent(cwd)}`, projectId), { cache: "no-store" });
       const next = await response.json() as BuiltinPluginsResponse & { error?: string };
       if (!response.ok || next.error) throw new Error(next.error ?? `HTTP ${response.status}`);
       setData(next);
@@ -216,12 +217,12 @@ function BuiltinPluginsPanel({ cwd, sessionId }: { cwd: string; sessionId: strin
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, [cwd]);
+  }, [cwd, projectId]);
 
   const start = useCallback(async (force = false) => {
     setRetrying(true);
     try {
-      const response = await fetch("/api/plugins/builtins", {
+      const response = await fetch(withProjectQuery("/api/plugins/builtins", projectId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cwd, ...(force ? { force: true } : {}) }),
@@ -235,7 +236,7 @@ function BuiltinPluginsPanel({ cwd, sessionId }: { cwd: string; sessionId: strin
     } finally {
       setRetrying(false);
     }
-  }, [cwd]);
+  }, [cwd, projectId]);
 
   useEffect(() => {
     void start();
@@ -1295,6 +1296,7 @@ function StandaloneExtensionDetail({ extension }: { extension: PluginStandaloneE
 
 export function PluginsConfig({
   cwd,
+  projectId,
   sessionId,
   onClose,
   onReloaded,
@@ -1302,6 +1304,7 @@ export function PluginsConfig({
   initialCommunityQuery,
 }: {
   cwd: string;
+  projectId?: string;
   sessionId: string | null;
   onClose: () => void;
   onReloaded?: () => void;
@@ -1656,7 +1659,7 @@ export function PluginsConfig({
   return (
     <ConfigPanelShell embedded={embedded} title={t("common.plugins")} subtitle={shortenPath(cwd)} closeLabel={t("i18n.close")} onClose={onClose}>
 
-        <BuiltinPluginsPanel cwd={cwd} sessionId={sessionId} />
+        <BuiltinPluginsPanel cwd={cwd} projectId={projectId} sessionId={sessionId} />
 
         {!projectResourcesLoaded && (
           <div role="status" className="config-trust-notice">

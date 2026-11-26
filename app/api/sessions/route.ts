@@ -1,4 +1,5 @@
 import { jsonResponse } from "@/lib/json-response";
+import { getProjectSnapshot } from "@/lib/project-store";
 import {
   attachSessionProjectInfo,
   getSessionListVersion,
@@ -23,7 +24,11 @@ export async function GET(req: Request) {
       persistedSessionsPromise,
       attachSessionProjectInfo(getRpcSessionInfos()),
     ]);
-    const sessions = mergeSessionLists(persistedSessions, runtimeSessions);
+    const { assignments } = getProjectSnapshot();
+    const sessions = mergeSessionLists(persistedSessions, runtimeSessions).map((session) => {
+      const projectId = assignments[session.id];
+      return projectId === undefined ? session : { ...session, projectId };
+    });
     return jsonResponse({
       sessions,
       sessionListVersion,

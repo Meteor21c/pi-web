@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { promisify } from "util";
 import { TEXT_PREVIEW_MAX_BYTES } from "./file-types";
+import { isExistingPathWithinRoots, isPathWithinRoots } from "./path-security";
 import type {
   GitFileDiffResponse,
   GitFileStatus,
@@ -99,9 +100,9 @@ function countUntrackedTextLines(filePath: string): number {
   }
 }
 
-export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
+export async function getGitStatus(cwd: string, projectRoots?: Set<string>): Promise<GitStatusResponse> {
   const repositoryRoot = await findRepositoryRoot(cwd);
-  if (!repositoryRoot) {
+  if (!repositoryRoot || (projectRoots && !isExistingPathWithinRoots(repositoryRoot, projectRoots))) {
     return {
       isGitRepository: false,
       repositoryRoot: null,
@@ -119,6 +120,9 @@ export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
     const filePath = path.resolve(repositoryRoot, entry.path);
     if (!isWithinPath(cwd, filePath)) return [];
     const classified = classifyGitStatus(entry);
+    if (projectRoots && classified.status !== "deleted" && !isExistingPathWithinRoots(filePath, projectRoots)) {
+      return [];
+    }
     return [{
       filePath,
       ...classified,
@@ -185,9 +189,12 @@ async function createTrackedFilePatch(
   }
 }
 
-export async function getGitFileDiff(cwd: string, filePath: string): Promise<GitFileDiffResponse> {
+export async function getGitFileDiff(cwd: string, filePath: string, projectRoots?: Set<string>): Promise<GitFileDiffResponse> {
   const repositoryRoot = await findRepositoryRoot(cwd);
   if (!repositoryRoot || !isWithinPath(repositoryRoot, filePath)) return { supported: false };
+  if (projectRoots && (
+    !isExistingPathWithinRoots(repositoryRoot, projectRoots) || !isPathWithinRoots(filePath, projectRoots)
+  )) return { supported: false };
 
   const resolvedFilePath = path.resolve(filePath);
   const relativePath = toGitPath(path.relative(repositoryRoot, resolvedFilePath));
@@ -208,6 +215,7 @@ export async function getGitFileDiff(cwd: string, filePath: string): Promise<Git
   } catch {
     return { supported: false };
   }
+  if (projectRoots && !isExistingPathWithinRoots(resolvedFilePath, projectRoots)) return { supported: false };
   if (!stat.isFile() || stat.size > TEXT_PREVIEW_MAX_BYTES) return { supported: false };
 
   const currentBuffer = fs.readFileSync(resolvedFilePath);

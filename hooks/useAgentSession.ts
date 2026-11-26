@@ -21,6 +21,7 @@ import { AgentCommandError, isPromptRejectedError, sendAgentCommand } from "@/li
 import { clearDraft, rekeyDraft, restoreDraftSubmission, toChatDraftImage, type ChatDraft, type ChatDraftImage } from "@/lib/draft-store";
 import type { QueueAction, QueuedMessages } from "@/lib/agent-input-queue";
 import { appendImageAttachmentPaths } from "@/lib/file-fuzzy";
+import { withProjectQuery } from "@/lib/file-paths";
 import type { AttachedImage } from "@/lib/image-attachments";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
@@ -160,6 +161,8 @@ export interface UseAgentSessionOptions {
   session: SessionInfo | null;
   sessionRunning?: boolean;
   newSessionCwd: string | null;
+  projectId?: string | null;
+  savedCwdOutsideProject?: boolean;
   newSessionDraftKey: string | null;
   onAgentEnd?: () => void;
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
@@ -289,11 +292,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const { t } = useI18n();
   const { subagentMode, composerWorkMode, computerUseApprovalPolicy, previewOnly } = opts;
   const {
-    session, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    session, newSessionCwd, projectId, savedCwdOutsideProject, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
   } = opts;
 
-  const isNew = session === null && newSessionCwd !== null;
+  const standalone = projectId === null;
+  const isNew = session === null && (newSessionCwd !== null || standalone);
+  const createdCwdRef = useRef<string | null>(null);
 
   const [data, setData] = useState<SessionData | null>(null);
   const [goalState, setGoalState] = useState<{ sid: string; goal: SessionGoal | null } | null>(null);
@@ -323,7 +328,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>({});
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(null);
   const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
-  const [toolPreset, setToolPreset] = useState<ToolPreset>("default");
+  const [toolPreset, setToolPreset] = useState<ToolPreset>(standalone ? "none" : "default");
   const [toolPresetChanging, setToolPresetChanging] = useState(false);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
@@ -454,8 +459,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   useLayoutEffect(() => {
     if (!isNew || sessionIdRef.current) return;
-    setToolPresetState(getPreferredToolPreset());
-  }, [isNew, setToolPresetState]);
+    setToolPresetState(standalone ? "none" : getPreferredToolPreset());
+  }, [isNew, standalone, setToolPresetState]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const container = scrollContainerRef.current;
@@ -754,7 +759,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const promoteNewSession = useCallback((messageCount = 0, firstMessage = "(no messages)") => {
     const sid = sessionIdRef.current;
-    if (!isNew || !newSessionCwd || !sid || newSessionPromotedRef.current) return;
+    const cwd = createdCwdRef.current ?? newSessionCwd;
+    if (!isNew || !cwd || !sid || newSessionPromotedRef.current) return;
     newSessionPromotedRef.current = true;
     const provisionalDraftKey = newSessionDraftKey;
     if (!provisionalDraftKey) return;
@@ -767,7 +773,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     onSessionCreated?.({
       id: sid,
       path: "",
-      cwd: newSessionCwd,
+      cwd,
+      ...(projectId !== undefined ? { projectId } : {}),
       name: undefined,
       created: new Date().toISOString(),
       modified: new Date().toISOString(),
@@ -775,11 +782,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       firstMessage,
       transient: true,
     }, provisionalDraftKey);
-  }, [isNew, newSessionCwd, newSessionDraftKey, onSessionCreated, opts.chatInputRef]);
+  }, [isNew, newSessionCwd, projectId, newSessionDraftKey, onSessionCreated, opts.chatInputRef]);
 
   const ensureNewSession = useCallback(async () => {
     if (sessionIdRef.current) return sessionIdRef.current;
-    if (!isNew || !newSessionCwd) return sessionIdRef.current;
+    if (!isNew) return sessionIdRef.current;
     if (ensuringNewSessionRef.current) return ensuringNewSessionRef.current;
 
     const promise = (async () => {
@@ -794,6 +801,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cwd: newSessionCwd,
+          projectId,
           type: "ensure_session",
           toolNames,
           ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
@@ -802,13 +810,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             : {}),
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const result = await res.json() as {
         sessionId: string;
+        cwd?: string;
+        error?: string;
         model?: SelectedModel | null;
         thinkingLevel?: ThinkingLevelOption;
       };
+      if (!res.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
       const realId = result.sessionId;
+      createdCwdRef.current = result.cwd ?? newSessionCwd;
       sessionIdRef.current = realId;
       if (result.model && newSessionModelOverrideRef.current === selectedModel) {
         setPendingModel(result.model);
@@ -830,7 +841,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       ensuringNewSessionRef.current = null;
     }
-  }, [isNew, newSessionCwd, toolPreset]);
+  }, [isNew, newSessionCwd, projectId, toolPreset]);
 
   // Opening the System or Tools panel may initialize an otherwise dormant
   // session. This is deliberately a non-prompt command: it creates no message
@@ -1664,7 +1675,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         && (persistedMode?.pendingWorkMode ?? persistedMode?.workMode ?? composerWorkMode) !== "plan"
         && toolPreset !== "none" && toolPreset !== "read-only"
         ? { computerUseApprovalPolicy } : {};
-      if (isNew && newSessionCwd) {
+      if (isNew) {
         const selectedModel = newSessionModel;
         const existingSid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
         const sid = existingSid ?? await ensureNewSession();
@@ -1735,7 +1746,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       closeEvents();
       settleUiStage();
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, composerWorkMode, computerUseApprovalPolicy, publishRunClock, reconcileAgentState, restoreSubmission, settleUiStage, subagentMode, syncRunActivity, toolPreset]);
+  }, [isNew, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, composerWorkMode, computerUseApprovalPolicy, publishRunClock, reconcileAgentState, restoreSubmission, settleUiStage, subagentMode, syncRunActivity, toolPreset]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -1934,7 +1945,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const loadModels = useCallback(async (signal?: AbortSignal) => {
     const modelCwd = newSessionCwd ?? session?.cwd ?? "";
-    const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
+    const catalogUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
+    const modelsUrl = standalone || savedCwdOutsideProject
+      ? "/api/models?standalone=1"
+      : withProjectQuery(catalogUrl, projectId ?? undefined);
     let d: ModelsResponse;
     try {
       const res = await fetch(modelsUrl, signal ? { signal } : undefined);
@@ -1981,7 +1995,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setThinkingLevel((pinned as ThinkingLevelOption | undefined) ?? "auto");
       }
     }
-  }, [isNew, newSessionCwd, session?.cwd]);
+  }, [isNew, newSessionCwd, projectId, savedCwdOutsideProject, session?.cwd, standalone]);
 
   const handleBuiltinSlashCommand = useCallback(async (text: string): Promise<BuiltinSlashCommandResult> => {
     if (!text.startsWith("/")) return { handled: false };
@@ -2246,6 +2260,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [composerWorkMode, ensureNewSession, goalsEnabled, handleSend, handleWorkModeChange, isNew, loadSession, promoteNewSession, sessionGoal?.revision, t, updateGoalState]);
 
   const handleToolPresetChange = useCallback(async (preset: ToolPreset, { remember = true } = {}) => {
+    if (standalone) return preset === "none";
     if (toolPresetChangePendingRef.current || agentRunningRef.current || bashRunningRef.current || isCompacting) return false;
     toolPresetChangePendingRef.current = true;
     setToolPresetChanging(true);
@@ -2292,7 +2307,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       toolPresetChangePendingRef.current = false;
       if (sessionHookMountedRef.current) setToolPresetChanging(false);
     }
-  }, [addNotice, cancelEventStreamGrace, closeEvents, isCompacting, loadTools, maintainEventsConnected, setToolPresetState, syncLiveModel, t]);
+  }, [addNotice, cancelEventStreamGrace, closeEvents, isCompacting, loadTools, maintainEventsConnected, setToolPresetState, standalone, syncLiveModel, t]);
 
   const scrollToMessage = useCallback((element: HTMLElement, viewportOffset = 16) => {
     const container = scrollContainerRef.current;

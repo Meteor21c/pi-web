@@ -25,7 +25,12 @@ import {
   preferUserBashExtension,
 } from "./project-command-env";
 import { cacheSessionPath, getLatestModelChange, invalidateSessionListCache, persistPreparedSession, resolveSessionPath } from "./session-reader";
+import { SESSION_FORK_ORIGIN_TYPE, type SessionForkOrigin } from "./session-fork-origin";
+import { formatSessionForkTitle, prepareSessionForkOrigin } from "./session-fork-store";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
+import { getActiveProjectRoots, getNamedProject, getProjectSnapshot, isProjectDirectory, sessionProjectId, setSessionProject } from "./project-store";
+import { allowsProjectToolPath, isProjectFileTool } from "./project-tool-paths";
+import { getStandaloneChatDirectory } from "./standalone-chat-directory";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
@@ -268,6 +273,7 @@ const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = new Set([
 
 export interface RpcSessionStartOptions {
   toolNames?: string[];
+  projectId?: string | null;
   initialModel?: { provider: string; modelId: string };
   allowInitialModelFallback?: boolean;
   thinkingLevel?: ThinkingLevelOption;
@@ -440,6 +446,10 @@ export class AgentSessionWrapper {
       || this.inner.isStreaming || this.inner.isCompacting || this.inner.isBashRunning);
   }
 
+  isBusyForProjectChange(): boolean {
+    return this._alive && (this.isRunning() || this.activeMutatingCommands > 0 || this.hasQueuedUserMessages());
+  }
+
   isChatOnly(): boolean {
     return this.chatOnly;
   }
@@ -546,7 +556,7 @@ export class AgentSessionWrapper {
         });
         // Pi dispatches nested calls via the extension runner, independently of
         // Agent.beforeToolCall. Apply the same policy to each nested operation.
-        pi.on("tool_call", (event) => event.parentToolCallId ? getWrapper()?.guardToolCall(event.toolName) : undefined);
+        pi.on("tool_call", (event) => event.parentToolCallId ? getWrapper()?.guardToolCall(event.toolName, event.input) : undefined);
         pi.registerTool(defineTool({
           name: GOAL_REPORT_TOOL,
           label: "Goal progress",
@@ -1282,7 +1292,7 @@ export class AgentSessionWrapper {
         && this.inner.getActiveToolNames().includes(USER_QUESTION_TOOL)) {
         return { block: true, reason: "Wait for the user's answer before making another tool call." };
       }
-      return this.guardToolCall(context.toolCall.name) ?? await previousBeforeTool?.(context, signal);
+      return this.guardToolCall(context.toolCall.name, context.args) ?? await previousBeforeTool?.(context, signal);
     };
   }
 
@@ -1301,7 +1311,21 @@ export class AgentSessionWrapper {
     ).map(({ name }) => name));
   }
 
-  private guardToolCall(name: string): { block: true; reason: string } | undefined {
+  private guardToolCall(name: string, args?: unknown): { block: true; reason: string } | undefined {
+    const fileTool = isProjectFileTool(name);
+    if (fileTool || name === "bash" || name === "powershell") {
+      const snapshot = getProjectSnapshot();
+      const projectId = snapshot.assignments[this.sessionId];
+      if (projectId !== undefined) {
+        const project = snapshot.projects.find((item) => item.id === projectId);
+        const allowed = project && (fileTool
+          ? allowsProjectToolPath(name, args, this.cwd, [...getActiveProjectRoots(project)])
+          : isProjectDirectory(this.cwd, project));
+        if (!allowed) {
+          return { block: true, reason: "该文件路径不在当前项目的可访问文件夹内，或文件已不可用。" };
+        }
+      }
+    }
     if (this.workModeState.workMode === "plan" && !this.allowedPlanTools().has(name)) {
       return { block: true, reason: "计划模式只允许读取、搜索和向用户提问。要执行操作，请切换到自动或目标模式后再发送新消息。" };
     }
@@ -1388,12 +1412,19 @@ export class AgentSessionWrapper {
     return Boolean(this.inner.getSteeringMessages?.().length || this.inner.getFollowUpMessages?.().length);
   }
 
-  private finalizeBranchedSession(manager: SessionManager, path: string): string {
+  private async finalizeBranchedSession(manager: SessionManager, path: string, origin?: Omit<SessionForkOrigin, "sessionId">): Promise<string> {
+    const sessionId = manager.getSessionId();
+    if (origin) {
+      manager.appendSessionInfo(formatSessionForkTitle(origin.titleBase, origin.number));
+      manager.appendCustomEntry(SESSION_FORK_ORIGIN_TYPE, { ...origin, sessionId });
+    }
     if (!this.suppressCompletionNotifications) inheritSessionWorkMode(manager, this.workModeState.workMode);
     if (manager.getSessionFile() !== path || !persistPreparedSession(manager)) {
       throw new Error("Forked session is missing its session file");
     }
-    return manager.getSessionId();
+    const projectId = sessionProjectId(this.sessionId);
+    if (projectId !== undefined) await setSessionProject(sessionId, projectId);
+    return sessionId;
   }
 
   private assertWorkModeAllowsPrompt(workMode: WorkMode, message: unknown): void {
@@ -1848,6 +1879,8 @@ export class AgentSessionWrapper {
           if (!entry) throw new Error("Invalid entry ID for forking");
 
           const sessionDir = sessionManager.getSessionDir();
+          const sourceManager = SessionManager.open(currentSessionFile, sessionDir);
+          const origin = await prepareSessionForkOrigin(sourceManager);
           let newSessionFile: string;
           let forkedManager: SessionManager;
 
@@ -1860,13 +1893,13 @@ export class AgentSessionWrapper {
             if (this.promptSelection) appendSessionPromptSelection(forkedManager, this.promptSelection);
           } else {
             // Fork after some history: copy path up to (but not including) the fork point
-            forkedManager = SessionManager.open(currentSessionFile, sessionDir);
+            forkedManager = sourceManager;
             const forkedPath = forkedManager.createBranchedSession(entry.parentId);
             if (!forkedPath) throw new Error("Failed to create forked session");
             newSessionFile = forkedPath;
           }
 
-          const newSessionId = this.finalizeBranchedSession(forkedManager, newSessionFile);
+          const newSessionId = await this.finalizeBranchedSession(forkedManager, newSessionFile, origin);
           cacheSessionPath(newSessionId, newSessionFile);
           invalidateSessionListCache();
           await this.shutdownAfterSessionReplacement("fork");
@@ -1887,10 +1920,11 @@ export class AgentSessionWrapper {
 
         const sessionDir = sessionManager.getSessionDir();
         const sourceManager = SessionManager.open(currentSessionFile, sessionDir);
+        const origin = await prepareSessionForkOrigin(sourceManager);
         const forkedPath = sourceManager.createBranchedSession(entryId);
         if (!forkedPath) throw new Error("Failed to create forked session");
 
-        const newSessionId = this.finalizeBranchedSession(sourceManager, forkedPath);
+        const newSessionId = await this.finalizeBranchedSession(sourceManager, forkedPath, origin);
         cacheSessionPath(newSessionId, forkedPath);
         invalidateSessionListCache();
         return { cancelled: false, newSessionId };
@@ -1916,7 +1950,7 @@ export class AgentSessionWrapper {
           const clonedPath = sourceManager.createBranchedSession(leafId);
           if (!clonedPath || !existsSync(clonedPath)) throw new Error("Failed to clone current session branch");
 
-          const newSessionId = this.finalizeBranchedSession(sourceManager, clonedPath);
+          const newSessionId = await this.finalizeBranchedSession(sourceManager, clonedPath);
           cacheSessionPath(newSessionId, clonedPath);
           invalidateSessionListCache();
           await this.shutdownAfterSessionReplacement("clone");
@@ -2105,6 +2139,16 @@ export class AgentSessionWrapper {
       }
 
       case "bash": {
+        const projectId = sessionProjectId(this.sessionId);
+        if (projectId === null) {
+          throw new Error("独立聊天可以直接提问。请在项目中使用终端命令。");
+        }
+        if (projectId !== undefined) {
+          const project = getNamedProject(projectId);
+          if (!project || !isProjectDirectory(this.cwd, project)) {
+            throw new Error("该会话的工作目录不在项目的可访问文件夹内。");
+          }
+        }
         if (this.workModeState.workMode === "plan" || this.workModeState.pendingWorkMode === "plan") {
           throw new Error("计划模式不执行命令，请先切换到自动或目标模式。");
         }
@@ -2887,6 +2931,10 @@ export class AgentSessionWrapper {
   }
 
   private syncProjectTrust(): void {
+    if (restrictProjectWorkspace(sessionProjectId(this.sessionId), this.cwd)) {
+      this.inner.settingsManager.setProjectTrusted(false);
+      return;
+    }
     const status = getProjectTrustStatus(this.cwd, getAgentDir());
     this.inner.settingsManager.setProjectTrusted(status.trusted);
   }
@@ -2923,7 +2971,9 @@ function registerRpcWrapper(wrapper: AgentSessionWrapper): void {
   const registry = getRegistry();
   const sessionId = wrapper.sessionId;
   if (wrapper.sessionFile) cacheSessionPath(sessionId, wrapper.sessionFile);
-  wrapper.onDestroy(() => registry.delete(sessionId));
+  wrapper.onDestroy(() => {
+    if (registry.get(sessionId) === wrapper) registry.delete(sessionId);
+  });
   registry.set(sessionId, wrapper);
   wrapper.start();
   if (!wrapper.isChatOnly()) wrapper.beginExtensionBinding();
@@ -2996,10 +3046,20 @@ export function getRpcSession(sessionId: string): AgentSessionWrapper | undefine
   return getRegistry().get(sessionId);
 }
 
+export function hasBusyRpcSessionForProjectChange(sessionId: string): boolean {
+  return getLocks().has(sessionId) || Boolean(getRpcSession(sessionId)?.isBusyForProjectChange());
+}
+
 export interface SetRpcSessionToolsResult {
   session: AgentSessionWrapper;
   sessionId: string;
   recreated: boolean;
+}
+
+function restrictProjectWorkspace(projectId: string | null | undefined, cwd: string): boolean {
+  if (projectId === undefined) return false;
+  const project = projectId === null ? undefined : getNamedProject(projectId);
+  return !project || !isProjectDirectory(cwd, project);
 }
 
 /** Persist a normal session's tool selection and rebuild when resource policy changes. */
@@ -3009,11 +3069,18 @@ export async function setRpcSessionTools(
   requestedToolNames: unknown,
 ): Promise<SetRpcSessionToolsResult> {
   const toolNames = validateSessionToolSelection(requestedToolNames);
+  const projectId = sessionProjectId(sessionId);
+  if (toolNames.length && projectId === null) {
+    throw new Error("请先把独立聊天移到项目中，再启用本机工具。");
+  }
   const existing = getRpcSession(sessionId);
 
   if (!existing?.isAlive()) {
     if (!sessionFile) throw new Error("Session not found");
     const manager = SessionManager.open(sessionFile, undefined);
+    if (toolNames.length && restrictProjectWorkspace(projectId, manager.getCwd())) {
+      throw new Error("请先把会话的工作文件夹加入项目，再启用本机工具。");
+    }
     if (readSubagentSessionResources(manager.getEntries() as unknown as SessionEntry[])) {
       throw new Error("Subagent tool selection is fixed by its profile");
     }
@@ -3024,6 +3091,9 @@ export async function setRpcSessionTools(
   }
 
   if (existing.isRunning()) throw new Error("Cannot change tools while the session is running");
+  if (toolNames.length && restrictProjectWorkspace(projectId, existing.cwd)) {
+    throw new Error("请先把会话的工作文件夹加入项目，再启用本机工具。");
+  }
   if (readSubagentSessionResources(existing.inner.sessionManager.getEntries() as unknown as SessionEntry[])) {
     throw new Error("Subagent tool selection is fixed by its profile");
   }
@@ -3055,6 +3125,7 @@ export async function setRpcSessionTools(
 
   const started = await startRpcSession(`__recreate__${randomUUID()}`, "", sessionCwd, {
     toolNames,
+    projectId,
     ...(model ? { initialModel: { provider: model.provider, modelId: model.id } } : {}),
     allowInitialModelFallback: true,
     ...(currentThinkingLevel === "auto" || isModelThinkingLevel(currentThinkingLevel)
@@ -3211,6 +3282,11 @@ export async function startRpcSession(
     sessionManager = SessionManager.create(cwd, undefined);
   }
   const sessionCwd = sessionManager.getCwd();
+  const projectId = sessionFile ? sessionProjectId(sessionManager.getSessionId()) : options.projectId;
+  const restrictedWorkspace = restrictProjectWorkspace(projectId, sessionCwd);
+  if (!sessionFile && restrictedWorkspace && projectId !== null) {
+    throw new Error("请选择项目中可用的文件夹");
+  }
   const subagentResources = sessionFile
     ? readSubagentSessionResources(
         sessionManager.getEntries() as unknown as SessionEntry[],
@@ -3223,11 +3299,11 @@ export async function startRpcSession(
   const persistedToolNames = subagentResources
     ? undefined
     : readSessionToolSelection(sessionManager.getEntries() as unknown as SessionEntry[]);
-  const selectedToolNames = subagentResources?.tools ?? persistedToolNames ?? requestedToolNames;
+  const selectedToolNames = restrictedWorkspace ? [] : subagentResources?.tools ?? persistedToolNames ?? requestedToolNames;
   if (!subagentResources && persistedToolNames === undefined && requestedToolNames !== undefined) {
     appendSessionToolSelection(sessionManager, requestedToolNames);
   }
-  const subagentLoadsResources = Boolean(
+  const subagentLoadsResources = !restrictedWorkspace && Boolean(
     subagentResources?.loadExtensions || subagentResources?.loadSkills,
   );
   const chatOnly = selectedToolNames?.length === 0 && !subagentLoadsResources;
@@ -3239,7 +3315,7 @@ export async function startRpcSession(
 
     // Determine which tools to pass based on requested toolNames.
     // Since v0.68.0, session creation expects string[] tool names instead of Tool[] instances.
-    let toolsOption: string[] | undefined = subagentResources?.tools;
+    let toolsOption: string[] | undefined = restrictedWorkspace ? [] : subagentResources?.tools;
     if (!subagentResources && selectedToolNames !== undefined) {
       // toolNames === [] -> "all off" (an empty allow-list disables every tool).
       // Otherwise DO NOT pass a builtin-only allow-list: passing CODING_TOOL_NAMES
@@ -3255,14 +3331,12 @@ export async function startRpcSession(
     // before the SDK restores the saved model from the session file.
     // Gate untrusted project extensions so opening a repository does not run
     // its .pi/extensions code automatically (see lib/project-trust.ts, #236).
-    const trustReloadOptions = subagentResources
-      ? subagentLoadsResources
-        ? projectTrustReloadOptions(sessionCwd, agentDir)
-        : undefined
-      : chatOnly
-        ? undefined
-        : projectTrustReloadOptions(sessionCwd, agentDir);
-    const baseSettingsManager = SettingsManager.create(sessionCwd, agentDir);
+    const loadsProjectResources = !restrictedWorkspace && (subagentResources ? subagentLoadsResources : !chatOnly);
+    const trustReloadOptions = loadsProjectResources ? projectTrustReloadOptions(sessionCwd, agentDir) : undefined;
+    const runtimeCwd = restrictedWorkspace ? getStandaloneChatDirectory() : sessionCwd;
+    const baseSettingsManager = SettingsManager.create(runtimeCwd, agentDir,
+      restrictedWorkspace ? { projectTrusted: false } : undefined,
+    );
     // Session-mode packages must be excluded before the SDK evaluates any
     // extension module. A dynamic settings view lets a normal reload observe
     // the latest session snapshot without hot-unloading the live runner.
@@ -3270,10 +3344,12 @@ export async function startRpcSession(
       useStarterDefaults: !subagentResources,
     });
     const services = await createAgentSessionServices({
-      cwd: sessionCwd,
+      cwd: runtimeCwd,
       agentDir,
       settingsManager,
-      resourceLoaderOptions: subagentResources
+      resourceLoaderOptions: restrictedWorkspace
+        ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, noContextFiles: true, extensionFactories: [createRelaySummaryPolicyExtension()] }
+        : subagentResources
         ? {
             noExtensions: !subagentResources.loadExtensions,
             noSkills: !subagentResources.loadSkills,
@@ -3400,10 +3476,10 @@ export async function startRpcSession(
     );
     if (persistedPreferences.modelDefaultChanged) invalidateModelsCache();
 
-    const exactSystemPrompt = subagentResources?.exactSystemPrompt !== undefined
+    const exactSystemPrompt = !restrictedWorkspace && subagentResources?.exactSystemPrompt !== undefined
       ? () => subagentResources.exactSystemPrompt!
       : chatOnly
-        ? subagentResources
+        ? subagentResources && !restrictedWorkspace
           ? () => subagentResources.appendSystemPrompt[0] ?? ""
           : () => contextFilesSystemPrompt(inner.resourceLoader.getAgentsFiles().agentsFiles)
         : undefined;
@@ -3422,6 +3498,14 @@ export async function startRpcSession(
       wrapper.setActiveToolSelection(selectedToolNames ?? inner.getActiveToolNames(), selectedToolNames === undefined);
     }
     const realSessionId = inner.sessionId as string;
+    if (!sessionFile && projectId !== undefined) {
+      try {
+        await setSessionProject(realSessionId, projectId);
+      } catch (error) {
+        await wrapper.shutdown();
+        throw error;
+      }
+    }
     registerRpcWrapper(wrapper);
 
     return { session: wrapper, realSessionId };

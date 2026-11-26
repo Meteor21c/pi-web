@@ -1,6 +1,6 @@
 # MeteorAgent Release Checklist
 
-MeteorAgent releases are downloadable files, not public npm-registry publications. Each release contains one audited cross-platform npm tarball plus separate Windows and macOS launchers.
+MeteorAgent releases ship through the download site and GitHub Releases. Web releases contain a cross-platform npm tarball and separate Windows and macOS launchers. Desktop releases provide standalone installers with the runtime included.
 
 ## 1. Preflight
 
@@ -48,6 +48,18 @@ The final `customer-release.<version>.*` directory must contain only:
 - `SHA256SUMS`
 
 The `.tgz` is portable. The Windows archive exposes the `【点我启动】MeteorAgent.bat` entrypoint and the guide, with its install scripts and icon under `launcher-files/`. Successful startup creates a branded desktop shortcut. macOS uses an app bundle and an ICNS icon. Both launchers support x64 and ARM64 through the customer's installed Node.js runtime.
+
+### Desktop installers
+
+Build both platform installers from the same verified customer release.
+
+```bash
+bash desktop/package-macos.sh "$CUSTOMER_RELEASE_DIR"
+bash desktop/package-windows.sh "$CUSTOMER_RELEASE_DIR"
+python3 ../meteoragent-brand/scripts/desktop_manifest.py "$CUSTOMER_RELEASE_DIR" "$MAC_DMG" "$WINDOWS_SETUP" "$DESKTOP_MANIFEST"
+```
+
+Set `MAC_DMG` and `WINDOWS_SETUP` to the exact outputs printed by the packagers. Name the manifest `desktop-latest.json` for GitHub. Pass the same three files to the download publisher using `METEOR_DESKTOP_MAC_DMG`, `METEOR_DESKTOP_WINDOWS_EXE`, and `METEOR_DESKTOP_MANIFEST`. The desktop update channel chooses the current platform's latest complete release from `/desktop/latest.json`. The update prompt opens the matching installer and the user applies it after quitting the app.
 
 Starting with v0.1.6, a launcher/global-CLI installation also enables the in-app updater. MeteorAgent reads release notes and integrity metadata from `latest.json`, downloads the exact versioned tarball, verifies its declared size and SHA-256, creates a local rollback package, then replaces and restarts the service. Account credentials, sessions, plugin settings, project files, and browser drafts live outside the application package and are not replaced.
 
@@ -98,7 +110,7 @@ update URL.
 
 ## 5. Publish
 
-Create a GitHub Release in `Meteor21c/pi-web` and attach every file from the clean customer directory. Then deploy the same main tarball, manifest, download page, and the two launcher ZIPs to `dl.meteor21c.fun`.
+Create a GitHub Release in `Meteor21c/pi-web` and attach every file from the clean customer directory. For a desktop release also attach both installers and `desktop-latest.json`. Deploy the same files and the download page to `dl.meteor21c.fun`.
 
 Do not publish the private brand/deployment repository: it contains infrastructure details. Never put customer credentials, API keys, SSH passwords, `.env` files, local caches, traces, or personal build paths in an artifact.
 

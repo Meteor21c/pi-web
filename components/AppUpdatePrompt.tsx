@@ -154,6 +154,15 @@ export function AppUpdatePrompt() {
     if (!update || installing) return;
     setError(null);
     try {
+      const latestResponse = await fetch("/api/app-update?refresh=1", { cache: "no-store" });
+      if (latestResponse.ok) {
+        const latest = await latestResponse.json() as AppUpdateResponse;
+        if (latest.latestVersion !== update.latestVersion || !latest.updateAvailable) {
+          setUpdate(latest.updateAvailable ? latest : null);
+          setOpen(latest.updateAvailable);
+          return;
+        }
+      }
       const response = await fetch("/api/app-update/install", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -210,7 +219,7 @@ export function AppUpdatePrompt() {
             {(update.releaseNotes.length ? update.releaseNotes : [t("appUpdate.defaultNote")]).map((note, index) => <li key={`${index}:${note}`}>{note}</li>)}
           </ul>
           <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "var(--bg)", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.55 }}>
-            {t("appUpdate.dataSafe")}
+            {t(update.desktop ? "appUpdate.desktopInstall" : "appUpdate.dataSafe")}
           </div>
           {runningCount > 0 && <div role="status" style={{ marginTop: 10, color: "#d97706", fontSize: 12 }}>{t("appUpdate.runningTasks", { count: runningCount })}</div>}
           {installing && (
@@ -232,7 +241,7 @@ export function AppUpdatePrompt() {
               {installing ? t("appUpdate.updating") : t("appUpdate.updateNow")}
             </button>
           ) : (
-            <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" style={{ minHeight: 34, padding: "0 16px", display: "inline-flex", alignItems: "center", borderRadius: 7, background: "var(--accent)", color: "var(--accent-contrast)", textDecoration: "none", fontWeight: 650 }}>{t("appUpdate.download")}</a>
+            <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" style={{ minHeight: 34, padding: "0 16px", display: "inline-flex", alignItems: "center", borderRadius: 7, background: "var(--accent)", color: "var(--accent-contrast)", textDecoration: "none", fontWeight: 650 }}>{t(update.desktop ? "appUpdate.desktopDownload" : "appUpdate.download")}</a>
           )}
         </div>
       </div>

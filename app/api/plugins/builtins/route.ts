@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { ensureBuiltinPlugins, getBuiltinPluginStatus } from "@/lib/builtin-plugins";
 import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
@@ -11,11 +12,14 @@ function readCwd(value: unknown): string | undefined {
   return value;
 }
 
-async function validateCwd(cwd: string | undefined): Promise<string> {
-  const resolved = cwd ?? process.cwd();
-  if (!cwd) return resolved;
-  const allowedRoots = await getAllowedFileRoots();
+async function validateCwd(cwd: string | undefined, projectId: string | undefined): Promise<string> {
+  if (!cwd) {
+    if (projectId !== undefined) throw new Error("cwd required");
+    return process.cwd();
+  }
+  const allowedRoots = await getAllowedFileRoots(projectId);
   if (!isExistingFilePathAllowed(cwd, allowedRoots)) throw new Error("Access denied");
+  if (projectId !== undefined && !(await stat(cwd)).isDirectory()) throw new Error("cwd must be a directory");
   return cwd;
 }
 
@@ -25,8 +29,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
   }
   try {
-    const query = new URL(request.url).searchParams.get("cwd");
-    const cwd = await validateCwd(readCwd(query));
+    const query = new URL(request.url).searchParams;
+    const cwd = await validateCwd(readCwd(query.get("cwd")), query.get("projectId") ?? undefined);
     const response = NextResponse.json(getBuiltinPluginStatus(cwd));
     response.headers.set("Cache-Control", "no-store");
     return response;
@@ -55,7 +59,7 @@ export async function POST(request: Request) {
     } catch {
       return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
     }
-    const cwd = await validateCwd(readCwd(body.cwd));
+    const cwd = await validateCwd(readCwd(body.cwd), new URL(request.url).searchParams.get("projectId") ?? undefined);
     void ensureBuiltinPlugins(cwd, { force: body.force === true });
     const status = getBuiltinPluginStatus(cwd);
     const response = NextResponse.json(status, { status: 202 });

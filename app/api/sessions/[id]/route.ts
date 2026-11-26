@@ -24,6 +24,7 @@ import { readSessionToolSelection } from "@/lib/session-tool-selection";
 import { readSessionWorkMode } from "@/lib/session-work-mode";
 import { deleteSessionWithGoal } from "@/lib/session-goal";
 import { jsonResponse } from "@/lib/json-response";
+import { sessionProjectId } from "@/lib/project-store";
 
 export async function GET(
   req: Request,
@@ -74,10 +75,12 @@ export async function GET(
       : null;
     const toolNames = readSubagentSessionResources(entries as never)?.tools
       ?? readSessionToolSelection(entries as never);
+    const projectId = sessionProjectId(id);
     const info = header ? (await attachSessionProjectInfo([{
       path: filePath,
       id: header.id,
       cwd: header.cwd ?? "",
+      ...(projectId !== undefined ? { projectId } : {}),
       name: sessionName,
       created: header.timestamp,
       modified,

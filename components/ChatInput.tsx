@@ -27,7 +27,7 @@ import {
   buildEntriesFromFiles, buildAtInsertText, buildFileAtMentionsText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
-import { encodeFilePathForApi } from "@/lib/file-paths";
+import { encodeFilePathForApi, joinFilePath, withProjectQuery } from "@/lib/file-paths";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
@@ -104,6 +104,8 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  projectId?: string;
+  uploadCwd?: string | null;
 }
 
 export interface ChatInputHandle {
@@ -702,6 +704,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   soundEnabled, onSoundToggle, onAudioUnlock,
   draftKey,
   cwd,
+  projectId,
+  uploadCwd,
   compact = false,
 }: Props, ref) {
   const { t } = useI18n();
@@ -746,9 +750,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [historyActiveIndex, setHistoryActiveIndex] = useState(0);
   const [builtinCommandPending, setBuiltinCommandPending] = useState(false);
   const builtinCommandPendingRef = useRef(false);
-  const [fileIndex, setFileIndex] = useState<{ cwd: string; entries: FileIndexEntry[]; truncated: boolean } | null>(null);
+  const [fileIndex, setFileIndex] = useState<{ url: string; entries: FileIndexEntry[]; truncated: boolean } | null>(null);
   const [fileIndexLoading, setFileIndexLoading] = useState(false);
-  const [atServerResult, setAtServerResult] = useState<{ cwd: string; query: string; matches: FileIndexEntry[] } | null>(null);
+  const [atServerResult, setAtServerResult] = useState<{ url: string; query: string; matches: FileIndexEntry[] } | null>(null);
   const [skillDormancyState, setSkillDormancyState] = useState<{
     cwd: string;
     values: Record<string, boolean>;
@@ -768,8 +772,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const atMenuRef = useRef<HTMLDivElement>(null);
   const atItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const historyItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const fileIndexMetaRef = useRef<{ cwd: string; fetchedAt: number } | null>(null);
-  const fileIndexFetchingRef = useRef<string | null>(null);
+  const fileIndexMetaRef = useRef<{ url: string; fetchedAt: number } | null>(null);
   const draftKeyRef = useRef(draftKey);
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
@@ -986,6 +989,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     // Force the next @ lookup to include the files that were just uploaded.
     fileIndexMetaRef.current = null;
     setFileIndex(null);
+    setAtQuery(null);
     requestAnimationFrame(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
@@ -998,24 +1002,30 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const uploadProjectFiles = useCallback(async (files: File[]) => {
     if (!files.length) return;
-    if (!cwd) {
+    const targetDirectory = uploadCwd === undefined ? cwd : uploadCwd;
+    if (!targetDirectory) {
       setFileUploadStatus({ phase: "error", message: t("chat.fileUploadNeedsProject") });
       return;
     }
 
+    const targetDraftKey = draftKeyRef.current;
     setFileUploadStatus({ phase: "uploading", message: t("chat.uploadingFiles") });
     try {
       const formData = new FormData();
       files.forEach((file) => formData.append("files", file, file.name));
       const response = await fetch(
-        `/api/files/${encodeFilePathForApi(cwd)}?type=upload&conflict=rename`,
+        withProjectQuery(`/api/files/${encodeFilePathForApi(targetDirectory)}?type=upload&conflict=rename`, projectId),
         { method: "POST", body: formData },
       );
       const data = await response.json().catch(() => ({})) as ComposerUploadResponse;
       if (!response.ok) {
         throw new Error(data.error ?? t("chat.fileUploadFailed"));
       }
-      const uploaded = data.uploaded ?? [];
+      const uploaded = (data.uploaded ?? []).map((name) => projectId ? joinFilePath(targetDirectory, name) : name);
+      if (!composerMountedRef.current || draftKeyRef.current !== targetDraftKey) {
+        if (targetDraftKey && uploaded.length) restoreDraftSubmission(targetDraftKey, buildFileAtMentionsText(uploaded));
+        return;
+      }
       appendUploadedFileMentions(uploaded);
       const failures = data.errors ?? [];
       if (failures.length > 0) {
@@ -1030,12 +1040,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         });
       }
     } catch (error) {
+      if (!composerMountedRef.current || draftKeyRef.current !== targetDraftKey) return;
       setFileUploadStatus({
         phase: "error",
         message: error instanceof Error ? error.message : t("chat.fileUploadFailed"),
       });
     }
-  }, [appendUploadedFileMentions, cwd, t]);
+  }, [appendUploadedFileMentions, cwd, projectId, t, uploadCwd]);
 
   const processComposerFiles = useCallback((files: File[]) => {
     if (compact || files.length === 0) return;
@@ -1106,6 +1117,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setValue(nextValue);
     setAtQuery(null);
     setHistoryMenuOpen(false);
+    setFileUploadStatus({ phase: "idle" });
     setImageSaveFailed(false);
     setAttachedImages((prev) => {
       prev.forEach(revokeImagePreview);
@@ -1226,40 +1238,49 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setAtQuery(extractAtQuery(text.slice(0, pos)));
   }, []);
 
+  const fileIndexUrl = projectId !== undefined
+    ? withProjectQuery("/api/file-index", projectId)
+    : cwd ? `/api/file-index?cwd=${encodeURIComponent(cwd)}` : null;
+  const activeFileIndex = fileIndex?.url === fileIndexUrl ? fileIndex : null;
   const atQueryText = atQuery?.query ?? null;
   const atLocalMatches: FileIndexEntry[] = React.useMemo(() => (
-    atQueryText !== null && fileIndex && fileIndex.cwd === cwd
-      ? filterFileEntries(fileIndex.entries, atQueryText)
+    atQueryText !== null && activeFileIndex
+      ? filterFileEntries(activeFileIndex.entries, atQueryText)
       : []
-  ), [atQueryText, fileIndex, cwd]);
+  ), [atQueryText, activeFileIndex]);
 
   // When the client index is truncated (repo larger than the index cap),
   // local filtering cannot see deep files, so queries are also ranked
   // server-side against the full listing. Local matches render immediately
   // and are replaced when the (debounced) server result for the current
-  // query arrives; stale responses are ignored via the query/cwd tag.
-  const needsServerSearch = Boolean(atQueryText && fileIndex?.truncated && fileIndex.cwd === cwd);
+  // query arrives; stale responses are ignored via the URL and query tags.
+  const needsServerSearch = Boolean(atQueryText && activeFileIndex?.truncated);
   useEffect(() => {
-    if (!needsServerSearch || !cwd || !atQueryText) return;
-    const fetchCwd = cwd;
+    if (!needsServerSearch || !fileIndexUrl || !atQueryText) return;
     const query = atQueryText;
+    const controller = new AbortController();
     const timer = setTimeout(() => {
-      fetch(`/api/file-index?cwd=${encodeURIComponent(fetchCwd)}&q=${encodeURIComponent(query)}`)
+      fetch(`${fileIndexUrl}&q=${encodeURIComponent(query)}`, { signal: controller.signal })
         .then((res) => {
           if (!res.ok) throw new Error(`file search failed: ${res.status}`);
           return res.json() as Promise<{ matches?: FileIndexEntry[] }>;
         })
-        .then((data) => setAtServerResult({ cwd: fetchCwd, query, matches: data.matches ?? [] }))
+        .then((data) => {
+          if (!controller.signal.aborted) setAtServerResult({ url: fileIndexUrl, query, matches: data.matches ?? [] });
+        })
         .catch(() => {
           // Keep showing local matches; the next keystroke retries.
         });
     }, 150);
-    return () => clearTimeout(timer);
-  }, [needsServerSearch, atQueryText, cwd]);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [needsServerSearch, atQueryText, fileIndexUrl]);
 
   const serverResultInUse = needsServerSearch
     && atServerResult !== null
-    && atServerResult.cwd === cwd
+    && atServerResult.url === fileIndexUrl
     && atServerResult.query === atQueryText;
   const atFileMatches: FileIndexEntry[] = serverResultInUse ? atServerResult.matches : atLocalMatches;
   const atCommandMatches = React.useMemo(() => {
@@ -1303,35 +1324,38 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setAtActiveIndex(0);
   }, [atTokenKey]);
 
-  // Fetch the file index when the menu opens. The server caches per cwd for
-  // ~10s, so re-opening refreshes cheaply; while typing nothing refetches.
+  // Refresh named projects on open so changes to their approved folders are
+  // reflected immediately. The server caches each exact root list briefly.
   const atTokenActive = atQuery !== null;
   useEffect(() => {
-    if (!atTokenActive || !cwd) return;
+    if (!atTokenActive || !fileIndexUrl) return;
     const meta = fileIndexMetaRef.current;
-    if (meta && meta.cwd === cwd && Date.now() - meta.fetchedAt < 10_000) return;
-    if (fileIndexFetchingRef.current === cwd) return;
-    fileIndexFetchingRef.current = cwd;
-    const fetchCwd = cwd;
+    if (projectId === undefined && meta?.url === fileIndexUrl && Date.now() - meta.fetchedAt < 10_000) return;
+    const controller = new AbortController();
+    if (projectId !== undefined) {
+      setFileIndex(null);
+      setAtServerResult(null);
+    }
     setFileIndexLoading(true);
-    fetch(`/api/file-index?cwd=${encodeURIComponent(fetchCwd)}`)
+    fetch(fileIndexUrl, { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`file index failed: ${res.status}`);
-        return res.json() as Promise<{ files?: string[]; truncated?: boolean }>;
+        return res.json() as Promise<{ entries?: FileIndexEntry[]; files?: string[]; truncated?: boolean }>;
       })
       .then((data) => {
-        setFileIndex({ cwd: fetchCwd, entries: buildEntriesFromFiles(data.files ?? []), truncated: !!data.truncated });
-        fileIndexMetaRef.current = { cwd: fetchCwd, fetchedAt: Date.now() };
+        if (controller.signal.aborted) return;
+        setFileIndex({ url: fileIndexUrl, entries: data.entries ?? buildEntriesFromFiles(data.files ?? []), truncated: !!data.truncated });
+        fileIndexMetaRef.current = { url: fileIndexUrl, fetchedAt: Date.now() };
       })
       .catch(() => {
         // Leave any previous index in place; next open retries.
-        fileIndexMetaRef.current = null;
+        if (!controller.signal.aborted) fileIndexMetaRef.current = null;
       })
       .finally(() => {
-        fileIndexFetchingRef.current = null;
-        setFileIndexLoading(false);
+        if (!controller.signal.aborted) setFileIndexLoading(false);
       });
-  }, [atTokenActive, cwd]);
+    return () => controller.abort();
+  }, [atTokenActive, fileIndexUrl, projectId]);
 
   useEffect(() => {
     if (!atTokenActive || slashCommandsRequestedRef.current || !onLoadSlashCommands) return;
@@ -1390,7 +1414,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (atQuery.quoted && after.startsWith('"')) {
       after = after.slice(1);
     }
-    const insert = buildAtInsertText(entry.path, entry.isDir, atQuery.quoted);
+    const insert = buildAtInsertText(entry.absolutePath ?? entry.path, entry.isDir, atQuery.quoted);
     const newValue = before + insert.text + after;
     const newPos = before.length + insert.cursorOffset;
     setValue(newValue);
@@ -2266,11 +2290,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             </div>
           )}
           {atMenuOpen && atQuery !== null && (() => {
-            const indexLoading = fileIndexLoading && (!fileIndex || fileIndex.cwd !== cwd);
+            const indexLoading = fileIndexUrl && fileIndexLoading && !activeFileIndex;
              const matchCountLabel = atMatches.length === 1 ? t("chat.match") : t("chat.matches", { count: atMatches.length });
             // With a truncated index, local results are provisional — the
             // debounced server search over the full listing replaces them.
-            const truncatedHint = fileIndex?.truncated && !serverResultInUse
+            const truncatedHint = activeFileIndex?.truncated && !serverResultInUse
                ? (atQuery.query ? t("chat.searchingAll") : t("chat.indexTruncated"))
               : "";
             return (
@@ -2436,7 +2460,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                         );
                       }
                       const entry = item.entry;
-                      const name = entry.path.split("/").pop() ?? entry.path;
+                      const name = entry.path.split("/").pop() || entry.path;
                       const dirPrefix = entry.path.slice(0, entry.path.length - name.length);
                       return (
                         <button

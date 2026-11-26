@@ -125,7 +125,7 @@ function fileUrlToPath(href: string): string | null {
 export function resolveLocalFileHref(
   href: string | undefined,
   baseDir?: string,
-  relativeRoot = baseDir,
+  relativeRoot: string | null | undefined = baseDir,
 ): string | null {
   if (!href) return null;
 

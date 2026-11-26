@@ -13,6 +13,7 @@ export interface Tab {
   kind?: "terminal" | "subagent";
   closing?: boolean;
   sourceSessionId?: string | null;
+  projectId?: string;
   initialDisplayMode?: FileViewerDisplayMode;
   viewerState?: FileViewerState;
   viewerRevision?: number;

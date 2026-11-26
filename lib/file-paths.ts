@@ -13,6 +13,12 @@ export function encodeFilePathForApi(filePath: string): string {
     .join("/");
 }
 
+export function withProjectQuery(url: string, projectId?: string): string {
+  if (projectId === undefined) return url;
+  const delimiter = url.includes("?") ? "&" : "?";
+  return `${url}${delimiter}projectId=${encodeURIComponent(projectId)}`;
+}
+
 export function getFileApiUrl(
   filePath: string,
   type: "read" | "download" | "meta" | "preview" | "watch",

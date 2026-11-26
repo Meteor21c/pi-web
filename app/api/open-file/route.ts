@@ -3,6 +3,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
 import { launchNativeCommand, nativeDirectoryCommand, nativeFileCommand } from "@/lib/native-directory";
+import { sessionProjectId } from "@/lib/project-store";
 import { hasJsonContentType, isLocalDesktopRequest } from "@/lib/request-security";
 
 export async function POST(request: Request) {
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
   }
 
-  const body = await request.json().catch(() => null) as { path?: unknown; action?: unknown } | null;
+  const body = await request.json().catch(() => null) as { path?: unknown; action?: unknown; sessionId?: unknown } | null;
   const requestedPath = body?.path;
   const action = body?.action;
   if (typeof requestedPath !== "string" || !path.isAbsolute(requestedPath) || requestedPath.includes("\0")
@@ -22,7 +23,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const roots = await getAllowedFileRoots();
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : undefined;
+    const projectId = new URL(request.url).searchParams.get("projectId")
+      ?? (sessionId ? sessionProjectId(sessionId) : undefined);
+    const roots = await getAllowedFileRoots(projectId);
     if (!isFilePathAllowed(requestedPath, roots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

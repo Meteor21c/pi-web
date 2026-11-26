@@ -2,7 +2,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { mkdir, mkdtemp, unlink, writeFile } from "node:fs/promises";
 import { join, resolve, win32 } from "node:path";
 import { readBodyWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
-import { MAX_ATTACHED_IMAGE_BYTES } from "@/lib/image-attachments";
+import { MAX_ATTACHED_IMAGE_BYTES, ORIGINAL_IMAGE_DIRECTORY } from "@/lib/image-attachments";
 import { isApiRequestAllowed } from "@/lib/request-security";
 
 export async function POST(request: Request) {
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
 
   try {
     const data = new Uint8Array(await image.arrayBuffer());
-    const root = resolve(getAgentDir(), "meteoragent-attachments");
+    const root = resolve(getAgentDir(), ORIGINAL_IMAGE_DIRECTORY);
     await mkdir(root, { recursive: true, mode: 0o700 });
     // A fresh directory keeps same-named attachments separate and preserves their names.
     const directory = await mkdtemp(join(root, "image-"));

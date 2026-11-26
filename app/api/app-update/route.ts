@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { AppUpdateResponse } from "@/lib/api-types";
-import { getMeteorAgentReleaseUrl, isNewerStableVersion, parseAppUpdateManifest } from "@/lib/app-update";
+import { getMeteorAgentReleaseUrl, isNewerStableVersion, parseAppUpdateManifest, parseDesktopUpdateManifest } from "@/lib/app-update";
 import { automaticAppUpdateSupported } from "@/lib/app-update-manager";
 import packageJson from "@/package.json";
 
@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const CURRENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? packageJson.version;
 const NPM_LATEST_URL = "https://dl.meteor21c.fun/webagent/latest.json";
+const DESKTOP_LATEST_URL = "https://dl.meteor21c.fun/desktop/latest.json";
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5_000;
 const SKIP_VERSION_CHECK = process.env.PI_WEB_SKIP_VERSION_CHECK === "1";
@@ -27,17 +28,20 @@ function getCache(): AppUpdateCache {
 }
 
 async function fetchLatestVersion(): Promise<AppUpdateResponse> {
-  const response = await fetch(NPM_LATEST_URL, {
+  const platform = process.env.METEORAGENT_DESKTOP_PLATFORM;
+  const desktop = platform === "macos-arm64" || platform === "windows-x64";
+  const response = await fetch(desktop ? DESKTOP_LATEST_URL : NPM_LATEST_URL, {
     cache: "no-store",
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Update server returned HTTP ${response.status}`);
 
-  const manifest = parseAppUpdateManifest(await response.json());
+  const data: unknown = await response.json();
+  const manifest = desktop ? parseDesktopUpdateManifest(data, platform) : parseAppUpdateManifest(data);
   if (!manifest) throw new Error("Update server returned an invalid manifest");
   const latestVersion = manifest.version;
-  const releaseUrl = getMeteorAgentReleaseUrl(latestVersion);
+  const releaseUrl = "releaseUrl" in manifest ? manifest.releaseUrl : getMeteorAgentReleaseUrl(latestVersion);
   if (!releaseUrl) throw new Error("Update server returned an invalid version");
 
   return {
@@ -48,7 +52,8 @@ async function fetchLatestVersion(): Promise<AppUpdateResponse> {
     releaseNotes: manifest.releaseNotes,
     downloadBytes: manifest.bytes,
     publishedAt: manifest.publishedAt,
-    automaticUpdateSupported: automaticAppUpdateSupported(),
+    automaticUpdateSupported: !desktop && automaticAppUpdateSupported(),
+    ...(desktop ? { desktop: true } : {}),
   };
 }
 

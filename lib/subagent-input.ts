@@ -11,13 +11,18 @@ export interface SubagentInputFile {
   content: string;
 }
 
-export function loadSubagentInputFiles(cwd: string, requestedPaths: readonly string[]): SubagentInputFile[] {
+export function loadSubagentInputFiles(
+  cwd: string,
+  requestedPaths: readonly string[],
+  projectRoots?: Set<string>,
+): SubagentInputFile[] {
   if (requestedPaths.length > MAX_SUBAGENT_INPUT_FILES) {
     throw new Error(`Agent input_files accepts at most ${MAX_SUBAGENT_INPUT_FILES} files`);
   }
 
   const realCwd = realpathSync(cwd);
-  const allowedRoots = new Set([realCwd]);
+  const sessionRoot = new Set([realCwd]);
+  const allowedRoots = projectRoots ?? sessionRoot;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const seen = new Set<string>();
   const files: SubagentInputFile[] = [];
@@ -33,7 +38,8 @@ export function loadSubagentInputFiles(cwd: string, requestedPaths: readonly str
       throw new Error(`Agent input file does not exist: ${requestedPath}`);
     }
     if (!isPathWithinRoots(filePath, allowedRoots)) {
-      throw new Error(`Agent input file is outside the session cwd: ${requestedPath}`);
+      const location = projectRoots ? "the project folders" : "the session cwd";
+      throw new Error(`Agent input file is outside ${location}: ${requestedPath}`);
     }
     if (!statSync(filePath).isFile()) {
       throw new Error(`Agent input path is not a file: ${requestedPath}`);
@@ -54,7 +60,7 @@ export function loadSubagentInputFiles(cwd: string, requestedPaths: readonly str
       throw new Error(`Agent input file is not valid UTF-8 text: ${requestedPath}`);
     }
     files.push({
-      path: toSlashPath(relative(realCwd, filePath)),
+      path: toSlashPath(isPathWithinRoots(filePath, sessionRoot) ? relative(realCwd, filePath) : filePath),
       content,
     });
   }

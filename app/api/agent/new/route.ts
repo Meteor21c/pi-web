@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { randomUUID } from "crypto";
 import { allowFileRoot } from "@/lib/file-access";
 import { invalidateSessionListCache } from "@/lib/session-reader";
@@ -7,6 +7,8 @@ import { startRpcSession } from "@/lib/rpc-manager";
 import { isModelThinkingLevel, type ThinkingLevelOption } from "@/lib/model-capabilities";
 import { isWorkMode } from "@/lib/prompt-presets";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
+import { getNamedProject, isProjectDirectory } from "@/lib/project-store";
+import { getStandaloneChatDirectory } from "@/lib/standalone-chat-directory";
 
 function parseThinkingLevel(value: unknown): ThinkingLevelOption | undefined {
   if (value === undefined) return undefined;
@@ -22,13 +24,27 @@ export async function POST(req: Request) {
   let promptAccepted = false;
   try {
     const body = await req.json() as { cwd?: string; [key: string]: unknown };
-    const { cwd, ...command } = body;
+    const { cwd: requestedCwd, projectId, ...command } = body;
     commandType = typeof command.type === "string" ? command.type : undefined;
-    if (commandType === "set_work_mode" || commandType === "extension_ui_response" || commandType === "extension_ui_input"
+    if (projectId !== undefined || commandType === "set_work_mode" || commandType === "extension_ui_response" || commandType === "extension_ui_input"
       || command.computerUseApprovalPolicy !== undefined) {
       if (!isApiRequestAllowed(req)) return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
       if (!hasJsonContentType(req)) return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
       if (commandType === "set_work_mode" && !isWorkMode(command.mode)) return NextResponse.json({ error: "Invalid work mode" }, { status: 400 });
+    }
+
+    let cwd = requestedCwd;
+    if (projectId === null) {
+      cwd = getStandaloneChatDirectory();
+    } else if (projectId !== undefined) {
+      if (typeof projectId !== "string") return NextResponse.json({ error: "项目无效" }, { status: 400 });
+      const project = getNamedProject(projectId);
+      if (!project) return NextResponse.json({ error: "找不到该项目" }, { status: 404 });
+      cwd = requestedCwd ?? project.defaultDirectory;
+      if (typeof cwd !== "string" || !isProjectDirectory(cwd, project)) {
+        return NextResponse.json({ error: "请选择项目中可用的文件夹" }, { status: 400 });
+      }
+      cwd = realpathSync(cwd);
     }
 
     if (!cwd || typeof cwd !== "string") {
@@ -60,7 +76,8 @@ export async function POST(req: Request) {
     // requests in the same millisecond, merging two new sessions into one.
     const tempKey = `__new__${randomUUID()}`;
     const { session, realSessionId } = await startRpcSession(tempKey, "", cwd, {
-      ...(toolNames ? { toolNames } : {}),
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(projectId === null ? { toolNames: [] } : toolNames ? { toolNames } : {}),
       ...(provider && modelId ? { initialModel: { provider, modelId } } : {}),
       ...(explicitThinkingLevel ? { thinkingLevel: explicitThinkingLevel } : {}),
     });
@@ -68,7 +85,7 @@ export async function POST(req: Request) {
     // Keep the files-route allowed-roots cache (see app/api/files/[...path]/route.ts)
     // in sync so the new cwd is immediately readable via /api/files. Without this,
     // a file request under a brand-new cwd would 403 for up to the cache TTL.
-    allowFileRoot(cwd);
+    if (projectId === undefined) allowFileRoot(cwd);
     invalidateSessionListCache();
 
     const state = await session.send({ type: "get_state" }) as {
@@ -80,6 +97,7 @@ export async function POST(req: Request) {
       return NextResponse.json({
         success: true,
         sessionId: realSessionId,
+        cwd,
         data: null,
         model: state.model
           ? { provider: state.model.provider, modelId: state.model.id }
@@ -94,6 +112,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       success: true,
       sessionId: realSessionId,
+      cwd,
       data: result,
       model: state.model
         ? { provider: state.model.provider, modelId: state.model.id }

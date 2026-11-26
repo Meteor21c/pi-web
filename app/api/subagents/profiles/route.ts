@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { existsSync } from "fs";
-import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getWorkspaceConfigurationRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import {
   deleteSubagentProfile,
   listSubagentProfileSources,
@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 async function validateCwd(cwd: unknown): Promise<string> {
   if (typeof cwd !== "string" || !cwd || !existsSync(cwd)) throw new Error("Valid cwd required");
-  if (!isExistingFilePathAllowed(cwd, await getAllowedFileRoots())) throw new Error("Access denied");
+  if (!isExistingFilePathAllowed(cwd, await getWorkspaceConfigurationRoots())) throw new Error("Access denied");
   return cwd;
 }
 

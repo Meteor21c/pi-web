@@ -1,0 +1,12 @@
+{
+  "fill": { "solid": "extended-srgb:0.08,0.35,0.91,1" },
+  "groups": [
+    {
+      "layers": [{ "image-name": "Art.png", "name": "MeteorAgent", "glass": false }],
+      "shadow": { "kind": "none", "opacity": 0 },
+      "specular": false,
+      "translucency": { "enabled": false, "value": 0.5 }
+    }
+  ],
+  "supported-platforms": { "squares": "shared" }
+}

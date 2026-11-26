@@ -1,6 +1,6 @@
 import { stat } from "fs/promises";
-import { resolve } from "path";
-import { createAgentSessionServices, getAgentDir, type SettingsManager } from "@earendil-works/pi-coding-agent";
+import { join, resolve } from "path";
+import { createAgentSessionServices, getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   loadModelsWithCache,
@@ -19,6 +19,7 @@ import { projectTrustReloadOptions } from "@/lib/project-trust";
 import { readModelsConfig } from "@/lib/models-config-store";
 import { readRelayGroups, relayAuthorizedModelIdsByProvider } from "@/lib/relay-group-store";
 import { installRelayResponseRepair } from "@/lib/relay-responses";
+import { getStandaloneChatDirectory } from "@/lib/standalone-chat-directory";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +34,7 @@ function compareModelEntries(
     || modelNameCollator.compare(a.id, b.id);
 }
 
-async function loadModels(cwd: string): Promise<ModelsData> {
+async function loadModels(cwd: string, standalone = false): Promise<ModelsData> {
   const nameMap = new Map<string, string>();
   let modelList: { id: string; name: string; provider: string }[] = [];
   let defaultModel: { provider: string; modelId: string } | null = null;
@@ -44,12 +45,21 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   // Gate untrusted project extensions: enumerating models still imports and
   // runs a repository's .pi/extensions factories, so honor project trust here
   // too (see lib/project-trust.ts, #236).
-  const trustReloadOptions = projectTrustReloadOptions(cwd, agentDir);
-  const services = await createAgentSessionServices({
-    cwd,
-    agentDir,
-    ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
-  });
+  const trustReloadOptions = standalone ? undefined : projectTrustReloadOptions(cwd, agentDir);
+  // Independent chats use global models without discovering local resources.
+  const services = standalone
+    ? {
+        modelRuntime: await ModelRuntime.create({
+          authPath: join(agentDir, "auth.json"),
+          modelsPath: join(agentDir, "models.json"),
+        }),
+        settingsManager: SettingsManager.create(cwd, agentDir, { projectTrusted: false }),
+      }
+    : await createAgentSessionServices({
+        cwd,
+        agentDir,
+        ...(trustReloadOptions ? { resourceLoaderReloadOptions: trustReloadOptions } : {}),
+      });
   installRelayResponseRepair(services.modelRuntime);
   const modelError = services.modelRuntime.getError();
   const settings: SettingsManager = services.settingsManager;
@@ -117,8 +127,23 @@ const EMPTY_MODELS: ModelsData = {
 };
 
 export async function GET(req: Request) {
-  const requestedCwd = new URL(req.url).searchParams.get("cwd") || process.cwd();
+  const query = new URL(req.url).searchParams;
+  if (query.get("standalone") === "1") {
+    try {
+      const cwd = getStandaloneChatDirectory();
+      return Response.json(await loadModelsWithCache(`standalone:${cwd}`, () => loadModels(cwd, true)));
+    } catch {
+      return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));
+    }
+  }
+
+  const projectId = query.get("projectId") ?? undefined;
+  const requestedCwd = query.get("cwd") || (projectId === undefined ? process.cwd() : undefined);
+  if (!requestedCwd) return Response.json({ error: "cwd required" }, { status: 400 });
   const cwd = resolve(requestedCwd);
+  if (projectId !== undefined && !isExistingFilePathAllowed(cwd, await getAllowedFileRoots(projectId))) {
+    return Response.json({ error: "Access denied" }, { status: 403 });
+  }
 
   let cwdStat;
   try {
@@ -129,8 +154,7 @@ export async function GET(req: Request) {
   if (!cwdStat.isDirectory()) {
     return Response.json({ error: `Not a directory: ${cwd}` }, { status: 400 });
   }
-  const allowedRoots = await getAllowedFileRoots();
-  if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
+  if (projectId === undefined && !isExistingFilePathAllowed(cwd, await getAllowedFileRoots())) {
     return Response.json({ error: "Access denied" }, { status: 403 });
   }
 

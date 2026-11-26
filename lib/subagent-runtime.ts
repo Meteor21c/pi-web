@@ -39,6 +39,7 @@ import type { SessionEntry } from "./types";
 import { buildSubagentPromptPlan } from "./subagent-prompt";
 import { appendSubagentInputFiles, loadSubagentInputFiles } from "./subagent-input";
 import { projectTrustReloadOptions } from "./project-trust";
+import { getActiveProjectRoots, getNamedProject, isProjectDirectory, sessionProjectId, setSessionProject } from "./project-store";
 import { createSessionScopedSettingsManager } from "./plugin-activation";
 import { resolveShellTools } from "./powershell-settings";
 import { isBuiltInSubagentsEnabled, readSubagentSettings } from "./subagent-settings";
@@ -209,6 +210,16 @@ export function createSubagentController(
     if (!parent?.isAlive()) throw new Error("Parent session is no longer available");
     if (!parent.sessionFile) throw new Error("Parent session must be persisted before starting a subagent");
 
+    const projectId = sessionProjectId(parentSessionId);
+    let projectRoots: Set<string> | undefined;
+    if (projectId !== undefined) {
+      const project = projectId === null ? undefined : getNamedProject(projectId);
+      if (!project || !isProjectDirectory(parent.cwd, project)) {
+        throw new Error("子智能体需要项目中可用的工作文件夹。");
+      }
+      projectRoots = getActiveProjectRoots(project);
+    }
+
     let isolatedWorktree: { path: string; branch: string } | undefined;
     try {
       setupSignal?.throwIfAborted();
@@ -226,6 +237,7 @@ export function createSubagentController(
       const runSignal = runInBackground ? parentTask?.signal : setupSignal;
       const isolation = profile.isolation === "off" ? undefined : request.isolation ?? profile.isolation;
       if (isolation === "worktree") {
+        if (projectRoots) throw new Error("命名项目暂不支持为子智能体创建独立工作树，可直接使用项目文件夹。");
         if (parentReadOnly) throw new Error("Read-only tasks cannot create a subagent worktree");
         isolatedWorktree = await addWorktree(parent.cwd, `pi-web-agent-${randomUUID()}`);
       }
@@ -251,7 +263,7 @@ export function createSubagentController(
       const inheritedParentContext = inheritContext
         ? `The following is the active conversation context from the parent session. Use it only as background for the delegated task:\n${parentContextText(parent)}`
         : undefined;
-      const inputFiles = loadSubagentInputFiles(parent.cwd, request.inputFiles ?? []);
+      const inputFiles = loadSubagentInputFiles(parent.cwd, request.inputFiles ?? [], projectRoots);
       const promptPlan = buildSubagentPromptPlan({
         profileSystemPrompt: profile.systemPrompt,
         tools: profileTools,
@@ -341,6 +353,7 @@ export function createSubagentController(
         setupSignal?.throwIfAborted();
         assertAllowed(parentSessionId);
         persistNewChild(sessionManager);
+        if (projectId !== undefined) await setSessionProject(inner.sessionId, projectId);
       } catch (error) {
         inner.dispose();
         throw error;

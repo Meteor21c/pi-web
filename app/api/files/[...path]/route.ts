@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
 import {
   getAllowedFileRoots,
+  getProjectFileRoots,
   isExistingFilePathAllowed,
   isFilePathAllowed,
 } from "@/lib/file-access";
@@ -18,6 +20,8 @@ import {
   isBinaryFilePath,
 } from "@/lib/file-types";
 import { resolveDirentIsDirectory } from "@/lib/file-dirent";
+import { ORIGINAL_IMAGE_DIRECTORY } from "@/lib/image-attachments";
+import { sessionProjectId } from "@/lib/project-store";
 import { isFilePathReferencedBySession } from "@/lib/session-file-references";
 import { isApiRequestAllowed } from "@/lib/request-security";
 import {
@@ -76,11 +80,11 @@ function parseFileRequestType(value: string): FileRequestType | null {
   return FILE_REQUEST_TYPE_SET.has(value) ? (value as FileRequestType) : null;
 }
 
-async function getUploadDirectory(segments: string[]): Promise<
+async function getUploadDirectory(segments: string[], projectId: string | null): Promise<
   { directory: string } | { response: NextResponse }
 > {
   const directory = filePathFromApiSegments(segments);
-  const allowedRoots = await getAllowedFileRoots();
+  const allowedRoots = await getAllowedFileRoots(projectId ?? undefined);
   if (!isFilePathAllowed(directory, allowedRoots)) {
     return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
   }
@@ -128,7 +132,8 @@ export async function POST(
 
   try {
     const { path: segments } = await params;
-    const uploadDirectory = await getUploadDirectory(segments);
+    const projectId = request.nextUrl.searchParams.get("projectId");
+    const uploadDirectory = await getUploadDirectory(segments, projectId);
     if ("response" in uploadDirectory) return uploadDirectory.response;
     const { directory } = uploadDirectory;
     const type = request.nextUrl.searchParams.get("type") ?? "upload";
@@ -177,6 +182,9 @@ export async function POST(
       return NextResponse.json({ error: validationError }, { status: 400 });
     }
 
+    if (projectId !== null && !isExistingFilePathAllowed(directory, getProjectFileRoots(projectId))) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
     const inspection = inspectUploadTargets(directory, fileNames);
     if (strategy === "error" && inspection.conflicts.length > 0) {
       return NextResponse.json({
@@ -219,6 +227,10 @@ export async function POST(
         continue;
       }
 
+      if (projectId !== null && !isExistingFilePathAllowed(directory, getProjectFileRoots(projectId))) {
+        errors.push({ name: file.name, error: "Access denied" });
+        continue;
+      }
       if (strategy === "overwrite" && conflictSet.has(file.name)) {
         try {
           fs.unlinkSync(destination);
@@ -236,6 +248,7 @@ export async function POST(
       }
     }
 
+    if (uploaded.length > 0) globalThis.__piFileIndexCache?.clear();
     return NextResponse.json(
       { uploaded, skipped, errors },
       { status: errors.length > 0 ? 207 : 200 },
@@ -256,9 +269,10 @@ export async function DELETE(
   try {
     const { path: segments } = await params;
     const filePath = filePathFromApiSegments(segments);
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(request.nextUrl.searchParams.get("projectId") ?? undefined);
     const result = deleteProjectFile(filePath, allowedRoots);
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+    globalThis.__piFileIndexCache?.clear();
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
@@ -459,11 +473,20 @@ export async function GET(
       return NextResponse.json({ error: "Invalid file request type" }, { status: 400 });
     }
     const sessionId = request.nextUrl.searchParams.get("sessionId");
+    const explicitProjectId = request.nextUrl.searchParams.get("projectId");
+    const assignedProjectId = sessionId ? sessionProjectId(sessionId) : undefined;
+    const projectId = explicitProjectId ?? assignedProjectId;
 
-    const allowedRoots = await getAllowedFileRoots();
-    const allowedByRoot = isFilePathAllowed(filePath, allowedRoots);
+    const allowedRoots = await getAllowedFileRoots(projectId);
+    const attachmentRoots = new Set([path.resolve(getAgentDir(), ORIGINAL_IMAGE_DIRECTORY)]);
+    const allowedAsAttachment = assignedProjectId !== undefined && assignedProjectId === projectId && type !== "list"
+      && isFilePathAllowed(filePath, attachmentRoots)
+      && isExistingFilePathAllowed(filePath, attachmentRoots)
+      && await isFilePathReferencedBySession(filePath, sessionId);
+    const roots = allowedAsAttachment ? attachmentRoots : allowedRoots;
+    const allowedByRoot = isFilePathAllowed(filePath, roots);
     const allowedBySessionReference =
-      !allowedByRoot &&
+      projectId === undefined && !allowedByRoot &&
       type !== "list" &&
       await isFilePathReferencedBySession(filePath, sessionId);
     if (!allowedByRoot && !allowedBySessionReference) {
@@ -482,7 +505,7 @@ export async function GET(
     const existingAuthorizationPath = stat ? filePath : path.dirname(filePath);
     if (
       !allowedBySessionReference
-      && !isExistingFilePathAllowed(existingAuthorizationPath, allowedRoots)
+      && !isExistingFilePathAllowed(existingAuthorizationPath, roots)
     ) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -612,7 +635,18 @@ export async function GET(
                 && !samePath(path.join(watchedDirectory, changedName.toString()), filePath)
               ) return;
               try {
+                const assignmentsChanged = sessionId && (explicitProjectId === null || allowedAsAttachment)
+                  && sessionProjectId(sessionId) !== assignedProjectId;
+                const currentProjectRoots = allowedAsAttachment ? attachmentRoots
+                  : typeof projectId === "string" ? getProjectFileRoots(projectId) : null;
+                if (assignmentsChanged || (currentProjectRoots && !isExistingFilePathAllowed(watchedDirectory, currentProjectRoots))) {
+                  watcher?.close();
+                  watcher = null;
+                  controller.close();
+                  return;
+                }
                 const s = fs.statSync(filePath);
+                if (currentProjectRoots && !isExistingFilePathAllowed(filePath, currentProjectRoots)) return;
                 // Some platforms emit watch events for file reads/attribute
                 // access. Ignore those or the client's refresh read loops.
                 if (
@@ -672,7 +706,11 @@ export async function GET(
     const entries = dirents
       .filter((d) => !IGNORED_NAMES.has(d.name) && !IGNORED_SUFFIXES.some((s) => d.name.endsWith(s)))
       .flatMap((d) => {
-        const isDir = resolveDirentIsDirectory(d, path.join(filePath, d.name));
+        const entryPath = path.join(filePath, d.name);
+        if (projectId !== undefined && d.isSymbolicLink() && !isExistingFilePathAllowed(entryPath, roots)) {
+          return [];
+        }
+        const isDir = resolveDirentIsDirectory(d, entryPath);
         return isDir === null
           ? []
           : [{ name: d.name, isDir, size: 0, modified: "" }];

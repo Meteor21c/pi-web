@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import { getFileName } from "@/lib/file-paths";
+import { getFileName, withProjectQuery } from "@/lib/file-paths";
 import { isLocalDesktopHost } from "@/lib/local-desktop";
 import type { NativeFileAction } from "@/lib/native-directory";
 import { useI18n } from "@/hooks/useI18n";
@@ -21,10 +21,14 @@ function useLocalDesktop(): boolean {
 
 function NativeFileButtons({
   filePath,
+  projectId,
+  sessionId,
   isDirectory,
   onSuccess,
 }: {
   filePath: string;
+  projectId?: string;
+  sessionId?: string;
   isDirectory?: boolean;
   onSuccess?: () => void;
 }) {
@@ -36,10 +40,10 @@ function NativeFileButtons({
     setBusy(true);
     setFailedAction(null);
     try {
-      const response = await fetch("/api/open-file", {
+      const response = await fetch(withProjectQuery("/api/open-file", projectId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: filePath, action }),
+        body: JSON.stringify({ path: filePath, action, sessionId }),
       });
       if (!response.ok) throw new Error("Native file action failed");
       onSuccess?.();
@@ -122,7 +126,7 @@ export function FileContextMenuProvider({ children }: { children: ReactNode }) {
           {target.previewLabel ?? t("files.previewInMagent")}
         </button>}
         {target && local && target.nativeAvailable !== false && (
-          <NativeFileButtons key={target.filePath} filePath={target.filePath} isDirectory={target.isDirectory} onSuccess={close} />
+          <NativeFileButtons key={target.filePath} filePath={target.filePath} projectId={target.projectId} sessionId={target.sessionId} isDirectory={target.isDirectory} onSuccess={close} />
         )}
       </div>
     </FileContextMenuContext.Provider>
@@ -131,6 +135,7 @@ export function FileContextMenuProvider({ children }: { children: ReactNode }) {
 
 export function FileActionsMenu({
   filePath,
+  projectId,
   isDirectory,
   downloadHref,
   onMention,
@@ -138,6 +143,7 @@ export function FileActionsMenu({
   inTree = false,
 }: {
   filePath: string;
+  projectId?: string;
   isDirectory?: boolean;
   downloadHref?: string;
   onMention?: () => void;
@@ -184,7 +190,7 @@ export function FileActionsMenu({
         </svg>
       </button>
       <div id={id} ref={menuRef} popover="auto" className={styles.menu} role="group" aria-label={t("files.actions")}>
-        {local && <NativeFileButtons filePath={filePath} isDirectory={isDirectory} onSuccess={close} />}
+        {local && <NativeFileButtons filePath={filePath} projectId={projectId} isDirectory={isDirectory} onSuccess={close} />}
         {onMention && <button type="button" onClick={() => { close(); onMention(); }}>{t("files.insertPath")}</button>}
         {downloadHref && (
           <a href={downloadHref} download={getFileName(filePath)} onClick={close}>
@@ -201,7 +207,7 @@ export function FileActionsMenu({
   );
 }
 
-export function UnpreviewableFileActions({ filePath, downloadHref }: { filePath: string; downloadHref: string }) {
+export function UnpreviewableFileActions({ filePath, projectId, downloadHref }: { filePath: string; projectId?: string; downloadHref: string }) {
   const { t } = useI18n();
   const local = useLocalDesktop();
   return (
@@ -209,7 +215,7 @@ export function UnpreviewableFileActions({ filePath, downloadHref }: { filePath:
       <p>{t("files.previewUnavailable")}</p>
       <div className={styles.detailsActions}>
         {local
-          ? <NativeFileButtons filePath={filePath} />
+          ? <NativeFileButtons filePath={filePath} projectId={projectId} />
           : <a href={downloadHref} download={getFileName(filePath)}>{t("files.download")}</a>}
       </div>
     </div>

@@ -10,6 +10,7 @@ import {
   getRelativeFilePath,
   joinFilePath,
   normalizeFilePathSlashes,
+  withProjectQuery,
 } from "@/lib/file-paths";
 import type { GitFileStatus, GitFileStatusKind, GitStatusResponse } from "@/lib/git-types";
 import type { FileIndexEntry } from "@/lib/file-fuzzy";
@@ -36,6 +37,7 @@ interface FileNode {
 
 interface Props {
   cwd: string;
+  projectId?: string;
   onOpenFile: (filePath: string, fileName: string, options?: OpenFileOptions) => void;
   refreshKey?: number;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -80,9 +82,9 @@ interface PendingConflict {
   nonReplaceable: string[];
 }
 
-async function fetchEntries(dirPath: string): Promise<FileNode[]> {
+async function fetchEntries(dirPath: string, projectId?: string): Promise<FileNode[]> {
   const encoded = encodeFilePathForApi(dirPath);
-  const res = await fetch(`/api/files/${encoded}?type=list`);
+  const res = await fetch(withProjectQuery(`/api/files/${encoded}?type=list`, projectId));
   if (!res.ok) {
     let message = `Failed to load files (HTTP ${res.status})`;
     try {
@@ -104,9 +106,9 @@ async function fetchEntries(dirPath: string): Promise<FileNode[]> {
   }));
 }
 
-async function fetchGitStatus(cwd: string): Promise<GitStatusResponse> {
+async function fetchGitStatus(cwd: string, projectId?: string): Promise<GitStatusResponse> {
   const params = new URLSearchParams({ cwd });
-  const res = await fetch(`/api/git/status?${params.toString()}`);
+  const res = await fetch(withProjectQuery(`/api/git/status?${params.toString()}`, projectId));
   if (!res.ok) throw new Error(`Failed to load Git status (HTTP ${res.status})`);
   return res.json() as Promise<GitStatusResponse>;
 }
@@ -157,6 +159,7 @@ function uploadFiles(
   files: File[],
   strategy: UploadConflictStrategy,
   onProgress: (progress: number) => void,
+  projectId?: string,
 ): Promise<{ status: number; data: UploadResponse }> {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
@@ -165,7 +168,7 @@ function uploadFiles(
     const xhr = new XMLHttpRequest();
     xhr.open(
       "POST",
-      `/api/files/${encodeFilePathForApi(targetDirectory)}?type=upload&conflict=${strategy}`,
+      withProjectQuery(`/api/files/${encodeFilePathForApi(targetDirectory)}?type=upload&conflict=${strategy}`, projectId),
     );
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
@@ -219,6 +222,7 @@ function TreeNode({
   node,
   depth,
   cwd,
+  projectId,
   onOpenFile,
   onDeleteFile,
   onAtMention,
@@ -233,6 +237,7 @@ function TreeNode({
   node: FileNode;
   depth: number;
   cwd: string;
+  projectId?: string;
   onOpenFile: (filePath: string, fileName: string, options?: OpenFileOptions) => void;
   onDeleteFile?: (filePath: string, fileName: string) => Promise<boolean>;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -261,7 +266,7 @@ function TreeNode({
     if (loaded && !force) return;
     setLoading(true);
     try {
-      const entries = await fetchEntries(node.fullPath);
+      const entries = await fetchEntries(node.fullPath, projectId);
       setChildren(entries);
       setLoaded(true);
     } catch {
@@ -269,7 +274,7 @@ function TreeNode({
     } finally {
       setLoading(false);
     }
-  }, [loaded, node.fullPath]);
+  }, [loaded, node.fullPath, projectId]);
 
   // Re-fetch children when the tree refreshes and the directory is open.
   useEffect(() => {
@@ -285,9 +290,9 @@ function TreeNode({
       onToggleExpanded(node.fullPath, next);
       if (next && !loaded) loadChildren();
     } else {
-      onOpenFile(node.fullPath, node.name);
+      onOpenFile(node.fullPath, node.name, projectId ? { projectId } : undefined);
     }
-  }, [node.isDir, node.fullPath, node.name, loaded, open, loadChildren, onOpenFile, onToggleExpanded]);
+  }, [node.isDir, node.fullPath, node.name, loaded, open, loadChildren, onOpenFile, onToggleExpanded, projectId]);
 
   const handleDelete = useCallback(async () => {
     if (node.isDir || !onDeleteFile || deleting) return;
@@ -304,7 +309,7 @@ function TreeNode({
     <div>
       <div className="file-tree-row" style={{ paddingLeft: 8 + depth * 14 }}
         onContextMenu={(event) => openFileMenu(event, {
-          filePath: node.fullPath, isDirectory: node.isDir, onPreview: node.isDir ? undefined : handleClick,
+          filePath: node.fullPath, projectId, isDirectory: node.isDir, onPreview: node.isDir ? undefined : handleClick,
         })}
       >
         <button
@@ -342,10 +347,11 @@ function TreeNode({
         </button>
         <FileActionsMenu
           filePath={node.fullPath}
+          projectId={projectId}
           isDirectory={node.isDir}
           inTree
-          onMention={onAtMention ? () => onAtMention(getRelativeFilePath(node.fullPath, cwd), node.isDir) : undefined}
-          downloadHref={node.isDir ? undefined : `/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`}
+          onMention={onAtMention ? () => onAtMention(projectId ? node.fullPath : getRelativeFilePath(node.fullPath, cwd), node.isDir) : undefined}
+          downloadHref={node.isDir ? undefined : withProjectQuery(`/api/files/${encodeFilePathForApi(node.fullPath)}?type=download`, projectId)}
           onDelete={!node.isDir && onDeleteFile && !deleting ? () => void handleDelete() : undefined}
         />
       </div>
@@ -357,6 +363,7 @@ function TreeNode({
               node={child}
               depth={depth + 1}
               cwd={cwd}
+              projectId={projectId}
               onOpenFile={onOpenFile}
               onDeleteFile={onDeleteFile}
               onAtMention={onAtMention}
@@ -380,18 +387,20 @@ function TreeNode({
   );
 }
 
-type OpenFileOptions = { sourceSessionId?: string | null; modeHint?: "diff" };
+type OpenFileOptions = { sourceSessionId?: string | null; modeHint?: "diff"; projectId?: string };
 
 type OpenFileHandler = (filePath: string, fileName: string, options?: OpenFileOptions) => void;
 
 function ChangeRow({
   status,
   cwd,
+  projectId,
   onOpenFile,
   t,
 }: {
   status: GitFileStatus;
   cwd: string;
+  projectId?: string;
   onOpenFile: OpenFileHandler;
   t: Translate;
 }) {
@@ -399,12 +408,12 @@ function ChangeRow({
   const openFileMenu = useFileContextMenu();
   const name = getFileName(status.filePath);
   const rel = getRelativeFilePath(status.filePath, cwd);
-  const openDiff = () => onOpenFile(status.filePath, name, { modeHint: "diff" });
+  const openDiff = () => onOpenFile(status.filePath, name, { modeHint: "diff", projectId });
   return (
     <div
       onClick={openDiff}
       onContextMenu={(event) => openFileMenu(event, {
-        filePath: status.filePath, nativeAvailable: status.status !== "deleted", onPreview: openDiff, previewLabel: t("i18n.diff"),
+        filePath: status.filePath, projectId, nativeAvailable: status.status !== "deleted", onPreview: openDiff, previewLabel: t("i18n.diff"),
       })}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -444,6 +453,7 @@ function ChangeRow({
 
 export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileExplorer({
   cwd,
+  projectId,
   onOpenFile,
   refreshKey,
   onAtMention,
@@ -475,7 +485,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const [searchError, setSearchError] = useState(false);
   const [searchExpanded, setSearchExpanded] = useState<Set<string>>(new Set());
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const prevCwdRef = useRef<string | null>(null);
+  const previousContextRef = useRef<{ cwd: string; projectId?: string } | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const refreshToken = `${refreshKey ?? 0}:${treeRefreshKey}`;
   const uploadBusy = uploadPhase !== "idle";
@@ -495,7 +505,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setSearchLoading(true);
     setSearchError(false);
     const timer = setTimeout(() => {
-      fetch(`/api/file-index?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`, { signal: controller.signal })
+      fetch(withProjectQuery(`/api/file-index?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`, projectId), { signal: controller.signal })
         .then((response) => response.ok ? response.json() as Promise<{ matches?: FileIndexEntry[] }> : Promise.reject(new Error("Search failed")))
         .then((data) => setSearchPaths((data.matches ?? []).filter((entry) => !entry.isDir).map((entry) => entry.path)))
         .catch(() => {
@@ -507,7 +517,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         .finally(() => { if (!controller.signal.aborted) setSearchLoading(false); });
     }, 150);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [cwd, fileSearchOpen, searchQuery]);
+  }, [cwd, fileSearchOpen, projectId, searchQuery]);
 
   // Focus the search input whenever the search panel opens.
   useEffect(() => {
@@ -599,7 +609,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     setUploadPhase("uploading");
 
     try {
-      const { status, data } = await uploadFiles(cwd, files, strategy, setUploadProgress);
+      const { status, data } = await uploadFiles(cwd, files, strategy, setUploadProgress, projectId);
       if (status === 409 && data.conflicts?.length) {
         setPendingConflict({
           files,
@@ -618,7 +628,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     } finally {
       setUploadPhase("idle");
     }
-  }, [applyUploadResult, cwd]);
+  }, [applyUploadResult, cwd, projectId]);
 
   const prepareUpload = useCallback(async (files: File[]) => {
     if (files.length === 0 || uploadBusy) return;
@@ -631,7 +641,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 
     try {
       const res = await fetch(
-        `/api/files/${encodeFilePathForApi(cwd)}?type=upload-check`,
+        withProjectQuery(`/api/files/${encodeFilePathForApi(cwd)}?type=upload-check`, projectId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -656,7 +666,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     } finally {
       setUploadPhase("idle");
     }
-  }, [cwd, performUpload, uploadBusy]);
+  }, [cwd, performUpload, projectId, uploadBusy]);
 
   const handleUploadInput = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -667,7 +677,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const handleDeleteFile = useCallback(async (filePath: string, fileName: string): Promise<boolean> => {
     setFileActionMessage(null);
     try {
-      const response = await fetch(`/api/files/${encodeFilePathForApi(filePath)}`, { method: "DELETE" });
+      const response = await fetch(withProjectQuery(`/api/files/${encodeFilePathForApi(filePath)}`, projectId), { method: "DELETE" });
       const data = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
       setFileActionMessage({ kind: "success", text: t("files.deleteSuccess", { name: fileName }) });
@@ -679,7 +689,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setFileActionMessage({ kind: "error", text: t("files.deleteFailed", { name: fileName }) });
       return false;
     }
-  }, [cwd, t]);
+  }, [cwd, projectId, t]);
 
   useImperativeHandle(ref, () => ({
     openUploadPicker() {
@@ -694,11 +704,15 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   useEffect(() => () => onUploadBusyChange?.(false), [onUploadBusyChange]);
 
   useEffect(() => {
-    const cwdChanged = prevCwdRef.current !== cwd;
-    prevCwdRef.current = cwd;
+    const previousContext = previousContextRef.current;
+    const contextChanged = previousContext?.cwd !== cwd || previousContext?.projectId !== projectId;
+    previousContextRef.current = { cwd, projectId };
 
-    // Reset expanded state only when cwd changes, not on refreshKey bumps
-    if (cwdChanged) {
+    // Retain expanded state during refreshes within the same directory and project.
+    if (contextChanged) {
+      setRoots([]);
+      setGitFiles([]);
+      setSearchPaths([]);
       setExpandedPaths(new Set());
       setHighlightedPaths(new Set());
       setUploadSummary(null);
@@ -706,19 +720,19 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       setUploadError(null);
     }
 
-    setLoading(cwdChanged);
+    setLoading(contextChanged);
     setError(null);
     let cancelled = false;
-    fetchEntries(cwd)
+    fetchEntries(cwd, projectId)
       .then((entries) => { if (!cancelled) setRoots(entries); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [cwd, refreshKey, treeRefreshKey]);
+  }, [cwd, projectId, refreshKey, treeRefreshKey]);
 
   useEffect(() => {
     let cancelled = false;
-    fetchGitStatus(cwd)
+    fetchGitStatus(cwd, projectId)
       .then((status) => {
         if (!cancelled) {
           setGitFiles(status.isGitRepository ? status.files : []);
@@ -734,7 +748,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         }
       });
     return () => { cancelled = true; };
-  }, [cwd, refreshKey, treeRefreshKey]);
+  }, [cwd, projectId, refreshKey, treeRefreshKey]);
 
   useEffect(() => {
     onChangesCountChange?.(gitFiles.length);
@@ -745,9 +759,9 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const addUploadedFilesToChat = useCallback(() => {
     if (!uploadSummary || uploadSummary.uploaded.length === 0) return;
     onAtMentions?.(
-      uploadSummary.uploaded.map((name) => getRelativeFilePath(joinFilePath(cwd, name), cwd)),
+      uploadSummary.uploaded.map((name) => projectId ? joinFilePath(cwd, name) : name),
     );
-  }, [cwd, onAtMentions, uploadSummary]);
+  }, [cwd, onAtMentions, projectId, uploadSummary]);
 
   return (
     <div style={{ minHeight: "100%" }}>
@@ -921,6 +935,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                     node={node}
                     depth={0}
                     cwd={cwd}
+                    projectId={projectId}
                     onOpenFile={onOpenFile}
                     onDeleteFile={handleDeleteFile}
                     onAtMention={onAtMention}
@@ -962,7 +977,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             <span style={{ color: GIT_STATUS_COLORS.deleted, fontFamily: "var(--font-mono)" }}>-{gitLineStats.deletions}</span>
           </div>
           {gitFiles.map((status) => (
-            <ChangeRow key={status.filePath} status={status} cwd={cwd} onOpenFile={onOpenFile} t={t} />
+            <ChangeRow key={status.filePath} status={status} cwd={cwd} projectId={projectId} onOpenFile={onOpenFile} t={t} />
           ))}
         </div>
       )}
@@ -980,6 +995,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                 node={node}
                 depth={0}
                 cwd={cwd}
+                projectId={projectId}
                 onOpenFile={onOpenFile}
                 onDeleteFile={handleDeleteFile}
                 onAtMention={onAtMention}

@@ -8,7 +8,7 @@ import {
   type ResolvedPaths,
   type ResolvedResource,
 } from "@earendil-works/pi-coding-agent";
-import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getWorkspaceConfigurationRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
 import { samePath } from "@/lib/paths";
@@ -17,11 +17,13 @@ import { BUILTIN_PLUGIN_DEFINITIONS, sameNpmPackageSource } from "@/lib/builtin-
 import { getPluginSessionManager } from "@/lib/plugin-session-manager";
 import { withPluginOperationLock } from "@/lib/plugin-operation-lock";
 import { readSubagentSessionResources } from "@/lib/subagents";
+import { readSessionToolSelection } from "@/lib/session-tool-selection";
+import { sessionProjectId } from "@/lib/project-store";
 import {
+  findPluginPackageEntry,
   getPluginActivationMode,
-  getPluginPackageSource,
-  getSessionPluginEnabled,
   isDisabledPackage,
+  isPluginEnabledForSession,
   readSessionPluginSelections,
   sessionPluginEnabledByDefault,
   setPluginPackageDisabled,
@@ -51,17 +53,6 @@ function toPluginScope(scope: string): PluginScope {
 
 function keyFor(source: string, scope: PluginScope): string {
   return `${scope}\0${source}`;
-}
-
-function getDisabledPackages(settingsManager: SettingsManager): Map<string, boolean> {
-  const disabled = new Map<string, boolean>();
-  for (const entry of settingsManager.getGlobalSettings().packages ?? []) {
-    disabled.set(keyFor(getPluginPackageSource(entry), "global"), isDisabledPackage(entry));
-  }
-  for (const entry of settingsManager.getProjectSettings().packages ?? []) {
-    disabled.set(keyFor(getPluginPackageSource(entry), "project"), isDisabledPackage(entry));
-  }
-  return disabled;
 }
 
 function addCount(counts: PluginResourceCounts, kind: keyof PluginResourceCounts): void {
@@ -203,12 +194,14 @@ async function readPlugins(cwd: string, sessionId?: string): Promise<PluginsResp
   let resourcesByPackage = new Map<string, PluginResourceInfo[]>();
   let standaloneExtensions: PluginStandaloneExtensionInfo[] = [];
   let totals = emptyCounts();
-  const disabledByPackage = getDisabledPackages(settingsManager);
   const sessionSelection = sessionId
     ? (await getPluginSessionManager(sessionId))
     : null;
   const selectedSessionPlugins = readSessionPluginSelections(sessionSelection);
-  const useStarterDefaults = !sessionSelection || !readSubagentSessionResources(sessionSelection.getEntries() as never);
+  const sessionEntries = sessionSelection?.getEntries() as Parameters<typeof readSessionToolSelection>[0] | undefined;
+  const subagentResources = sessionEntries && readSubagentSessionResources(sessionEntries);
+  const chatOnly = Boolean(sessionId && sessionProjectId(sessionId) === null)
+    || (sessionEntries && !subagentResources && readSessionToolSelection(sessionEntries)?.length === 0);
 
   try {
     const resolved = await packageManager.resolve(async (source) => {
@@ -230,18 +223,15 @@ async function readPlugins(cwd: string, sessionId?: string): Promise<PluginsResp
   const packages = packageManager.listConfiguredPackages().map((pkg) => {
     const scope = toPluginScope(pkg.scope);
     const key = keyFor(pkg.source, scope);
-    const disabled = disabledByPackage.get(key) ?? false;
-    const activationMode = getPluginActivationMode(
-      scope === "project"
-        ? settingsManager.getProjectSettings().packages?.find((entry) => getPluginPackageSource(entry) === pkg.source) ?? pkg.source
-        : settingsManager.getGlobalSettings().packages?.find((entry) => getPluginPackageSource(entry) === pkg.source) ?? pkg.source,
-    );
+    const entry = findPluginPackageEntry(settingsManager, pkg.source, scope) ?? pkg.source;
+    const disabled = isDisabledPackage(entry);
+    const activationMode = getPluginActivationMode(entry, scope);
     const globalEnabled = !disabled;
-    const sessionDefaultEnabled = sessionPluginEnabledByDefault(pkg.source, scope);
-    const sessionEnabled = activationMode === "session"
-      ? getSessionPluginEnabled(selectedSessionPlugins, pkg.source, scope, useStarterDefaults)
-      : globalEnabled;
-    const effectiveEnabled = globalEnabled && (activationMode === "global" || sessionEnabled);
+    const sessionDefaultEnabled = sessionPluginEnabledByDefault(entry, scope);
+    const sessionEnabled = isPluginEnabledForSession(entry, scope, selectedSessionPlugins, {
+      useStarterDefaults: !subagentResources,
+    });
+    const effectiveEnabled = !chatOnly && sessionEnabled;
     const counts = countsByPackage.get(key) ?? emptyCounts();
     const resources = resourcesByPackage.get(key) ?? [];
     const resourceCount = counts.extensions + counts.skills + counts.prompts + counts.themes;
@@ -304,7 +294,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getWorkspaceConfigurationRoots();
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -339,7 +329,7 @@ export async function POST(req: Request) {
     };
     if (!body.cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
     if (!body.action) return NextResponse.json({ error: "action required" }, { status: 400 });
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getWorkspaceConfigurationRoots();
     if (!isExistingFilePathAllowed(body.cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

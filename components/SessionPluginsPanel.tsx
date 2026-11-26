@@ -134,7 +134,7 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
         <button
           type="button"
           className="session-plugins-reload"
-          disabled={!sessionId || sessionRunning || reloadBusy || sessionPackages.length === 0}
+          disabled={!sessionId || sessionRunning || reloadBusy || !data?.packages.length}
           onClick={() => void reload()}
         >
           {reloadBusy ? (zh ? "正在重载…" : "Reloading…") : (zh ? "重载会话" : "Reload session")}
@@ -194,8 +194,12 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
                       <strong>{packageLabel(pkg)}</strong>
                       <span>{resourceSummary(pkg, locale) || pkg.source}</span>
                     </span>
-                    <span className={`session-plugin-global-state${pkg.globalEnabled ? " is-on" : ""}`}>
-                      {pkg.globalEnabled ? (zh ? "全局开启" : "Globally on") : (zh ? "全局关闭" : "Globally off")}
+                    <span className={`session-plugin-global-state${pkg.effectiveEnabled ? " is-on" : ""}`}>
+                      {!pkg.globalEnabled
+                        ? (zh ? "全局关闭" : "Globally off")
+                        : pkg.effectiveEnabled
+                          ? (zh ? "全局开启" : "Globally on")
+                          : (zh ? "本会话未启用" : "Inactive in this session")}
                     </span>
                   </div>
                 ))}
@@ -207,7 +211,7 @@ export function SessionPluginsPanel({ cwd, sessionId, sessionRunning, onReloaded
 
       {!sessionId && (
         <footer className="session-plugins-new-note">
-          {zh ? "电脑操作默认开启。会话创建后，可在这里调整按会话启用的插件。" : "Computer Use starts on by default. You can adjust per-session plugins here after the conversation is created."}
+          {zh ? "会话创建后，可在这里调整按会话启用的插件。" : "You can adjust per-session plugins here after the conversation is created."}
         </footer>
       )}
 

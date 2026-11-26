@@ -10,7 +10,7 @@ import {
   type SessionPluginScope,
   type SessionPluginSelection,
 } from "./session-plugin-selection";
-import { BUILTIN_PLUGIN_DEFINITIONS, sameNpmPackageSource } from "./builtin-plugin-definitions";
+import { COMPUTER_USE_PLUGIN_SOURCE, sameNpmPackageSource } from "./builtin-plugin-definitions";
 
 export type PluginActivationMode = "global" | "session";
 export type PluginPackageScope = "global" | "project";
@@ -19,6 +19,8 @@ export type PluginPackageScope = "global" | "project";
 type PackageObject = Exclude<PackageSource, string>;
 export type PluginPackageSource = PackageObject & {
   activationMode?: PluginActivationMode;
+  /** Distinguishes new user selections from the old unmarked Computer Use default. */
+  meteorAgentActivationModeExplicit?: true;
   /** Exact SDK package entry saved while the package is globally disabled. */
   meteorAgentBeforeDisable?: PackageSource;
 };
@@ -31,9 +33,17 @@ export function getPluginPackageSource(entry: PackageSource): string {
   return typeof entry === "string" ? entry : entry.source;
 }
 
-export function getPluginActivationMode(entry: PackageSource): PluginActivationMode {
-  if (!isPackageObject(entry)) return "global";
-  return (entry as PluginPackageSource).activationMode === "session" ? "session" : "global";
+export function getPluginActivationMode(
+  entry: PackageSource,
+  scope: PluginPackageScope,
+): PluginActivationMode {
+  if (!isPackageObject(entry) || (entry as PluginPackageSource).activationMode !== "session") return "global";
+  // The installer used to save just these two fields. Treat that exact legacy
+  // default as global without rewriting settings or touching custom filters.
+  if (scope === "global" && entry.source === COMPUTER_USE_PLUGIN_SOURCE && Object.keys(entry).length === 2) {
+    return "global";
+  }
+  return "session";
 }
 
 export function getPackageEntries(
@@ -59,6 +69,7 @@ function withActivationMode(entry: PackageSource, mode: PluginActivationMode): P
     if (typeof entry === "string") return entry;
     const rest = { ...(entry as PluginPackageSource) };
     delete rest.activationMode;
+    delete rest.meteorAgentActivationModeExplicit;
     // Preserve a filtered package object when it contains explicit resource
     // patterns. A bare object carrying only our metadata can be simplified back
     // to the SDK's string form.
@@ -111,12 +122,15 @@ export function setPluginActivationMode(
   const next = current.map((entry) => {
     if (getPluginPackageSource(entry) !== source) return entry;
     changed = true;
-    const nextEntry = withActivationMode(entry, mode);
+    let nextEntry = withActivationMode(entry, mode);
     // A disabled package cannot be activated per-session. Switching to local
     // mode is therefore also the explicit opt-in that restores its package
     // resources; users can still use the regular disable action afterwards.
     if (mode === "session" && isDisabledPackage(nextEntry)) {
-      return withActivationMode(restoreDisabledPackage(nextEntry), mode);
+      nextEntry = withActivationMode(restoreDisabledPackage(nextEntry), mode);
+    }
+    if (mode === "session" && isPackageObject(nextEntry) && isGlobalComputerUsePackage(source, scope)) {
+      return { ...nextEntry, meteorAgentActivationModeExplicit: true } as PluginPackageSource;
     }
     return nextEntry;
   });
@@ -149,7 +163,7 @@ export function setPluginPackageDisabled(
     if (getPluginPackageSource(entry) !== source) return entry;
     changed = true;
     if (disabled) return makePackageDisabled(entry);
-    const mode = getPluginActivationMode(entry);
+    const mode = getPluginActivationMode(entry, scope);
     return withActivationMode(restoreDisabledPackage(entry), mode);
   });
   if (!changed) return false;
@@ -169,26 +183,44 @@ export function readSessionPluginSelections(
   return new Map((selection ?? []).map((plugin) => [packageKey(plugin.source, plugin.scope), plugin.enabled]));
 }
 
-export function sessionPluginEnabledByDefault(source: string, scope: PluginPackageScope): boolean {
-  return scope === "global" && BUILTIN_PLUGIN_DEFINITIONS.some((definition) => (
-    "defaultSessionEnabled" in definition && definition.defaultSessionEnabled
-      && sameNpmPackageSource(definition.source, source)
-  ));
+function isGlobalComputerUsePackage(source: string, scope: PluginPackageScope): boolean {
+  return scope === "global" && sameNpmPackageSource(COMPUTER_USE_PLUGIN_SOURCE, source);
 }
 
-export function getSessionPluginEnabled(
-  selected: ReadonlyMap<string, boolean>,
-  source: string,
+export function sessionPluginEnabledByDefault(
+  entry: PackageSource,
   scope: PluginPackageScope,
-  useStarterDefaults = true,
 ): boolean {
-  return selected.get(packageKey(source, scope))
-    ?? (useStarterDefaults && sessionPluginEnabledByDefault(source, scope));
+  // Preserve the old default within customized Computer Use session policies.
+  return isPackageObject(entry)
+    && getPluginActivationMode(entry, scope) === "session"
+    && isGlobalComputerUsePackage(entry.source, scope)
+    && !(entry as PluginPackageSource).meteorAgentActivationModeExplicit;
 }
 
 interface SessionPluginSettingsOptions {
   useStarterDefaults?: boolean;
   onlyStarterDefaults?: boolean;
+}
+
+export function isPluginEnabledForSession(
+  entry: PackageSource,
+  scope: PluginPackageScope,
+  selected: ReadonlyMap<string, boolean>,
+  { useStarterDefaults = true, onlyStarterDefaults = false }: SessionPluginSettingsOptions = {},
+): boolean {
+  if (isDisabledPackage(entry)) return false;
+  const source = getPluginPackageSource(entry);
+  const computerUse = isGlobalComputerUsePackage(source, scope);
+  if (onlyStarterDefaults && !computerUse) return true;
+  const sessionSelection = selected.get(packageKey(source, scope));
+  if (getPluginActivationMode(entry, scope) === "session") {
+    return sessionSelection ?? (useStarterDefaults && sessionPluginEnabledByDefault(entry, scope));
+  }
+  if (!computerUse) return true;
+  // A saved session opt-out still applies after the built-in switches to global
+  // activation. Extension-enabled children retain their prior opt-in default.
+  return sessionSelection ?? (source !== COMPUTER_USE_PLUGIN_SOURCE || useStarterDefaults);
 }
 
 function filterPackageSettings(
@@ -198,14 +230,11 @@ function filterPackageSettings(
   options: SessionPluginSettingsOptions,
 ): ReturnType<SettingsManager["getGlobalSettings"]> {
   if (!settings.packages?.length) return settings;
-  const packages = settings.packages.map((entry) => {
-    if (getPluginActivationMode(entry) !== "session") return entry;
-    const source = getPluginPackageSource(entry);
-    if (options.onlyStarterDefaults && !sessionPluginEnabledByDefault(source, scope)) return entry;
-    return getSessionPluginEnabled(selected, source, scope, options.useStarterDefaults)
+  const packages = settings.packages.map((entry) => (
+    isDisabledPackage(entry) || isPluginEnabledForSession(entry, scope, selected, options)
       ? entry
-      : makePackageDisabled(entry);
-  });
+      : makePackageDisabled(entry)
+  ));
   return { ...settings, packages };
 }
 

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { resolve } from "path";
-import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+import { getWorkspaceConfigurationRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import { getProjectTrustStatus } from "@/lib/project-trust";
 import {
@@ -50,7 +50,7 @@ export async function PATCH(req: Request) {
     const mode = readMode(body.mode);
     const cwd = body.cwd;
     const source = body.source.trim();
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getWorkspaceConfigurationRoots();
     if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

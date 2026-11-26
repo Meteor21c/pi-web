@@ -24,8 +24,9 @@ test("keeps live run timing above the composer and shows recorded duration after
 });
 
 test("uses one stable activity disclosure across compaction and steering within a turn", () => {
-  assert.match(source, /const isLiveTurn = \(agentRunning \|\| streamState\.isStreaming\) && isLatestTurn/);
-  assert.match(source, /while \(endIdx < timelineMessages\.length && !startsUserTurn\(timelineMessages\[endIdx\]\)\)/);
+  assert.match(source, /const isLiveTurn = !endsAtFork && \(agentRunning \|\| streamState\.isStreaming\) && isLatestTurn/);
+  assert.match(source, /while \(endIdx < timelineMessages\.length\s+&& !startsUserTurn\(timelineMessages\[endIdx\]\) && !isSessionForkDivider\(timelineMessages\[endIdx\]\)\)/);
+  assert.match(source, /const endsAtFork = endIdx < timelineMessages\.length && isSessionForkDivider\(timelineMessages\[endIdx\]\)/);
   assert.match(source, /addSectionView\(false, "steering-" \+ messageKey, renderMessage\(messageIdx\)/);
   assert.match(source, /key=\{"turn-activity-" \+ turnKey\}/);
   assert.match(source, /<TurnProcessSection[\s\S]*?open=\{live \|\| open\}/);

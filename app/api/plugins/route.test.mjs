@@ -19,8 +19,13 @@ const jiti = createJiti(import.meta.url, { alias: { "@": process.cwd() } });
 const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
 const { cacheSessionPath, persistPreparedSession } = await jiti.import("../../../lib/session-reader.ts");
 const { updateSessionPluginSelection } = await jiti.import("../../../lib/plugin-activation.ts");
+const { createNamedProject, setSessionProject } = await jiti.import("../../../lib/project-store.ts");
+const { startRpcSession } = await jiti.import("../../../lib/rpc-manager.ts");
+const { getStandaloneChatDirectory } = await jiti.import("../../../lib/standalone-chat-directory.ts");
 const { GET } = await jiti.import("./route.ts");
 const { POST: CHECK_POST } = await jiti.import("./check/route.ts");
+const { PATCH: ACTIVATION_PATCH } = await jiti.import("./activation/route.ts");
+const { PATCH: SESSION_PATCH } = await jiti.import("./session/route.ts");
 allowFileRoot(cwd);
 
 after(async () => {
@@ -95,19 +100,35 @@ test("plugin update checks require a trusted JSON API request", async () => {
   assert.deepEqual(await wrongType.json(), { error: "Content-Type must be application/json" });
 });
 
-test("plugin listing shows the Computer Use default, a saved opt-out, and a child session's restricted default", async () => {
+test("plugin listing shows global Computer Use, a saved opt-out, and a child session's restricted default", async (t) => {
   const source = "npm:@amaster.ai/pi-computer-use";
+  const toolName = "computer_use_fixture";
   const packageDir = join(agentDir, "npm", "node_modules", "@amaster.ai", "pi-computer-use");
   const sessionsDir = join(agentDir, "sessions");
   await mkdir(packageDir, { recursive: true });
   await mkdir(sessionsDir);
-  await writeFile(join(packageDir, "package.json"), JSON.stringify({ name: "@amaster.ai/pi-computer-use", version: "0.1.17" }));
+  await writeFile(join(packageDir, "package.json"), JSON.stringify({
+    name: "@amaster.ai/pi-computer-use",
+    version: "0.1.17",
+    pi: { extensions: ["./index.ts"] },
+  }));
+  await writeFile(join(packageDir, "index.ts"), `
+    export default (pi) => pi.registerTool({
+      name: ${JSON.stringify(toolName)},
+      label: "Computer Use fixture",
+      description: "A simulated desktop tool",
+      parameters: { type: "object", properties: {} },
+      execute: async () => ({ content: [{ type: "text", text: "fixture" }] }),
+    });
+  `);
   await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [{ source, activationMode: "session" }] }));
 
+  const { project } = await createNamedProject({ name: "Fixture project", defaultDirectory: cwd, directories: [cwd] });
   const normal = SessionManager.create(cwd, sessionsDir);
   const normalFile = persistPreparedSession(normal);
   assert.ok(normalFile);
   cacheSessionPath(normal.getSessionId(), normalFile);
+  await setSessionProject(normal.getSessionId(), project.id);
   const child = SessionManager.create(cwd, sessionsDir);
   child.appendCustomEntry("pi-web:subagent", {
     version: 1, parentSessionId: normal.getSessionId(), parentSessionPath: normalFile,
@@ -124,13 +145,44 @@ test("plugin listing shows the Computer Use default, a saved opt-out, and a chil
     assert.equal(response.status, 200);
     const pkg = body.packages.find((item) => item.source === source);
     assert.ok(pkg);
-    assert.equal(pkg.activationMode, "session");
-    assert.equal(pkg.sessionDefaultEnabled, true);
     return pkg;
   }
 
-  assert.equal((await getComputerUse(normal)).effectiveEnabled, true);
+  const configured = await getComputerUse(normal);
+  assert.equal(configured.activationMode, "global");
+  assert.equal(configured.sessionDefaultEnabled, false);
+  assert.equal(configured.effectiveEnabled, true);
   assert.equal((await getComputerUse(child)).effectiveEnabled, false);
+  const running = await startRpcSession(normal.getSessionId(), normalFile, undefined);
+  t.after(() => running.session.shutdown());
+  assert.ok(running.session.inner.getActiveToolNames().includes(toolName));
+  await running.session.send({ type: "set_work_mode", mode: "plan" });
+  assert.ok(!running.session.inner.getActiveToolNames().includes(toolName));
+  assert.equal((await running.session.inner.agent.beforeToolCall({ toolCall: { name: toolName } })).block, true);
+  await running.session.shutdown();
+
+  const standalone = await startRpcSession("new-standalone-fixture", "", getStandaloneChatDirectory(), { projectId: null });
+  t.after(() => standalone.session.shutdown());
+  assert.deepEqual(standalone.session.inner.getActiveToolNames(), []);
+  assert.ok(!standalone.session.inner.getAllTools().some(({ name }) => name === toolName));
+
   updateSessionPluginSelection(normal, source, "global", false);
   assert.equal((await getComputerUse(normal)).effectiveEnabled, false);
+  const optedOut = await startRpcSession(normal.getSessionId(), normalFile, undefined);
+  t.after(() => optedOut.session.shutdown());
+  assert.ok(!optedOut.session.inner.getAllTools().some(({ name }) => name === toolName));
+
+  function patchRequest(path, extra) {
+    return new Request(`http://localhost/api/plugins/${path}`, {
+      method: "PATCH",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ cwd, source, scope: "global", sessionId: normal.getSessionId(), ...extra }),
+    });
+  }
+
+  assert.equal((await SESSION_PATCH(patchRequest("session", { enabled: true }))).status, 409);
+  assert.equal((await ACTIVATION_PATCH(patchRequest("activation", { mode: "session" }))).status, 200);
+  assert.equal((await getComputerUse(normal)).activationMode, "session");
+  assert.equal((await SESSION_PATCH(patchRequest("session", { enabled: true }))).status, 200);
+  assert.equal((await getComputerUse(normal)).effectiveEnabled, true);
 });

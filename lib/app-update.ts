@@ -1,6 +1,10 @@
 const STABLE_VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_UPDATE_BYTES = 512 * 1024 * 1024;
+const DESKTOP_RELEASE_BASE = "https://dl.meteor21c.fun/desktop/";
+const MAX_DESKTOP_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024;
+
+export type DesktopUpdatePlatform = "macos-arm64" | "windows-x64";
 
 export interface AppUpdateManifest {
   version: string;
@@ -42,13 +46,7 @@ export function getMeteorAgentReleaseUrl(version: string): string | null {
   return "https://dl.meteor21c.fun/";
 }
 
-/** Validate every field used by the privileged updater before constructing a URL. */
-export function parseAppUpdateManifest(value: unknown): AppUpdateManifest | null {
-  if (!isRecord(value) || typeof value.version !== "string" || !parseStableVersion(value.version)) return null;
-  const expectedArtifact = `meteor21c-webagent-${value.version}.tgz`;
-  if (value.artifact !== expectedArtifact) return null;
-  if (typeof value.sha256 !== "string" || !SHA256_PATTERN.test(value.sha256)) return null;
-  if (typeof value.bytes !== "number" || !Number.isSafeInteger(value.bytes) || value.bytes <= 0 || value.bytes > MAX_UPDATE_BYTES) return null;
+function readReleaseInfo(value: Record<string, unknown>) {
   const releaseNotes = Array.isArray(value.releaseNotes)
     ? value.releaseNotes
       .filter((note): note is string => typeof note === "string")
@@ -60,12 +58,39 @@ export function parseAppUpdateManifest(value: unknown): AppUpdateManifest | null
   const publishedAt = typeof value.publishedAt === "string" && Number.isFinite(Date.parse(value.publishedAt))
     ? value.publishedAt
     : undefined;
+  return { releaseNotes, ...(publishedAt ? { publishedAt } : {}) };
+}
+
+export function parseDesktopUpdateManifest(value: unknown, platform: DesktopUpdatePlatform) {
+  if (!isRecord(value) || typeof value.version !== "string" || !parseStableVersion(value.version)) return null;
+  if (!isRecord(value.installers)) return null;
+  const installer = value.installers[platform];
+  if (!isRecord(installer)) return null;
+  const suffix = platform === "macos-arm64" ? "macOS-arm64.dmg" : "Windows-x64-Setup.exe";
+  const filename = `MeteorAgent-Desktop-Beta-${value.version}-${suffix}`;
+  if (installer.artifact !== filename || typeof installer.sha256 !== "string" || !SHA256_PATTERN.test(installer.sha256)) return null;
+  if (typeof installer.bytes !== "number" || !Number.isSafeInteger(installer.bytes)
+    || installer.bytes <= 0 || installer.bytes >= MAX_DESKTOP_INSTALLER_BYTES) return null;
+  return {
+    version: value.version,
+    releaseUrl: new URL(`${value.version}/${filename}`, DESKTOP_RELEASE_BASE).href,
+    bytes: installer.bytes,
+    ...readReleaseInfo(value),
+  };
+}
+
+/** Validate every field used by the privileged updater before constructing a URL. */
+export function parseAppUpdateManifest(value: unknown): AppUpdateManifest | null {
+  if (!isRecord(value) || typeof value.version !== "string" || !parseStableVersion(value.version)) return null;
+  const expectedArtifact = `meteor21c-webagent-${value.version}.tgz`;
+  if (value.artifact !== expectedArtifact) return null;
+  if (typeof value.sha256 !== "string" || !SHA256_PATTERN.test(value.sha256)) return null;
+  if (typeof value.bytes !== "number" || !Number.isSafeInteger(value.bytes) || value.bytes <= 0 || value.bytes > MAX_UPDATE_BYTES) return null;
   return {
     version: value.version,
     artifact: expectedArtifact,
     sha256: value.sha256,
     bytes: value.bytes,
-    releaseNotes,
-    ...(publishedAt ? { publishedAt } : {}),
+    ...readReleaseInfo(value),
   };
 }

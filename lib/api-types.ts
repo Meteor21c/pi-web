@@ -75,6 +75,7 @@ export interface ProjectTrustStatus {
 }
 
 export interface AppUpdateResponse {
+  desktop?: boolean;
   currentVersion: string;
   latestVersion: string;
   updateAvailable: boolean;

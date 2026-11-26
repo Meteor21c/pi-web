@@ -10,6 +10,7 @@ import {
   isWindowsAbsolutePath,
 } from "@/lib/file-access";
 import { buildEntriesFromFiles, filterFileEntries, type FileIndexEntry } from "@/lib/file-fuzzy";
+import { joinFilePath, normalizeFilePathSlashes } from "@/lib/file-paths";
 
 const execFileAsync = promisify(execFile);
 
@@ -40,10 +41,14 @@ interface FileListing {
   hardTruncated: boolean;
 }
 
+type CachedListing = (FileListing & { entries?: FileIndexEntry[] }) | {
+  files?: undefined;
+  entries: FileIndexEntry[];
+  hardTruncated: boolean;
+};
+
 interface CacheEntry {
-  listing: FileListing;
-  /** Derived lazily on the first ?q= search against this listing */
-  entries?: FileIndexEntry[];
+  listing: CachedListing;
   expiresAt: number;
 }
 
@@ -77,12 +82,13 @@ async function listWithGit(cwd: string): Promise<FileListing | null> {
   }
 }
 
-function listWithWalk(cwd: string): FileListing {
+function listWithWalk(cwd: string, fileLimit = WALK_HARD_CAP): FileListing {
   const files: string[] = [];
   // BFS so shallow files win when the cap truncates the listing.
   const queue: Array<{ abs: string; rel: string; depth: number }> = [{ abs: cwd, rel: "", depth: 0 }];
-  while (queue.length > 0) {
-    const { abs, rel, depth } = queue.shift()!;
+  let hardTruncated = false;
+  for (let index = 0; index < queue.length; index++) {
+    const { abs, rel, depth } = queue[index];
     let dirents: fs.Dirent[];
     try {
       dirents = fs.readdirSync(abs, { withFileTypes: true });
@@ -93,18 +99,62 @@ function listWithWalk(cwd: string): FileListing {
       if (IGNORED_NAMES.has(d.name) || IGNORED_SUFFIXES.some((s) => d.name.endsWith(s))) continue;
       const childRel = rel ? `${rel}/${d.name}` : d.name;
       if (d.isDirectory()) {
-        if (depth + 1 <= MAX_WALK_DEPTH) {
+        if (depth + 1 <= MAX_WALK_DEPTH && queue.length <= fileLimit) {
           queue.push({ abs: path.join(abs, d.name), rel: childRel, depth: depth + 1 });
+        } else {
+          hardTruncated = true;
         }
       } else if (d.isFile()) {
-        if (files.length >= WALK_HARD_CAP) {
+        if (files.length >= fileLimit) {
           return { files, hardTruncated: true };
         }
         files.push(childRel);
       }
     }
   }
-  return { files, hardTruncated: false };
+  return { files, hardTruncated };
+}
+
+function listProjectRoots(roots: Set<string>): CachedListing {
+  const folders: FileIndexEntry[] = [];
+  const children: FileIndexEntry[] = [];
+  const usedNames = new Set<string>();
+  const fileLimit = Math.floor(WALK_HARD_CAP / roots.size);
+  let hardTruncated = false;
+  for (const root of roots) {
+    const absolutePath = normalizeFilePathSlashes(root);
+    const baseName = path.basename(root) || absolutePath.replace(/\/$/, "") || "/";
+    let name = baseName;
+    for (let suffix = 2; usedNames.has(name.toLowerCase()); suffix++) {
+      name = `${baseName} (${suffix})`;
+    }
+    usedNames.add(name.toLowerCase());
+    folders.push({ path: name, absolutePath, isDir: true });
+    const listing = listWithWalk(root, fileLimit);
+    hardTruncated ||= listing.hardTruncated;
+    for (const entry of buildEntriesFromFiles(listing.files)) {
+      children.push({
+        path: joinFilePath(name, entry.path),
+        absolutePath: joinFilePath(absolutePath, entry.path),
+        isDir: entry.isDir,
+      });
+    }
+  }
+  return { entries: folders.concat(children), hardTruncated };
+}
+
+async function getCachedListing(key: string, load: () => CachedListing | Promise<CachedListing>): Promise<CachedListing> {
+  const cache = getIndexCache();
+  const now = Date.now();
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > now) return cached.listing;
+  const listing = await load();
+  for (const [existingKey, entry] of cache) {
+    if (entry.expiresAt <= now) cache.delete(existingKey);
+  }
+  if (cache.size >= CACHE_MAX_ENTRIES) cache.clear();
+  cache.set(key, { listing, expiresAt: Date.now() + CACHE_TTL_MS });
+  return listing;
 }
 
 // GET /api/file-index?cwd=/abs/path[&q=query]
@@ -113,16 +163,31 @@ function listWithWalk(cwd: string): FileListing {
 // With q: { matches: { path, isDir }[] } — ranked against the FULL listing so
 // repos larger than MAX_FILES still find deep files (cap applied after
 // matching, like the TUI passing the query to fd).
+// Named project @ autocomplete omits cwd and returns entries with absolute paths.
 // Guarded by the same allow-list as /api/files.
 export async function GET(req: NextRequest) {
   try {
     const cwd = req.nextUrl.searchParams.get("cwd")?.trim() ?? "";
+    const query = req.nextUrl.searchParams.get("q")?.slice(0, MAX_QUERY_LENGTH) ?? "";
+    const projectId = req.nextUrl.searchParams.get("projectId");
+    if (projectId !== null && !req.nextUrl.searchParams.has("cwd")) {
+      const roots = await getAllowedFileRoots(projectId);
+      if (!roots.size) return NextResponse.json({ error: "Access denied" }, { status: 403 });
+      const key = JSON.stringify([projectId, [...roots]]);
+      const listing = await getCachedListing(key, () => listProjectRoots(roots));
+      const entries = listing.entries ?? [];
+      return query
+        ? NextResponse.json({ matches: filterFileEntries(entries, query) })
+        : NextResponse.json({
+            entries: entries.slice(0, MAX_FILES),
+            truncated: listing.hardTruncated || entries.length > MAX_FILES,
+          });
+    }
     if (!cwd || (!cwd.startsWith("/") && !isWindowsAbsolutePath(cwd))) {
       return NextResponse.json({ error: "cwd must be an absolute path" }, { status: 400 });
     }
-    const query = req.nextUrl.searchParams.get("q")?.slice(0, MAX_QUERY_LENGTH) ?? "";
 
-    const allowedRoots = await getAllowedFileRoots();
+    const allowedRoots = await getAllowedFileRoots(projectId ?? undefined);
     if (!isFilePathAllowed(cwd, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
@@ -140,25 +205,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    const cache = getIndexCache();
-    const now = Date.now();
-    let cached = cache.get(cwd);
-    if (!cached || cached.expiresAt <= now) {
-      const listing = (await listWithGit(cwd)) ?? listWithWalk(cwd);
-      for (const [key, entry] of cache) {
-        if (entry.expiresAt <= now) cache.delete(key);
-      }
-      if (cache.size >= CACHE_MAX_ENTRIES) cache.clear();
-      cached = { listing, expiresAt: now + CACHE_TTL_MS };
-      cache.set(cwd, cached);
-    }
+    const cacheKey = projectId === null ? cwd : JSON.stringify([projectId, cwd]);
+    const listing = await getCachedListing(cacheKey, async () =>
+      (projectId === null ? await listWithGit(cwd) : null) ?? listWithWalk(cwd));
+    const { files = [], hardTruncated } = listing;
 
     if (query) {
-      cached.entries ??= buildEntriesFromFiles(cached.listing.files);
-      return NextResponse.json({ matches: filterFileEntries(cached.entries, query) });
+      listing.entries ??= buildEntriesFromFiles(files);
+      return NextResponse.json({ matches: filterFileEntries(listing.entries, query) });
     }
 
-    const { files, hardTruncated } = cached.listing;
     return NextResponse.json({
       files: files.slice(0, MAX_FILES),
       truncated: hardTruncated || files.length > MAX_FILES,

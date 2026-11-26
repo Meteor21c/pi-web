@@ -1,5 +1,7 @@
 import { lt, valid } from "semver";
 
+export const COMPUTER_USE_PLUGIN_SOURCE = "npm:@amaster.ai/pi-computer-use";
+
 /**
  * MeteorAgent ships a small, deliberately boring set of starter capabilities.
  *
@@ -58,9 +60,9 @@ export const BUILTIN_PLUGIN_DEFINITIONS = [
   {
     id: "computer-use",
     name: "电脑操作",
-    source: "npm:@amaster.ai/pi-computer-use",
-    purpose: "查看和操作本机桌面，可按会话关闭",
-    purposeEn: "Inspect and control the local desktop, with a per-conversation switch",
+    source: COMPUTER_USE_PLUGIN_SOURCE,
+    purpose: "查看和操作本机桌面，默认在支持工具的会话中启用",
+    purposeEn: "Inspect and control the local desktop. Enabled by default in chats with tools.",
     category: "tool",
     risk: "review",
     recommendedVersion: "0.1.17",
@@ -68,8 +70,6 @@ export const BUILTIN_PLUGIN_DEFINITIONS = [
     officialUrl: "https://pi.dev/packages/@amaster.ai/pi-computer-use?name=computer",
     repositoryUrl: "https://github.com/TGYD-helige/pi/tree/master/packages/pi-computer-use",
     requiresNetwork: false,
-    activationMode: "session",
-    defaultSessionEnabled: true,
   },
 ] as const;
 
