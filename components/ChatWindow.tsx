@@ -1,13 +1,14 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { AgentMessage, AgentUsage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, CustomMessage, ExtensionUiAnswer, ExtensionUiRequest, SessionInfo, SessionTreeNode, SubagentSessionStatus, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
-import { getAssistantErrorMessage, getAssistantTimelineSegments, getUserMessageText, hasFinalAssistantStop, isMessageGroupAnchor, readGoalOutcomeStatus, shouldShowSettledGoalFinal, startsUserTurn, stoppedWithoutFinalAnswer } from "@/lib/message-display";
+import { getAssistantErrorMessage, getAssistantTimelineSegments, getUserMessageText, hasFinalAssistantStop, isMalformedAssistantToolText, isMessageGroupAnchor, readGoalOutcomeStatus, shouldShowSettledGoalFinal, startsUserTurn, stoppedWithoutFinalAnswer } from "@/lib/message-display";
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
+import { copyText } from "@/lib/clipboard";
 import { getDeliveredToolImages, getModelDisplayName, isSubagentToolDetails, MessageView, type ImageBillingSummary } from "./MessageView";
 import type { WorkMode } from "@/lib/prompt-presets";
 import { USER_QUESTION_TOOL } from "@/lib/user-questions";
@@ -74,7 +75,9 @@ interface Props {
   subagentStatuses?: ReadonlyMap<string, SubagentSessionStatus>;
   previewOnly?: boolean;
   onAskInNewChat?: (prompt: string, sourceSessionId: string, sourceEntryId: string) => Promise<void>;
+  onAskInSideChat?: (prompt: string, sourceSessionId: string, sourceEntryId: string) => Promise<void>;
   quoteSelectionEnabled?: boolean;
+  sidePanel?: boolean;
   initialPrompt?: string;
   onInitialPromptConsumed?: () => void;
   /** Completion sound state + controls, owned by AppShell so tasks finishing in
@@ -335,10 +338,10 @@ function TurnLabels({ message, modelNames, modeLabel }: {
   );
 }
 
-export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, projectId, savedCwdOutsideProject, uploadCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onToolPresetControlChange, onSessionReloadControlChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, quoteSelectionEnabled = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initialScrollPosition, onScrollPositionChange, sessionRunning, newSessionCwd, projectId, savedCwdOutsideProject, uploadCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onToolPresetControlChange, onSessionReloadControlChange, onSystemInfoLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenSession, subagentStatuses, previewOnly = false, onAskInNewChat, onAskInSideChat, quoteSelectionEnabled = false, sidePanel = false, initialPrompt, onInitialPromptConsumed, soundEnabled = true, onSoundToggle, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
-  const showMinimapRail = !previewOnly && !isMobile;
+  const showMinimapRail = !previewOnly && !sidePanel && !isMobile;
   const completionNotificationsEnabled = !previewOnly && session?.relation?.kind !== "subagent";
   const [subagentMode, setSubagentMode] = useState<SubagentMode>(DEFAULT_SUBAGENT_MODE);
   const subagentToolsDialog = useRef<HTMLDialogElement>(null);
@@ -362,11 +365,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   soundEnabledRef.current = soundEnabled;
   const soundedExtensionDialogIdRef = useRef<string | null>(null);
   const wrappedOnAgentEnd = useCallback(() => {
-    if (completionNotificationsEnabled && soundEnabledRef.current) {
+    if (completionNotificationsEnabled && !sidePanel && soundEnabledRef.current) {
       playDoneSoundRef.current();
     }
     onAgentEnd?.();
-  }, [completionNotificationsEnabled, onAgentEnd]);
+  }, [completionNotificationsEnabled, sidePanel, onAgentEnd]);
 
   // 稳定化 onEditContent 引用，配合 React.memo 防止历史消息重渲染
   const handleEditContent = useCallback((message: UserMessage) => {
@@ -586,36 +589,44 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     top: number;
     left: number;
     sourceEntryId?: string;
+    contextMenu: boolean;
   } | null>(null);
-  const [quoteInputOpen, setQuoteInputOpen] = useState(false);
+  const [quoteDestination, setQuoteDestination] = useState<"new-chat" | "side-chat" | null>(null);
+  const quoteInputOpen = quoteDestination !== null;
   const [quoteSubmitting, setQuoteSubmitting] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const quotePopoverRef = useRef<HTMLDivElement | null>(null);
   const quoteChatInputRef = useRef<ChatInputHandle | null>(null);
   const closeQuotedSelection = useCallback(() => {
     setQuotedSelection(null);
-    setQuoteInputOpen(false);
+    setQuoteDestination(null);
     setQuoteError(null);
   }, []);
 
   useEffect(() => {
-    if (!quoteSelectionEnabled) closeQuotedSelection();
-  }, [quoteSelectionEnabled, closeQuotedSelection]);
+    closeQuotedSelection();
+  }, [session?.id, closeQuotedSelection]);
 
-  const captureQuotedSelection = useCallback(() => {
-    if (!quoteSelectionEnabled || quoteInputOpen) return;
+  useEffect(() => {
+    if (!quoteSelectionEnabled && quotedSelection?.contextMenu === false) closeQuotedSelection();
+  }, [quoteSelectionEnabled, quotedSelection?.contextMenu, closeQuotedSelection]);
+
+  const readQuotedSelection = useCallback((event?: ReactMouseEvent<HTMLDivElement>) => {
     const selection = window.getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
     const root = messageContentRef.current;
-    if (!selection || selection.isCollapsed || !range || !root || !root.contains(range.commonAncestorContainer)) {
-      setQuotedSelection(null);
-      return;
+    if (!selection || selection.isCollapsed || !range || !root?.contains(range.commonAncestorContainer)) return null;
+    if (event) {
+      const target = event.target;
+      if (!(target instanceof Element)
+        || target.closest("input, textarea, [contenteditable]:not([contenteditable=false])")
+        || !range.intersectsNode(target)) return null;
+      if (event.button === 2 && !Array.from(range.getClientRects()).some((rect) => (
+        event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom
+      ))) return null;
     }
-    const text = selection.toString().trim();
-    if (!text) {
-      setQuotedSelection(null);
-      return;
-    }
+    const text = selection.toString();
+    if (!text.trim()) return null;
     const rect = range.getBoundingClientRect();
     const ancestor = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
       ? range.commonAncestorContainer as Element
@@ -629,14 +640,47 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     const sourceEntryId = [ancestor, start, end]
       .map((element) => element?.closest<HTMLElement>("[data-message-role=\"assistant\"]")?.dataset.entryId)
       .find((entryId): entryId is string => Boolean(entryId));
-    setQuotedSelection({
+    const usingPointer = event && (event.clientX !== 0 || event.clientY !== 0);
+    return {
       text,
-      // rect 是视觉像素；引用弹层按 fixed CSS px 定位（会被根 zoom 放大），先换算。
-      top: divideByUiScale(Math.min(window.innerHeight - 44, rect.bottom + 8)),
-      left: divideByUiScale(Math.max(64, Math.min(window.innerWidth - 64, rect.left + rect.width / 2))),
+      top: divideByUiScale(usingPointer ? event.clientY : rect.bottom + 8),
+      left: divideByUiScale(usingPointer ? event.clientX : rect.left + (event ? 0 : rect.width / 2)),
       sourceEntryId,
-    });
-  }, [quoteSelectionEnabled, quoteInputOpen]);
+      contextMenu: Boolean(event),
+    };
+  }, []);
+
+  const captureQuotedSelection = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!quoteSelectionEnabled || quoteInputOpen || event.button !== 0) return;
+    setQuotedSelection(readQuotedSelection());
+    setQuoteError(null);
+  }, [quoteSelectionEnabled, quoteInputOpen, readQuotedSelection]);
+
+  const openQuoteContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || quoteInputOpen || (!chatInputRef && !onAskInSideChat)) return;
+    const selection = readQuotedSelection(event);
+    if (!selection) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setQuoteError(null);
+    setQuotedSelection(selection);
+  }, [chatInputRef, onAskInSideChat, quoteInputOpen, readQuotedSelection]);
+
+  const copyQuotedSelection = useCallback(async () => {
+    if (!quotedSelection) return;
+    try {
+      await copyText(quotedSelection.text);
+      closeQuotedSelection();
+    } catch {
+      setQuoteError(t("chat.copySelectionFailed"));
+    }
+  }, [closeQuotedSelection, quotedSelection, t]);
+
+  useLayoutEffect(() => {
+    if (quotedSelection?.contextMenu && !quoteInputOpen) {
+      quotePopoverRef.current?.querySelector("button")?.focus({ preventScroll: true });
+    }
+  }, [quotedSelection, quoteInputOpen]);
 
   useEffect(() => {
     if (!quoteInputOpen || !quotedSelection) return;
@@ -661,7 +705,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
       const popoverHeight = divideByUiScale(rect.height);
       const popoverWidth = divideByUiScale(rect.width);
       popover.style.top = `${Math.max(top + 8, Math.min(quotedSelection.top, top + viewportHeight - popoverHeight - 8))}px`;
-      popover.style.left = `${Math.max(left + 8, Math.min(quotedSelection.left - popoverWidth / 2, left + viewportWidth - popoverWidth - 8))}px`;
+      const desiredLeft = quotedSelection.contextMenu ? quotedSelection.left : quotedSelection.left - popoverWidth / 2;
+      popover.style.left = `${Math.max(left + 8, Math.min(desiredLeft, left + viewportWidth - popoverWidth - 8))}px`;
     };
     position();
     const observer = new ResizeObserver(position);
@@ -684,6 +729,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.isComposing) return;
+      if (quoteInputOpen && !quotePopoverRef.current?.contains(event.target as Node)) return;
       event.preventDefault();
       event.stopPropagation();
       if (!quoteSubmitting) closeQuotedSelection();
@@ -707,14 +753,15 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     closeQuotedSelection();
   }, [chatInputRef, quotedSelection, closeQuotedSelection, t]);
 
-  const askSelectionInNewChat = useCallback(async (prompt: string) => {
+  const submitQuotedQuestion = useCallback(async (prompt: string) => {
     const sourceSessionId = sessionIdRef.current ?? session?.id;
-    if (quoteSubmitting || !prompt.trim() || !quotedSelection?.sourceEntryId || !sourceSessionId || !onAskInNewChat) return;
+    const ask = quoteDestination === "side-chat" ? onAskInSideChat : onAskInNewChat;
+    if (quoteSubmitting || !prompt.trim() || !quotedSelection?.sourceEntryId || !sourceSessionId || !ask) return;
     setQuoteSubmitting(true);
     setQuoteError(null);
     unlockAudio?.();
     try {
-      await onAskInNewChat(
+      await ask(
         prompt,
         sourceSessionId,
         quotedSelection.sourceEntryId,
@@ -726,7 +773,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     } finally {
       setQuoteSubmitting(false);
     }
-  }, [onAskInNewChat, quotedSelection, quoteSubmitting, session?.id, sessionIdRef, closeQuotedSelection, unlockAudio]);
+  }, [onAskInNewChat, onAskInSideChat, quoteDestination, quotedSelection, quoteSubmitting, session?.id, sessionIdRef, closeQuotedSelection, unlockAudio]);
 
   const initialPromptSentRef = useRef(false);
   useEffect(() => {
@@ -739,19 +786,20 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   useEffect(() => {
     if (
       !completionNotificationsEnabled
+      || sidePanel
       || !extensionDialog
       || soundedExtensionDialogIdRef.current === extensionDialog.id
     ) return;
     soundedExtensionDialogIdRef.current = extensionDialog.id;
     playDoneSoundRef.current();
-  }, [completionNotificationsEnabled, extensionDialog]);
+  }, [completionNotificationsEnabled, extensionDialog, sidePanel]);
 
   // Register the abort handler for the global Esc shortcut
   useEffect(() => {
-    if (previewOnly) return;
+    if (previewOnly || sidePanel) return;
     registerAbortHandler(composerBusy ? stopRun : null);
     return () => registerAbortHandler(null);
-  }, [composerBusy, previewOnly, stopRun]);
+  }, [composerBusy, previewOnly, sidePanel, stopRun]);
 
   // The server bounds history to the pages requested so far.
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -1371,7 +1419,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
           style={{ visibility: pendingScrollRestore ? "hidden" : undefined }}
         >
           <div className="chat-column-inset">
-            <div ref={messageContentRef} onPointerUp={captureQuotedSelection} className="chat-reading-column">
+            <div ref={messageContentRef} onPointerUp={captureQuotedSelection} onContextMenu={openQuoteContextMenu} className="chat-reading-column">
             {(() => {
               const timelineMessages: AgentMessage[] = streamState.isStreaming && hasStreamingContent && streamState.streamingMessage
                 ? [...messages, streamState.streamingMessage as AgentMessage]
@@ -1649,7 +1697,9 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                     }
                     if (processViews.length === 0) commandKey = "commands-" + messageKey + "-" + segment.blockIndices[0];
                     processBlocks.push(...blocks);
-                    processFailed ||= blocks.some((block) => block.type === "toolCall" && toolResultsMap.get(block.toolCallId)?.isError);
+                    processFailed ||= blocks.some((block) =>
+                      (block.type === "toolCall" && toolResultsMap.get(block.toolCallId)?.isError)
+                      || (block.type === "text" && isMalformedAssistantToolText(block.text)));
                     commandIndices.add(messageIdx);
                     processViews.push(renderMessage(messageIdx, { attachRef: false, keyPrefix, blockIndices: segment.blockIndices, hideMetadata: true, showModel: false, showTimestamp: false }));
                   }
@@ -1681,6 +1731,8 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 }
                 const finalAssistant = timelineMessages[finalAssistantIdx];
                 if (!isLiveTurn && finalAssistant?.role === "assistant") {
+                  const malformedToolResponse = repliedToLastInput && finalAssistant.content.some((block) =>
+                    block.type === "text" && isMalformedAssistantToolText(block.text));
                   const stoppedWithoutAnswer = hasCompleteHistory && canShowFinal && stoppedWithoutFinalAnswer(finalAssistant);
                   const deliveredImage = stoppedWithoutAnswer && turnMessages.some((message) =>
                     message.role === "assistant" && message.content.some((block) =>
@@ -1689,10 +1741,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                       ).length > 0,
                     ),
                   );
-                  if (stoppedWithoutAnswer && !deliveredImage) {
+                  if (malformedToolResponse || (stoppedWithoutAnswer && !deliveredImage)) {
                     rendered.push(
                       <p key={`no-final-answer-${entryIds[finalAssistantIdx] ?? finalAssistantIdx}`} role="status" className="my-3 border-l-2 border-border pl-3 text-[13px] text-text-muted">
-                        {t("chat.stoppedWithoutFinalAnswer")}
+                        {t(malformedToolResponse ? "chat.malformedToolResponse" : "chat.stoppedWithoutFinalAnswer")}
                       </p>,
                     );
                   }
@@ -1786,11 +1838,11 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
         </>}
       </div>
 
-      {quoteSelectionEnabled && quotedSelection && createPortal(
+      {quotedSelection && createPortal(
         <div
           ref={quotePopoverRef}
           role={quoteInputOpen ? "dialog" : "toolbar"}
-          aria-label={t(quoteInputOpen ? "chat.newQuoteChat" : "chat.askSelection")}
+          aria-label={t(quoteDestination === "side-chat" ? "chat.askInSideChat" : quoteInputOpen ? "chat.newQuoteChat" : "chat.askSelection")}
           style={{
             position: "fixed",
             top: quotedSelection.top,
@@ -1798,6 +1850,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
             zIndex: 130,
             display: "flex",
             flexWrap: "wrap",
+            flexDirection: quotedSelection.contextMenu && !quoteInputOpen ? "column" : undefined,
             gap: 3,
             width: quoteInputOpen ? "min(420px, calc(100vw - 16px))" : undefined,
             maxWidth: "calc(100vw - 16px)",
@@ -1817,7 +1870,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               style={{ width: "100%", minWidth: 0, margin: 0, padding: 0, border: "none", display: "flex", flexDirection: "column", gap: 10 }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600 }}>{t("chat.askInNewChat")}</span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600 }}>{t(quoteDestination === "side-chat" ? "chat.askInSideChat" : "chat.askInNewChat")}</span>
                 <button type="button" className="file-viewer-icon-button" title={t("i18n.close")} aria-label={t("i18n.close")} disabled={quoteSubmitting} onClick={closeQuotedSelection} style={{ border: "none" }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
                 </button>
@@ -1825,41 +1878,52 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
               <ChatInput
                 ref={quoteChatInputRef}
                 compact
-                onSend={askSelectionInNewChat}
+                onSend={submitQuotedQuestion}
                 onAbort={closeQuotedSelection}
                 isStreaming={false}
               />
               {quoteError && <div role="alert" style={{ color: "#dc2626", fontSize: 12, overflowWrap: "anywhere" }}>{quoteError}</div>}
             </fieldset>
           ) : <>
-          <button
+          {quotedSelection.contextMenu && (
+            <button
+              type="button"
+              className="file-viewer-icon-button"
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => void copyQuotedSelection()}
+              style={{ width: "auto", height: 35, justifyContent: "flex-start", gap: 6, padding: "0 10px", border: "none", fontSize: 12 }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>
+              {t("i18n.copy")}
+            </button>
+          )}
+          {chatInputRef && <button
             type="button"
             className="file-viewer-icon-button"
             title={t("chat.askInCurrent")}
             aria-label={t("chat.askInCurrent")}
             onPointerDown={(event) => event.preventDefault()}
             onClick={askSelectionHere}
-            style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
+            style={{ width: "auto", height: 35, flex: "0 0 auto", justifyContent: quotedSelection.contextMenu ? "flex-start" : undefined, gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
           >
             <span aria-hidden="true" style={{ fontSize: 15 }}>@</span>
             <span>{t("chat.askInCurrent")}</span>
-          </button>
-          {onAskInNewChat && quotedSelection.sourceEntryId && !sessionBusy && (
+          </button>}
+          {quotedSelection.sourceEntryId && !sessionBusy && (quotedSelection.contextMenu ? onAskInSideChat : onAskInNewChat) && (
             <button
               type="button"
               className="file-viewer-icon-button"
-              title={t("chat.askInNewChat")}
-              aria-label={t("chat.askInNewChat")}
               onPointerDown={(event) => event.preventDefault()}
-              onClick={() => { setQuoteInputOpen(true); window.getSelection()?.removeAllRanges(); }}
-              style={{ width: "auto", height: 35, flex: "0 0 auto", gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
+              onClick={() => { setQuoteDestination(quotedSelection.contextMenu ? "side-chat" : "new-chat"); setQuoteError(null); window.getSelection()?.removeAllRanges(); }}
+              style={{ width: "auto", height: 35, flex: "0 0 auto", justifyContent: quotedSelection.contextMenu ? "flex-start" : undefined, gap: 5, padding: "0 10px", border: "none", fontSize: 12, fontWeight: 500 }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M6 3v12M18 9a9 9 0 0 1-9 9" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" />
               </svg>
-              <span>{t("chat.askInNewChat")}</span>
+              <span>{t(quotedSelection.contextMenu ? "chat.askInSideChat" : "chat.askInNewChat")}</span>
             </button>
           )}
+          {quoteError && <div role="alert" style={{ color: "#dc2626", fontSize: 12, padding: "4px 10px" }}>{quoteError}</div>}
           </>}
         </div>,
         document.body,

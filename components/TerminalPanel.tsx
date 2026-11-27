@@ -18,7 +18,7 @@ interface Props {
 
 export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }: Props) {
   const { t } = useI18n();
-  const { id, cwd, restored } = tab;
+  const { id, cwd, projectId, restored } = tab;
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const startRef = useRef<Promise<void>>(Promise.resolve());
@@ -140,7 +140,7 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
         await terminalRequest("/api/terminal", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id, cwd, cols: terminal.cols, rows: terminal.rows }),
+          body: JSON.stringify({ id, cwd, projectId, cols: terminal.cols, rows: terminal.rows }),
         });
       }
       connect();
@@ -175,7 +175,7 @@ export function TerminalPanel({ tab, active, onRestart, onClosed, onCloseError }
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [id, cwd, restored, reconnectKey]);
+  }, [id, cwd, projectId, restored, reconnectKey]);
 
   useEffect(() => {
     if (active) terminalRef.current?.focus();

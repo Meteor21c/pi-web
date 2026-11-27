@@ -14,9 +14,7 @@ export function isPowerShellToolEnabled(
   defaultTools: readonly string[] | undefined,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  return platform === "win32"
-    && defaultTools?.includes("powershell") === true
-    && !defaultTools.includes("bash");
+  return platform === "win32" && !defaultTools?.includes("bash");
 }
 
 export function replaceShellTool(
@@ -66,7 +64,7 @@ export async function readPowerShellToolEnabled(
   settingsPath = getPowerShellSettingsPath(),
   platform: NodeJS.Platform = process.platform,
 ): Promise<boolean> {
-  if (!existsSync(settingsPath)) return false;
+  if (!existsSync(settingsPath)) return isPowerShellToolEnabled(undefined, platform);
   const release = await lockfile.lock(settingsPath, { realpath: false, retries: 10 });
   try {
     return isPowerShellToolEnabled(configuredTools(parseSettings(settingsPath)), platform);

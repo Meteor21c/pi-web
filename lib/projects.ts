@@ -5,6 +5,8 @@ export interface NamedProject {
   name: string;
   defaultDirectory: string;
   directories: string[];
+  /** Response-only. Stored paths remain assigned while a drive is unavailable. */
+  unavailableDirectories?: string[];
 }
 
 export interface ProjectSnapshot {
@@ -22,7 +24,14 @@ export function projectContainsDirectory(project: NamedProject, cwd: string): bo
   };
   const path = normalize(cwd);
   return project.directories.some((directory) => {
+    if (project.unavailableDirectories?.includes(directory)) return false;
     const root = normalize(directory);
     return path === root || path.startsWith(root + "/");
   });
+}
+
+export function availableProjectDirectory(project: NamedProject): string | null {
+  return [project.defaultDirectory, ...project.directories].find(
+    (directory) => !project.unavailableDirectories?.includes(directory),
+  ) ?? null;
 }

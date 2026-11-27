@@ -75,9 +75,34 @@ export function getAssistantErrorMessage(
   return message.errorMessage?.trim() || "Unknown provider error";
 }
 
+// Relays sometimes decode the protocol markers of a DeepSeek tool call as
+// ordinary text. The bare variant is only recognized when its tool and
+// typed parameter markers occur together.
+const TOOL_MARKUP = /(?<!\\)(?:<\/?\s*[|｜]\s*DSML\s*[|｜]\s*(?:function_calls?|calls?|invoke|parameter)\b|<name="[-.\w]+">\s*<name="[-.\w]+"\s+string="(?:true|false)">)/i;
+const INLINE_CODE = /(?<![\\`])(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g;
+const CODE_FENCE = /^ {0,3}(`{3,}|~{3,})/;
+
+export function isMalformedAssistantToolText(text: string): boolean {
+  if (!TOOL_MARKUP.test(text)) return false;
+  const unquoted = text.replace(/<(pre|code)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, " ");
+  let fence: string | undefined;
+  const prose = unquoted.split(/\r?\n/).map((line) => {
+    if (/^(?: {4}|\t| {0,3}>)/.test(line)) return " ";
+    const marker = CODE_FENCE.exec(line)?.[1];
+    if (fence) {
+      if (marker?.startsWith(fence) && /^\s*$/.test(line.trimStart().slice(marker.length))) fence = undefined;
+      return " ";
+    }
+    if (!marker) return line;
+    fence = marker;
+    return " ";
+  }).join("\n").replace(INLINE_CODE, " ");
+  return TOOL_MARKUP.test(prose);
+}
+
 export function stoppedWithoutFinalAnswer(message: AssistantMessage): boolean {
   return message.stopReason === "stop" && message.content.every((block) =>
-    block.type === "thinking" || (block.type === "text" && !block.text.trim()),
+    block.type === "thinking" || (block.type === "text" && (!block.text.trim() || isMalformedAssistantToolText(block.text))),
   );
 }
 
@@ -92,8 +117,12 @@ export function isTruncatedResponseError(message: string | null): boolean {
   return /Unexpected end of JSON input|Responses stream ended (?:before a terminal response event|without a stop reason)/i.test(message);
 }
 
+export function isRelayConnectTimeoutError(message: string | null): boolean {
+  return Boolean(message && /\bUND_ERR_CONNECT_TIMEOUT\b/.test(message));
+}
+
 function isFinalAnswerBlock(block: AssistantContentBlock): boolean {
-  return block.type === "text" || block.type === "image";
+  return block.type === "image" || (block.type === "text" && !isMalformedAssistantToolText(block.text));
 }
 
 export function splitFinalAssistantBlocks(
@@ -139,10 +168,6 @@ export function shouldShowSettledGoalFinal(options: {
   return !options.latest || (!options.goalUnavailable && (!options.goalStatus || options.goalStatus === "completed"));
 }
 
-// A relay can surface malformed DeepSeek tool markup as ordinary text. Keep
-// it available in the process details without presenting it as a final reply.
-const DSML_TOOL_MARKUP = /<\/?\s*[|｜]\s*DSML\s*[|｜]\s*(?:function_calls?|calls?|invoke|parameter)\b/i;
-
 /** Keep stage text in order and retain stored indices for deferred thinking. */
 export function getAssistantTimelineSegments(
   message: AssistantMessage,
@@ -162,10 +187,11 @@ export function getAssistantTimelineSegments(
   const segments: AssistantTimelineSegment[] = [];
   message.content.forEach((block, index) => {
     if (isEmptyThinkingBlock(block, options) || (block.type === "text" && !block.text.trim())) return;
-    const isProgressText = block.type === "text" && !DSML_TOOL_MARKUP.test(block.text);
-    const isVisibleText = block.type === "text" && (
+    const isProgressText = block.type === "text" && !isMalformedAssistantToolText(block.text);
+    const isVisibleText = isProgressText && (
       options.textMode === undefined
-      || ((options.textMode === "live" || index >= finalTextFrom) && isProgressText)
+      || options.textMode === "live"
+      || index >= finalTextFrom
     );
     const output = isVisibleText || block.type === "image"
       || (block.type === "toolCall" && options.isVisibleToolResult?.(block));

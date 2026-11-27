@@ -9,18 +9,21 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json() as { id?: unknown; cwd?: unknown; cols?: unknown; rows?: unknown };
+    const body = await req.json() as { id?: unknown; cwd?: unknown; projectId?: unknown; cols?: unknown; rows?: unknown };
     if (body.id !== undefined && (typeof body.id !== "string" || !/^[a-f0-9]{32}$/.test(body.id))) {
       return NextResponse.json({ error: "Invalid terminal id" }, { status: 400 });
     }
     if (typeof body.cwd !== "string" || !body.cwd.trim()) {
       return NextResponse.json({ error: "cwd required" }, { status: 400 });
     }
+    if (body.projectId !== undefined && (typeof body.projectId !== "string" || !body.projectId)) {
+      return NextResponse.json({ error: "Invalid project" }, { status: 400 });
+    }
     const cwd = resolve(body.cwd);
     if (!(await stat(cwd)).isDirectory()) {
       return NextResponse.json({ error: "cwd must be a directory" }, { status: 400 });
     }
-    const roots = await getAllowedFileRoots();
+    const roots = await getAllowedFileRoots(body.projectId);
     if (!isExistingFilePathAllowed(cwd, roots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }

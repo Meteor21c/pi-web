@@ -1,7 +1,7 @@
 import { ProjectStoreError, setSessionProjects } from "@/lib/project-store";
 import { getRpcSession } from "@/lib/rpc-manager";
 import { readSessionHeader, resolveSessionPath } from "@/lib/session-reader";
-import { projectErrorResponse, projectResponse } from "../responses";
+import { projectErrorResponse, projectSnapshotResponse } from "../responses";
 import { projectSessionChangeGuard } from "../session-runtime";
 
 export async function POST(req: Request): Promise<Response> {
@@ -30,7 +30,7 @@ export async function POST(req: Request): Promise<Response> {
       body.projectId,
       projectSessionChangeGuard("Wait for the chat to finish before moving it"),
     );
-    return projectResponse(snapshot);
+    return projectSnapshotResponse(snapshot);
   } catch (error) {
     return projectErrorResponse(error);
   }

@@ -404,6 +404,30 @@ test("replaces a low-level truncated Responses error with actionable guidance", 
   assert.doesNotMatch(html, /Unexpected end of JSON input/);
 });
 
+test("explains relay connection timeouts and puts the original error in collapsed details", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k20",
+    model: "gpt-test",
+    content: [],
+    stopReason: "error",
+    errorMessage: "fetch failed (UND_ERR_CONNECT_TIMEOUT): <example>",
+  });
+  assert.match(html, /Connecting to the relay timed out\./);
+  assert.match(html, /<details class="mt-1"><summary[^>]*>Technical details<\/summary><div[^>]*>fetch failed \(UND_ERR_CONNECT_TIMEOUT\): &lt;example&gt;<\/div><\/details>/);
+  assert.equal(html.split("UND_ERR_CONNECT_TIMEOUT").length, 2);
+});
+
+test("shows raw malformed tool text as escaped diagnostics in activity", () => {
+  const html = renderMessage({
+    role: "assistant",
+    provider: "meteor21c-k20",
+    model: "deepseek",
+    content: [{ type: "text", text: '<name="ls"> <name="path" string="true">C:/example' }],
+  }, { blockIndices: [0], hideMetadata: true });
+  assert.match(html, /<pre[^>]*>&lt;name=&quot;ls&quot;&gt; &lt;name=&quot;path&quot; string=&quot;true&quot;&gt;C:\/example<\/pre>/);
+});
+
 test("marks persisted assistant messages with their source entry", () => {
   const html = renderMessage({
     role: "assistant",

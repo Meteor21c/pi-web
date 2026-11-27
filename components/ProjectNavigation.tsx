@@ -11,7 +11,7 @@ interface NavigationProps {
   projects: NamedProject[];
   activeId: string | null | undefined;
   activity: (id: string | null) => ReactNode;
-  onSelect: (id: string | null | undefined) => void;
+  onSelect: (id: string | null) => void;
   onNewProject: () => void;
   onEditProject: (project: NamedProject) => void;
   onNewChat: () => void;
@@ -73,7 +73,6 @@ export function ProjectNavigation({ projects, activeId, activity, onSelect, onNe
         {activity(null)}
         <button type="button" className={actionClass} title={t("projects.newStandalone")} aria-label={t("projects.newStandalone")} onClick={onNewChat}><PlusIcon /></button>
       </ProjectNavRow>
-      <ProjectNavRow label={t("projects.legacy")} icon={<FolderIcon />} selected={activeId === undefined} onClick={() => onSelect(undefined)} />
     </nav>
   );
 }
@@ -110,7 +109,7 @@ export function ProjectEditor({ project, initialPath, onSaved, onClose }: {
 
   const addDirectory = (path: string) => {
     setDirectories((current) => current.includes(path) ? current : [...current, path]);
-    setDefaultDirectory((current) => current || path);
+    setDefaultDirectory((current) => current && !project?.unavailableDirectories?.includes(current) ? current : path);
     setShowPicker(false);
     setError(null);
   };
@@ -158,7 +157,10 @@ export function ProjectEditor({ project, initialPath, onSaved, onClose }: {
             <div key={path} className="mb-1.5 flex min-w-0 items-center gap-2 rounded-md bg-bg-hover pl-2">
               <label className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-xs text-text" title={path}>
                 <input type="radio" name="default-directory" checked={defaultDirectory === path} onChange={() => setDefaultDirectory(path)} aria-label={t("projects.defaultFolder", { path })} />
-                <span className="break-all">{path}</span>
+                <span className="break-all">
+                  {path}
+                  {project?.unavailableDirectories?.includes(path) && <span className="ml-1.5 text-text-dim">{t("projects.folderUnavailable")}</span>}
+                </span>
               </label>
               <button type="button" className={actionClass} title={t("projects.removeFolder", { path })} aria-label={t("projects.removeFolder", { path })} onClick={() => {
                 const remaining = directories.filter((directory) => directory !== path);

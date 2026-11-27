@@ -7,7 +7,10 @@ import lockfile from "proper-lockfile";
 import { writePrivateFileAtomicSync } from "./atomic-file";
 import { isPathWithinRoots } from "./path-security";
 import { samePath } from "./paths";
+import { projectIdentityKey } from "./project-identity";
+import { listSessionFamilies } from "./session-family";
 import type { NamedProject, ProjectSnapshot } from "./projects";
+import type { SessionInfo } from "./types";
 
 interface StoredProjectSnapshot extends ProjectSnapshot {
   version: 1;
@@ -158,7 +161,7 @@ function projectFields(value: unknown, previous?: NamedProject): Omit<NamedProje
 }
 
 /** Serialize read/modify/write across every local Magent process. */
-async function changeProjects<T>(path: string, update: (state: StoredProjectSnapshot) => T, afterWrite?: () => void): Promise<T> {
+async function changeProjects<T>(path: string, update: (state: StoredProjectSnapshot) => T, afterWrite?: () => void, shouldWrite?: () => boolean): Promise<T> {
   mkdirSync(dirname(path), { mode: 0o700, recursive: true });
   const filename = join(realpathSync(dirname(path)), basename(path));
   const release = await lockfile.lock(filename, {
@@ -168,8 +171,10 @@ async function changeProjects<T>(path: string, update: (state: StoredProjectSnap
   try {
     const state = readProjects(filename);
     const result = update(state);
-    writePrivateFileAtomicSync(filename, JSON.stringify(state, null, 2) + "\n");
-    afterWrite?.();
+    if (!shouldWrite || shouldWrite()) {
+      writePrivateFileAtomicSync(filename, JSON.stringify(state, null, 2) + "\n");
+      afterWrite?.();
+    }
     return result;
   } finally {
     await release();
@@ -234,4 +239,94 @@ export function setSessionProjects(
 
 export function setSessionProject(sessionId: string, projectId: string | null): Promise<ProjectSnapshot> {
   return setSessionProjects([sessionId], projectId);
+}
+
+interface ProjectMigrationOptions {
+  path?: string;
+  isBusy?: (sessionId: string) => boolean;
+  afterWrite?: (sessionIds: string[]) => void;
+}
+
+function legacyDirectory(path: string): string {
+  const normalized = resolve(path);
+  try {
+    return realpathSync.native(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
+/** Convert only unassigned history. Project assignment never rewrites the transcript or its working directory. */
+export async function migrateLegacyProjects(
+  sessions: readonly SessionInfo[],
+  { path = projectsPath(), isBusy, afterWrite }: ProjectMigrationOptions = {},
+): Promise<ProjectSnapshot & { deferredMigration?: true }> {
+  const existing = getProjectSnapshot(path);
+  const families = listSessionFamilies(sessions).filter(({ root, subagents }) =>
+    [root, ...subagents].some((session) => !Object.hasOwn(existing.assignments, session.id)),
+  );
+  if (families.length === 0) return existing;
+
+  const canonicalPaths = new Map<string, string>();
+  const folderFor = (folder: string) => {
+    let directory = canonicalPaths.get(folder);
+    if (directory === undefined) {
+      directory = legacyDirectory(folder);
+      canonicalPaths.set(folder, directory);
+    }
+    return directory;
+  };
+  const candidates = families.map(({ root, subagents }) => ({
+    root,
+    members: [root, ...subagents],
+    directory: isDirectoryPath(root.cwd) ? folderFor(root.cwd) : null,
+    group: isDirectoryPath(root.projectRoot) ? folderFor(root.projectRoot)
+      : isDirectoryPath(root.cwd) ? folderFor(root.cwd) : null,
+  }));
+  const migrated: string[] = [];
+  return changeProjects(path, (state) => {
+    let deferredMigration: true | undefined;
+    const directoriesByGroup = new Map<string, Set<string>>();
+    for (const { root, group, directory } of candidates) {
+      if (!group || Object.hasOwn(state.assignments, root.id)) continue;
+      const key = projectIdentityKey(group);
+      const directories = directoriesByGroup.get(key) ?? new Set([group]);
+      if (directory && ![...directories].some((folder) => samePath(directory, folder))) directories.add(directory);
+      directoriesByGroup.set(key, directories);
+    }
+    for (const { root, members, group, directory } of candidates) {
+      const unassigned = members.filter((member) => !Object.hasOwn(state.assignments, member.id));
+      if (unassigned.length === 0) continue;
+      if (members.some((member) => isBusy?.(member.id))) {
+        deferredMigration = true;
+        continue;
+      }
+
+      let projectId: string | null | undefined = state.assignments[root.id];
+      if (projectId === undefined && group) {
+        const matches = state.projects.find((project) => project.directories.some((folder) => samePath(folder, group)));
+        // An existing project can have a manually limited folder list. A
+        // sibling worktree outside it retains its own project and permissions.
+        const outsideMatch = matches && directory && !isPathWithinRoots(directory, new Set(matches.directories));
+        const rootDirectory = outsideMatch ? directory : group;
+        const destination = outsideMatch
+          ? state.projects.find((project) => project.directories.some((folder) => samePath(folder, directory)))
+          : matches;
+        if (destination) projectId = destination.id;
+        else {
+          projectId = randomUUID();
+          const directories = outsideMatch ? [rootDirectory] : [...(directoriesByGroup.get(projectIdentityKey(group)) ?? [rootDirectory])];
+          state.projects.push({ id: projectId, name: basename(rootDirectory) || rootDirectory, defaultDirectory: rootDirectory, directories });
+        }
+      }
+      for (const member of unassigned) {
+        state.assignments[member.id] = projectId ?? null;
+        migrated.push(member.id);
+      }
+    }
+    return { ...snapshotOf(state), ...(deferredMigration ? { deferredMigration } : {}) };
+  }, () => {
+    globalThis.__piAllowedRootsCache = undefined;
+    afterWrite?.(migrated);
+  }, () => migrated.length > 0);
 }

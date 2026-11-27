@@ -2,7 +2,7 @@
 
 ## Windows
 
-适用于 Windows 10 和 11 x64。运行内测 `Setup.exe` 后，从桌面或开始菜单打开 **MeteorAgent Beta**。安装包自带 Node.js 和 Pi，安装阶段可离线进行。登录、模型请求和在线插件下载需要网络。更新时先退出桌面内测版，再运行新安装程序。[Windows 使用说明](windows/安装说明.md)
+适用于 Windows 10 和 11 x64。运行内测 `Setup.exe` 时可选择程序安装位置。下次升级会预填上次安装目录。安装后从桌面或开始菜单打开 **MeteorAgent Beta**。安装包自带 Node.js 和 Pi，安装阶段可离线进行。登录、模型请求和在线插件下载需要网络。更新时先退出桌面内测版，再运行新安装程序。[Windows 使用说明](windows/安装说明.md)
 
 ## macOS
 

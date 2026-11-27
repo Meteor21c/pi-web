@@ -7,6 +7,8 @@ import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow, type SessionReloadControl } from "./ChatWindow";
 import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { FileViewer } from "./FileViewer";
+import { SideQuestionPanel } from "./SideQuestionPanel";
+import { restoreSideQuestionTabs, SIDE_QUESTION_TABS_KEY, sideQuestionTabId } from "./side-question-tabs";
 import { FileContextMenuProvider } from "./FileActions";
 import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, saveFileViewerState } from "./file-tab-state";
@@ -68,7 +70,7 @@ import { getSubagentDisplayName } from "@/lib/subagent-display";
 import type { SettingsSection } from "@/lib/settings-navigation";
 import { formatUsdPrecise } from "@/lib/currency-format";
 import { AppUpdatePrompt } from "./AppUpdatePrompt";
-import { projectContainsDirectory, type ProjectSnapshot } from "@/lib/projects";
+import { availableProjectDirectory, projectContainsDirectory, type ProjectSnapshot } from "@/lib/projects";
 
 type SessionCopyField = "file" | "id" | "projectDir" | "gitBranch" | "gitWorktree";
 type AutoNameStatus =
@@ -250,9 +252,6 @@ export function AppShell() {
     }
   }, []);
   const notifiedAttentionRequestIdsRef = useRef(new Set<string>());
-  const handleBackgroundTaskDone = useCallback(() => {
-    if (soundEnabledRef.current) playDoneSound();
-  }, [playDoneSound, soundEnabledRef]);
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
   const [sessionCatalog, setSessionCatalog] = useState<SessionInfo[]>([]);
   const handleSessionsChange = useCallback((sessions: SessionInfo[]) => {
@@ -289,25 +288,54 @@ export function AppShell() {
   const [newSessionProjectId, setNewSessionProjectId] = useState<string | null | undefined>(undefined);
   const [projectSnapshot, setProjectSnapshot] = useState<ProjectSnapshot>(EMPTY_PROJECT_SNAPSHOT);
   const projectFetchRevision = useRef(0);
+  const projectMigrationPending = useRef(true);
+  const [projectsReady, setProjectsReady] = useState(false);
   const activeProjectId = selectedSession ? assignedProjectId(selectedSession, projectSnapshot) : newSessionProjectId;
   const activeProject = projectSnapshot.projects.find((project) => project.id === activeProjectId);
-  const projectDirectoriesKey = activeProject ? JSON.stringify(activeProject.directories.toSorted()) : null;
+  const projectDirectoriesKey = activeProject
+    ? JSON.stringify([activeProject.directories.toSorted(), activeProject.unavailableDirectories?.toSorted() ?? []])
+    : null;
   const savedCwdOutsideProject = Boolean(
     activeProject && selectedSession?.cwd && !projectContainsDirectory(activeProject, selectedSession.cwd),
   );
   const refreshProjectSnapshot = useCallback(async () => {
     const revision = ++projectFetchRevision.current;
     try {
+      if (projectMigrationPending.current) {
+        try {
+          const migrated = await fetch("/api/projects/migrate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          });
+          if (migrated.ok) {
+            const next = await migrated.json() as ProjectSnapshot & { deferredMigration?: boolean };
+            if (revision === projectFetchRevision.current) {
+              setProjectSnapshot(next);
+              projectMigrationPending.current = next.deferredMigration === true;
+            }
+            return;
+          }
+        } catch { /* Load the saved projects if migration is temporarily unavailable. */ }
+      }
       const response = await fetch("/api/projects", { cache: "no-store" });
       if (!response.ok) return;
       const next = await response.json() as ProjectSnapshot;
       if (revision === projectFetchRevision.current) setProjectSnapshot(next);
     } catch { /* Existing chat history remains available. */ }
+    finally {
+      if (revision === projectFetchRevision.current) setProjectsReady(true);
+    }
   }, []);
   const handleProjectSnapshotChange = useCallback((snapshot: ProjectSnapshot) => {
     projectFetchRevision.current += 1;
     setProjectSnapshot(snapshot);
+    setProjectsReady(true);
   }, []);
+  const handleBackgroundTaskDone = useCallback(() => {
+    if (projectMigrationPending.current) void refreshProjectSnapshot();
+    if (soundEnabledRef.current) playDoneSound();
+  }, [playDoneSound, refreshProjectSnapshot, soundEnabledRef]);
   useEffect(() => {
     void refreshProjectSnapshot();
     const reload = () => void refreshProjectSnapshot();
@@ -655,6 +683,11 @@ export function AppShell() {
     : catalogPreview?.relation?.kind === "subagent" ? catalogPreview.relation.status : previewRelation?.status;
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [terminalsRestored, setTerminalsRestored] = useState(false);
+  const [sideQuestionIds, setSideQuestionIds] = useState<string[]>([]);
+  const [sideQuestionsRestored, setSideQuestionsRestored] = useState(false);
+  const [sideQuestionPrompts, setSideQuestionPrompts] = useState<Record<string, string>>({});
+  const activeSideQuestionId = sideQuestionIds.find((id) => sideQuestionTabId(id) === activeFileTabId);
+  const lastSideQuestionTabId = sideQuestionIds.length ? sideQuestionTabId(sideQuestionIds[sideQuestionIds.length - 1]) : null;
   const panelTabs: Tab[] = [...fileTabs, ...terminalTabs.map((tab) => ({
     id: tab.id,
     label: getFileName(tab.cwd) || tab.cwd,
@@ -666,7 +699,12 @@ export function AppShell() {
     label: previewTitle,
     filePath: "",
     kind: "subagent" as const,
-  }] : [])];
+  }] : []), ...sideQuestionIds.map((id): Tab => ({
+    id: sideQuestionTabId(id),
+    label: sessionCatalog.find((session) => session.id === id)?.name ?? translate("chat.sideQuestionTab"),
+    filePath: "",
+    kind: "side-chat",
+  }))];
 
   useEffect(() => {
     try {
@@ -684,12 +722,35 @@ export function AppShell() {
     if (!terminalsRestored) return;
     try {
       window.sessionStorage.setItem(TERMINAL_TABS_KEY, JSON.stringify({
-        tabs: terminalTabs.map(({ id, cwd }) => ({ id, cwd })),
+        tabs: terminalTabs.map(({ id, cwd, projectId }) => ({ id, cwd, projectId })),
         activeId: activeFileTabId,
         open: rightPanelOpen,
       }));
     } catch { /* storage is optional */ }
   }, [terminalTabs, activeFileTabId, rightPanelOpen, terminalsRestored]);
+
+  useEffect(() => {
+    try {
+      const saved = restoreSideQuestionTabs(window.localStorage.getItem(SIDE_QUESTION_TABS_KEY));
+      setSideQuestionIds(saved.sessionIds);
+      if (saved.activeId) {
+        setActiveFileTabId(saved.activeId);
+        setRightPanelOpen(saved.open);
+      }
+    } catch { /* Storage is optional. Sessions are still saved by Pi. */ }
+    setSideQuestionsRestored(true);
+  }, []);
+
+  useEffect(() => {
+    if (!sideQuestionsRestored) return;
+    try {
+      window.localStorage.setItem(SIDE_QUESTION_TABS_KEY, JSON.stringify({
+        sessionIds: sideQuestionIds,
+        activeId: activeSideQuestionId ? activeFileTabId : null,
+        open: rightPanelOpen,
+      }));
+    } catch { /* Storage is optional. Sessions are still saved by Pi. */ }
+  }, [activeFileTabId, activeSideQuestionId, rightPanelOpen, sideQuestionIds, sideQuestionsRestored]);
 
   const handleFileViewerStateChange = useCallback((
     tabId: string,
@@ -1146,6 +1207,7 @@ export function AppShell() {
   }, [handleSelectSession, locale]);
 
   const handleAgentEnd = useCallback(() => {
+    if (projectMigrationPending.current) void refreshProjectSnapshot();
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
     if (selectedSession) hydrateSelectedSession(selectedSession.id);
@@ -1159,7 +1221,7 @@ export function AppShell() {
       body: translate("i18n.taskFinished"),
       tag: targetSession ? `pi-session-complete:${targetSession.id}` : "pi-session-complete",
     });
-  }, [deliverSessionNotification, hydrateSelectedSession, selectedSession, translate]);
+  }, [deliverSessionNotification, hydrateSelectedSession, refreshProjectSnapshot, selectedSession, translate]);
 
   const handleAttentionNeeded = useCallback((request: BlockingExtensionUiRequest) => {
     if (selectedSession?.relation?.kind === "subagent") return;
@@ -1247,15 +1309,53 @@ export function AppShell() {
     handleSessionForked(result.newSessionId);
   }, [handleSessionForked, translate]);
 
+  const handleAskInSideChat = useCallback(async (
+    prompt: string,
+    sourceSessionId: string,
+    sourceEntryId: string,
+  ) => {
+    const result = await sendAgentCommand<{ newSessionId?: string }>(sourceSessionId, {
+      type: "fork_branch",
+      entryId: sourceEntryId,
+    });
+    if (!result?.newSessionId) throw new Error(translate("chat.quoteForkFailed"));
+    const id = result.newSessionId;
+    setSideQuestionIds((ids) => [...ids, id]);
+    setSideQuestionPrompts((prompts) => ({ ...prompts, [id]: prompt }));
+    setActiveFileTabId(sideQuestionTabId(id));
+    setRightPanelOpen(true);
+    setRefreshKey((key) => key + 1);
+    if (isMobile) setSidebarOpen(false);
+    void refreshProjectSnapshot();
+  }, [isMobile, refreshProjectSnapshot, translate]);
+
+  const clearSideQuestionPrompt = useCallback((id: string) => {
+    setSideQuestionPrompts((prompts) => {
+      if (!Object.hasOwn(prompts, id)) return prompts;
+      const remaining = { ...prompts };
+      delete remaining[id];
+      return remaining;
+    });
+  }, []);
+
+  const handleSideQuestionEnd = useCallback(() => {
+    setRefreshKey((key) => key + 1);
+    setExplorerRefreshKey((key) => key + 1);
+  }, []);
+
   const handleInitialRestoreDone = useCallback(() => {
     setInitialSessionRestored(true);
   }, []);
 
   const handleSessionDeleted = useCallback((sessionId: string) => {
+    setSideQuestionIds((ids) => ids.filter((id) => id !== sessionId));
+    setActiveFileTabId((current) => current === sideQuestionTabId(sessionId) ? null : current);
+    clearSideQuestionPrompt(sessionId);
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
     if (selectedSession?.id === sessionId) {
-      const cwd = activeProjectId === null ? null : activeProject?.defaultDirectory ?? selectedSession.cwd;
+      const cwd = activeProject ? availableProjectDirectory(activeProject)
+        : activeProjectId === null ? null : selectedSession.cwd;
       const draftId = typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -1273,7 +1373,7 @@ export function AppShell() {
       setActiveTopPanel(null);
       router.replace(typeof window !== "undefined" ? window.location.pathname : "/", { scroll: false });
     }
-  }, [activeProject, activeProjectId, invalidateWorkspaceRestore, selectedSession, router]);
+  }, [activeProject, activeProjectId, clearSideQuestionPrompt, invalidateWorkspaceRestore, selectedSession, router]);
 
   const handleOpenFile = useCallback((
     filePath: string,
@@ -1305,9 +1405,9 @@ export function AppShell() {
     });
   }, [activeProjectId, handleOpenFile, selectedSession?.id]);
 
-  const handleOpenTerminal = useCallback((cwd: string) => {
-    const existing = terminalTabs.find((tab) => tab.cwd === cwd);
-    const tab = existing ?? newTerminalTab(cwd);
+  const handleOpenTerminal = useCallback((cwd: string, projectId?: string) => {
+    const existing = terminalTabs.find((tab) => tab.cwd === cwd && tab.projectId === projectId);
+    const tab = existing ?? newTerminalTab(cwd, projectId);
     if (!existing) setTerminalTabs((tabs) => [...tabs, tab]);
     setActiveFileTabId(tab.id);
     setRightPanelOpen(true);
@@ -1315,17 +1415,29 @@ export function AppShell() {
   }, [terminalTabs, isMobile]);
 
   const handleTerminalClosed = (tab: TerminalTab) => {
-    const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd) : null;
+    const replacement = tab.closing === "restart" ? newTerminalTab(tab.cwd, tab.projectId) : null;
     const remaining = terminalTabs.filter((item) => item.id !== tab.id);
     setTerminalTabs((tabs) => tabs.flatMap((item) => item.id !== tab.id ? [item] : replacement ? [replacement] : []));
-    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? subagentPreviewId ?? null);
-    if (!replacement && !remaining.length && !fileTabs.length && !subagentPreviewId) setRightPanelOpen(false);
+    setActiveFileTabId((current) => current !== tab.id ? current : replacement?.id ?? remaining.at(-1)?.id ?? fileTabs.at(-1)?.id ?? subagentPreviewId ?? lastSideQuestionTabId);
+    if (!replacement && !remaining.length && !fileTabs.length && !subagentPreviewId && !lastSideQuestionTabId) setRightPanelOpen(false);
   };
 
   const handleCloseFileTab = useCallback((tabId: string) => {
+    const sideSessionId = sideQuestionIds.find((id) => sideQuestionTabId(id) === tabId);
+    if (sideSessionId) {
+      const remaining = sideQuestionIds.filter((id) => id !== sideSessionId);
+      setSideQuestionIds(remaining);
+      clearSideQuestionPrompt(sideSessionId);
+      const next = remaining.length
+        ? sideQuestionTabId(remaining[remaining.length - 1])
+        : fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? subagentPreviewId ?? null;
+      setActiveFileTabId((current) => current === tabId ? next : current);
+      if (!next) setRightPanelOpen(false);
+      return;
+    }
     if (tabId === subagentPreviewId) {
       setSubagentPreview(null);
-      const next = fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? null;
+      const next = fileTabs.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? lastSideQuestionTabId;
       setActiveFileTabId((current) => current === tabId ? next : current);
       if (!next) setRightPanelOpen(false);
       return;
@@ -1336,15 +1448,15 @@ export function AppShell() {
     }
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0 && terminalTabs.length === 0 && !subagentPreviewId) setRightPanelOpen(false);
+      if (next.length === 0 && terminalTabs.length === 0 && !subagentPreviewId && !lastSideQuestionTabId) setRightPanelOpen(false);
       return next;
     });
     setActiveFileTabId((cur) => {
       if (cur !== tabId) return cur;
       const remaining = fileTabs.filter((t) => t.id !== tabId);
-      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? subagentPreviewId ?? null;
+      return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? subagentPreviewId ?? lastSideQuestionTabId;
     });
-  }, [fileTabs, subagentPreviewId, terminalTabs]);
+  }, [clearSideQuestionPrompt, fileTabs, lastSideQuestionTabId, sideQuestionIds, subagentPreviewId, terminalTabs]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
   const effectiveNewSessionCwd = activeProjectId === null ? null : newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
@@ -1427,6 +1539,7 @@ export function AppShell() {
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
         projectSnapshot={projectSnapshot}
+        projectsReady={projectsReady}
         activeProjectId={activeProjectId}
         onProjectScopeChange={handleProjectScopeChange}
         onNewManagedSession={handleNewManagedSession}
@@ -2570,6 +2683,7 @@ export function AppShell() {
               onOpenSession={handleOpenSubagent}
               subagentStatuses={subagentStatuses}
               onAskInNewChat={handleAskInNewChat}
+              onAskInSideChat={handleAskInSideChat}
               quoteSelectionEnabled={quoteSelectionEnabled}
               initialPrompt={pendingQuotePrompt?.sessionId === selectedSession?.id ? pendingQuotePrompt?.text : undefined}
               onInitialPromptConsumed={() => setPendingQuotePrompt(null)}
@@ -2692,7 +2806,20 @@ export function AppShell() {
 
         {/* Only the active viewer is mounted. Lightweight per-tab state is restored on activation. */}
         <div style={{ flex: 1, minHeight: 0, overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
-          {subagentPreviewId && activeFileTabId === subagentPreviewId ? (
+          {activeSideQuestionId && rightPanelOpen ? (
+            <SideQuestionPanel
+              key={activeSideQuestionId}
+              sessionId={activeSideQuestionId}
+              projectSnapshot={projectSnapshot}
+              openInMain={selectedSession?.id === activeSideQuestionId}
+              sessionRunning={runningSessionIds.has(activeSideQuestionId)}
+              initialPrompt={sideQuestionPrompts[activeSideQuestionId]}
+              onInitialPromptConsumed={() => clearSideQuestionPrompt(activeSideQuestionId)}
+              onOpenInMain={handleSelectSession}
+              onOpenFile={(filePath, sourceSessionId, projectId) => handleOpenFile(filePath, getFileName(filePath), { sourceSessionId, projectId })}
+              onAgentEnd={handleSideQuestionEnd}
+            />
+          ) : subagentPreviewId && activeFileTabId === subagentPreviewId ? (
             subagentPreviewOpen && (
               <section className="subagent-preview" aria-label={translate("agentSwitcher.previewTitle")}>
                 {previewSession && previewRelation ? (

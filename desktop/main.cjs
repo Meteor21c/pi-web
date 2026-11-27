@@ -59,6 +59,30 @@ function openWebLink(value) {
 
 function protectWindow(window) {
   const { webContents } = window;
+  webContents.on("context-menu", (_event, params) => {
+    // A page-handled contextmenu (for example the file actions) cancels the
+    // Chromium default, so only unhandled requests arrive here.
+    if (!params.frame || params.frame !== webContents.mainFrame || !isLocal(params.frame.url)) return;
+    const flags = params.editFlags;
+    const locale = app.getLocale().toLowerCase();
+    const labels = locale.startsWith("zh")
+      ? /(?:hant|tw|hk|mo)/.test(locale)
+        ? ["復原", "重做", "剪下", "複製", "貼上", "全選"]
+        : ["撤销", "重做", "剪切", "复制", "粘贴", "全选"]
+      : ["Undo", "Redo", "Cut", "Copy", "Paste", "Select All"];
+    const [undo, redo, cut, copy, paste, selectAll] = labels;
+    const items = params.isEditable ? [
+      { role: "undo", label: undo, enabled: flags.canUndo },
+      { role: "redo", label: redo, enabled: flags.canRedo },
+      { type: "separator" },
+      { role: "cut", label: cut, enabled: flags.canCut },
+      { role: "copy", label: copy, enabled: flags.canCopy },
+      { role: "paste", label: paste, enabled: flags.canPaste },
+      { type: "separator" },
+      { role: "selectAll", label: selectAll, enabled: flags.canSelectAll },
+    ] : params.selectionText && flags.canCopy ? [{ role: "copy", label: copy }] : [];
+    if (items.length) Menu.buildFromTemplate(items).popup({ window, frame: params.frame, x: params.x, y: params.y });
+  });
   webContents.on("will-navigate", (event) => {
     if (isLocal(event.url)) return;
     event.preventDefault();

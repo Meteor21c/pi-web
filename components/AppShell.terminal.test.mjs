@@ -24,3 +24,11 @@ test("storage corruption cannot create invalid or duplicate terminal tabs", () =
   }));
   assert.deepEqual(saved, { tabs: [{ ...tab, restored: true }], activeId: null, open: false });
 });
+
+test("terminals keep their named project permissions after reload", () => {
+  const first = newTerminalTab("/repo", "project-a");
+  const second = newTerminalTab("/repo", "project-b");
+  const saved = restoreTerminalTabs(JSON.stringify({ tabs: [first, second], activeId: second.id, open: true }));
+  assert.deepEqual(saved.tabs, [{ ...first, restored: true }, { ...second, restored: true }]);
+  assert.equal(saved.activeId, second.id);
+});

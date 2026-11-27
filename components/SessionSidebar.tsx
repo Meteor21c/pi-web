@@ -8,7 +8,7 @@ import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
 import { dispatchSessionRowContextMenu } from "@/lib/session-row-context-menu";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import { getProjectActivity, getRecentProjects, sessionsForProject } from "@/lib/project-groups";
-import type { NamedProject, ProjectSnapshot } from "@/lib/projects";
+import { availableProjectDirectory, type NamedProject, type ProjectSnapshot } from "@/lib/projects";
 import { workspaceKeyOf } from "@/lib/workspace-memory";
 import { formatRelativeTime } from "@/lib/i18n/format";
 import { useI18n } from "@/hooks/useI18n";
@@ -105,6 +105,7 @@ interface Props {
   onSelectSession: (session: SessionInfo, isRestore?: boolean, entryId?: string, blockIndex?: number) => void;
   onNewSession?: (sessionId: string, cwd: string) => void;
   projectSnapshot: ProjectSnapshot;
+  projectsReady?: boolean;
   activeProjectId?: string | null;
   onProjectScopeChange: (projectId: string | null | undefined, cwd: string | null) => void;
   onNewManagedSession: (projectId: string | null, cwd: string | null) => void;
@@ -121,7 +122,7 @@ interface Props {
     projectKey?: string | null,
   ) => void;
   onOpenFile?: (filePath: string, fileName: string, options?: { sourceSessionId?: string | null; modeHint?: "diff"; projectId?: string }) => void;
-  onOpenTerminal?: (cwd: string) => void;
+  onOpenTerminal?: (cwd: string, projectId?: string) => void;
   explorerRefreshKey?: number;
   onExplorerRefresh?: () => void;
   onAtMention?: (relativePath: string, isDir: boolean) => void;
@@ -380,7 +381,7 @@ function MeteorAgentTitle() {
   );
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange, projectSnapshot, activeProjectId, onProjectScopeChange, onNewManagedSession, onProjectSnapshotChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onOpenTerminal, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onSessionsChange, projectSnapshot, projectsReady = true, activeProjectId, onProjectScopeChange, onNewManagedSession, onProjectSnapshotChange }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   const [projectEditor, setProjectEditor] = useState<NamedProject | null | undefined>(undefined);
@@ -396,6 +397,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     return Object.hasOwn(assignments, id) ? assignments[id] : s.projectId;
   }, [projectSnapshot.assignments]);
   const legacySessions = useMemo(() => allSessions.filter((session) => projectOfSession(session) === undefined), [allSessions, projectOfSession]);
+  const showLegacyDirectoryPicker = legacyScope && (Boolean(selectedCwdProp) || (projectsReady && legacySessions.length > 0));
   const [sessionListVersion, setSessionListVersion] = useState<number | null>(null);
   const sessionListVersionRef = useRef<number | null>(null);
   const sessionLoadIdRef = useRef(0);
@@ -775,7 +777,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   // Auto-select cwd and restore session from URL on first load
   useEffect(() => {
-    if (!legacyScope || allSessions.length === 0 || skipInitialProjectSelection) return;
+    if (!legacyScope || loading || !projectsReady || skipInitialProjectSelection) return;
 
     if (selectedCwd === null) {
       // If restoring a session, set cwd to match that session
@@ -790,10 +792,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         // Session not found — notify parent so it can show the placeholder
         onInitialRestoreDone?.();
       }
-      const projects = getRecentProjects(legacySessions);
-      if (projects.length > 0) setSelectedCwd(projects[0].root);
+      const mostRecentProjectId = allSessions.map(projectOfSession).find((id): id is string => typeof id === "string");
+      const mostRecentProject = projectSnapshot.projects.find(({ id }) => id === mostRecentProjectId);
+      if (mostRecentProject) onProjectScopeChange(mostRecentProject.id, availableProjectDirectory(mostRecentProject));
+      else {
+        const projects = getRecentProjects(legacySessions);
+        if (projects.length > 0) setSelectedCwd(projects[0].root);
+      }
     }
-  }, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone, legacyScope, legacySessions, projectOfSession]);
+  }, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, loading, projectsReady, onSelectSession, onInitialRestoreDone, legacyScope, legacySessions, projectOfSession, projectSnapshot.projects, onProjectScopeChange]);
 
   // Prefer an exact UI selection while a refetch is in flight. Once the
   // response catches up, the server-resolved path handles Windows case and
@@ -963,9 +970,19 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     onSelectSession(s, false, entryId, blockIndex);
   }, [onSelectSession, projectOfSession]);
 
+  const managedExplorerCwd = managedProject && explorerFolder?.id === managedProject.id && managedProject.directories.includes(explorerFolder.path)
+    && !managedProject.unavailableDirectories?.includes(explorerFolder.path)
+    ? explorerFolder.path
+    : managedProject ? availableProjectDirectory(managedProject) : null;
+  const managedWorktreeCwd = managedExplorerCwd && allSessions.some((entry) => (
+    entry.isWorktree && entry.cwd === managedExplorerCwd && projectOfSession(entry) === managedProject?.id
+  )) ? managedExplorerCwd : null;
+
   const handleNewSession = useCallback(() => {
     if (managedProject) {
-      onNewManagedSession(managedProject.id, managedProject.defaultDirectory);
+      const directory = managedWorktreeCwd ?? availableProjectDirectory(managedProject);
+      if (directory) onNewManagedSession(managedProject.id, directory);
+      else setProjectEditor(managedProject);
       return;
     }
     if (!legacyScope || !selectedCwd) {
@@ -978,7 +995,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
     onNewSession?.(tempId, selectedCwd);
-  }, [selectedCwd, onNewSession, legacyScope, managedProject, onNewManagedSession]);
+  }, [selectedCwd, onNewSession, legacyScope, managedProject, managedWorktreeCwd, onNewManagedSession]);
 
   const recentProjects = getRecentProjects(legacySessions);
   const showProjectFilter = recentProjects.length > 8;
@@ -988,9 +1005,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   // Sessions of every worktree in the selected project are shown together
   const selectedProject = projectFor(selectedCwd);
-  const managedExplorerCwd = managedProject && explorerFolder?.id === managedProject.id && managedProject.directories.includes(explorerFolder.path)
-    ? explorerFolder.path
-    : managedProject?.defaultDirectory;
   const explorerCwd = legacyScope ? selectedCwd ?? selectedCwdProp : managedExplorerCwd;
   const nativeDirectoryPath = legacyScope ? selectedProject?.root ?? selectedCwd : managedExplorerCwd;
   const handleOpenNativeDirectory = useCallback(async () => {
@@ -1031,12 +1045,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     return counts;
   }, [allSessions, projectOfSession, runningSessionIds, unreadSessionIds]);
 
-  const selectProjectScope = (id: string | null | undefined) => {
+  const selectProjectScope = (id: string | null) => {
     if (id === activeProjectId) return;
-    const cwd = id === undefined ? selectedCwd ?? recentProjects[0]?.root ?? null
-      : id === null ? null : projectSnapshot.projects.find((project) => project.id === id)?.defaultDirectory ?? null;
-    if (id === undefined) setSelectedCwd(cwd);
-    onProjectScopeChange(id, cwd);
+    const project = projectSnapshot.projects.find((project) => project.id === id);
+    onProjectScopeChange(id, project ? availableProjectDirectory(project) : null);
   };
 
   // Any activity in a project other than the one currently selected — shown as
@@ -1082,7 +1094,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       : null);
 
   const sessionFamilies = listSessionFamilies(filteredSessions);
-  const newSessionDirectory = managedProject?.defaultDirectory ?? (legacyScope ? selectedCwd : null);
+  const newSessionDirectory = managedProject ? managedWorktreeCwd ?? availableProjectDirectory(managedProject) : legacyScope ? selectedCwd : null;
   const selectedFamilyIds = sessionFamilies.filter((family) => batchSelection.has(family.root.id)
     && !family.root.transient && ![family.root, ...family.subagents].some((session) => runningSessionIds.has(session.id)))
     .map((family) => family.root.id);
@@ -1237,7 +1249,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         />
 
         {/* CWD picker */}
-        {legacyScope && (
+        {showLegacyDirectoryPicker && (
         <div ref={dropdownRef} style={{ position: "relative" }}>
           <div style={{ marginBottom: 5, paddingLeft: 2 }}>
             <div style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 600, lineHeight: 1.35, letterSpacing: "0.01em" }}>
@@ -1999,9 +2011,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               </svg>
               {t("files.explorer")}
             </button>
-            {onOpenTerminal && legacyScope && (
+            {onOpenTerminal && (
               <ToolbarIconButton
-                onClick={() => onOpenTerminal(explorerCwd)}
+                onClick={() => onOpenTerminal(explorerCwd, managedProject?.id)}
                 title={t("terminal.open")}
                 color="var(--text-dim)"
               >
@@ -2093,7 +2105,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     setNativeDirectoryError(null);
                   }}
                 >
-                  {managedProject.directories.map((path) => <option key={path} value={path}>{displayCwd(path, homeDir)}</option>)}
+                  {managedProject.directories.map((path) => <option key={path} value={path} disabled={managedProject.unavailableDirectories?.includes(path)}>{displayCwd(path, homeDir)}</option>)}
                 </select>
                 <ToolbarIconButton title={t("sidebar.openInFileManager")} disabled={nativeDirectoryBusy} color="var(--text-muted)" onClick={() => void handleOpenNativeDirectory()}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7h7l2 2h9v10H3Z" /><path d="M12 5h8m-3-3 3 3-3 3" /></svg>

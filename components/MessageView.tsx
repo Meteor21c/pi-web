@@ -7,7 +7,7 @@ import { ThinkingIcon } from "./ThinkingIcon";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
-import { getAssistantErrorMessage, getUserMessageText, isEmptyThinkingBlock, isTruncatedResponseError } from "@/lib/message-display";
+import { getAssistantErrorMessage, getUserMessageText, isEmptyThinkingBlock, isMalformedAssistantToolText, isRelayConnectTimeoutError, isTruncatedResponseError } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import { isEditToolName } from "@/lib/tool-names";
 import { USER_QUESTION_TOOL, type UserQuestionResult } from "@/lib/user-questions";
@@ -658,9 +658,12 @@ function AssistantMessageView({
       && !isEmptyThinkingBlock(block, { isStreaming })), [message.content, isStreaming, blockIndices]);
   const blocks = useMemo(() => blockItems.map(({ block }) => block), [blockItems]);
   const providerError = hideMetadata ? null : getAssistantErrorMessage(message, { isStreaming });
-  const providerErrorDisplay = isTruncatedResponseError(providerError)
-    ? t("chat.responseInterrupted")
-    : providerError;
+  const connectionTimedOut = isRelayConnectTimeoutError(providerError);
+  const providerErrorDisplay = connectionTimedOut
+    ? t("chat.relayConnectionTimeout")
+    : isTruncatedResponseError(providerError)
+      ? t("chat.responseInterrupted")
+      : providerError;
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
   const streamStartRef = useRef<number | null>(null);
@@ -836,14 +839,20 @@ function AssistantMessageView({
             borderRadius: 6,
             background: "rgba(239,68,68,0.07)",
             color: "#ef4444",
-            fontFamily: "var(--font-mono)",
+            fontFamily: connectionTimedOut ? undefined : "var(--font-mono)",
             fontSize: 12,
             lineHeight: 1.5,
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
           }}
         >
-          {t("chat.modelError")}: {providerErrorDisplay}
+          {connectionTimedOut ? providerErrorDisplay : `${t("chat.modelError")}: ${providerErrorDisplay}`}
+          {connectionTimedOut && (
+            <details className="mt-1">
+              <summary className="cursor-pointer">{t("chat.errorTechnicalDetails")}</summary>
+              <div className="mt-1 font-mono">{providerError}</div>
+            </details>
+          )}
         </div>
       )}
 
@@ -1017,6 +1026,9 @@ function AssistantMessageView({
 
 function BlockView({ block, searchTarget, toolResults, isStreaming, streamingDuration, cwd, onOpenFile, onOpenSession, sessionId, entryId, blockIndex }: { block: AssistantContentBlock; searchTarget?: boolean; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; cwd?: string; onOpenFile?: (filePath: string) => void; onOpenSession?: (sessionId: string) => void; sessionId?: string; entryId?: string; blockIndex: number }) {
   if (block.type === "text") {
+    if (isMalformedAssistantToolText(block.text)) {
+      return <pre data-message-text data-search-target={searchTarget || undefined} className="whitespace-pre-wrap break-words text-xs text-text-muted">{block.text}</pre>;
+    }
     return <div data-message-text data-search-target={searchTarget || undefined}><TextBlock block={block as TextContent} isStreaming={isStreaming} cwd={cwd} sessionId={sessionId} onOpenFile={onOpenFile} /></div>;
   }
   if (block.type === "image") {
